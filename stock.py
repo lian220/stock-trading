@@ -1,11 +1,12 @@
 import requests
 import pandas as pd
 import yfinance as yf
-from datetime import datetime
+from datetime import datetime, timedelta
 import numpy as np
+import time
 
 # FRED API Key 설정
-api_key = '1592dff42e48ee20e5cf782448db63e4'
+api_key = 'aedfbcd8ba091c740281c0bd8ca93b46'
 
 # FRED에서 제공하는 지표 코드와 명칭
 fred_indicators = {
@@ -96,7 +97,7 @@ yfinance_indicators = {
     # '모기지 리츠 ETF': 'REM',      # iShares Mortgage Real Estate ETF
 }
 
-# 나스닥 100 상위 종목 티커 리스트와 한글 이름
+# 나스닥 100 상위 종목 티커 리스트와 한글 이름 (DDL 기준 제외 주식 제외: 코스트코, 넷플릭스, 페이팔, 시스코, 컴캐스트, 펩시코, 암젠, 허니웰 인터내셔널, 스타벅스, 몬델리즈, 어도비)
 nasdaq_top_100 = [
     ("AAPL", "애플"),                      # 1위, 9.50%
     ("MSFT", "마이크로소프트"),            # 3위, 7.67%
@@ -106,27 +107,106 @@ nasdaq_top_100 = [
     ("META", "메타"),                      # 6위, 3.79%
     ("TSLA", "테슬라"),                    # 8위, 2.76%
     ("NVDA", "엔비디아"),                  # 2위, 7.95%
-    ("COST", "코스트코"),                  # 7위, 2.97%
-    ("NFLX", "넷플릭스"),                  # 9위, 2.68%
-    ("PYPL", "페이팔"),                    # 51위, 0.46%
     ("INTC", "인텔"),                      # 36위, 0.65%
-    ("CSCO", "시스코"),                    # 13위, 1.63%
-    ("CMCSA", "컴캐스트"),                 # 27위, 0.88%
-    ("PEP", "펩시코"),                     # 15위, 1.35%
-    ("AMGN", "암젠"),                      # 23위, 1.06%
-    ("HON", "허니웰 인터내셔널"),           # 26위, 0.89%
-    ("SBUX", "스타벅스"),                  # 28위, 0.84%
-    ("MDLZ", "몬델리즈"),                  # 41위, 0.55%
     ("MU", "마이크론"),                    # 35위, 0.67%
     ("AVGO", "브로드컴"),                  # 5위, 4.00%
-    ("ADBE", "어도비"),                    # 17위, 1.23%
     ("TXN", "텍사스 인스트루먼트"),        # 19위, 1.14%
     ("AMD", "AMD"),                        # 24위, 1.04%
-    ("AMAT", "어플라이드 머티리얼즈")     # 29위, 0.83%
+    ("AMAT", "어플라이드 머티리얼즈"),     # 29위, 0.83%
+    # DDL에 추가된 주식들
+    ("CELH", "셀레스티카"),                # Celestica
+    ("VRT", "버티브 홀딩스"),              # Vertiv Holdings
+    ("VST", "비스트라 에너지"),            # Vistra Energy
+    ("BE", "블룸에너지"),                  # Bloom Energy
+    ("OKLO", "오클로"),                    # Oklo Inc
+    ("PLTR", "팔란티어"),                  # Palantir
+    ("CRM", "세일즈포스"),                 # Salesforce
+    ("ORCL", "오라클"),                    # Oracle
+    ("APPV", "앱플로빈"),                  # AppLovin
+    ("PANW", "팔로알토 네트웍스"),         # Palo Alto Networks
+    ("CRWD", "크라우드 스트라이크"),       # CrowdStrike
+    ("SNOW", "스노우플레이크"),            # Snowflake
+    ("TSM", "TSMC"),                       # Taiwan Semiconductor Manufacturing Company
+    ("CRDO", "크리도 테크놀로지 그룹 홀딩"), # Credo Technology Group Holding
+    ("HOOD", "로빈후드"),                  # Robinhood
+    ("LLY", "일라이릴리"),                # Eli Lilly
+    ("WMT", "월마트"),                     # Walmart
+    ("JNJ", "존슨앤존슨")                  # Johnson & Johnson
 ]
 
 # 결과 데이터프레임을 전역 변수로 정의 (초기에는 None)
 result_df = None
+
+# yfinance.py에서 가져온 함수
+def download_yahoo_chart(symbol, start_date, end_date, interval="1d"):
+    """
+    Yahoo Finance Chart API를 통해 주어진 symbol의 종가(Close) 시계열을 가져옵니다.
+    - symbol: Yahoo Finance 티커 문자열 (예: "^GSPC", "AAPL")
+    - start_date: 시작일 (YYYY-MM-DD)
+    - end_date: 종료일 (YYYY-MM-DD)
+    - interval: "1d", "1wk", "1mo"
+    """
+    sess = requests.Session()
+    sess.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    })
+    
+    # 날짜 범위로 변환
+    start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+    end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+    delta = end_dt - start_dt
+    
+    # 범위 문자열 결정 (차이가 1달 이하이면 1mo, 3달 이하이면 3mo, 6달 이하이면 6mo, 그 이상이면 max)
+    if delta.days <= 30:
+        range_str = "1mo"
+    elif delta.days <= 90:
+        range_str = "3mo"
+    elif delta.days <= 180:
+        range_str = "6mo"
+    elif delta.days <= 365:
+        range_str = "1y"
+    elif delta.days <= 730:
+        range_str = "2y"
+    elif delta.days <= 1825:
+        range_str = "5y"
+    else:
+        range_str = "max"
+    
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+    params = {
+        "range": range_str,
+        "interval": interval,
+        "includePrePost": "false",
+        "events": "div|split"
+    }
+    
+    r = sess.get(url, params=params)
+    r.raise_for_status()
+    result = r.json().get("chart", {}).get("result", [None])[0]
+    if not result:
+        raise ValueError(f"No data for symbol: {symbol}")
+    
+    timestamps = result["timestamp"]
+    closes = result["indicators"]["quote"][0]["close"]
+    
+    # 시작 - 수정된 부분: 날짜만 사용하도록 처리
+    # 각 타임스탬프를 datetime으로 변환하고 날짜 부분만 사용
+    date_only = [pd.Timestamp.fromtimestamp(ts).date() for ts in timestamps]
+    
+    # 데이터프레임 생성 시 날짜만 포함하도록 수정
+    df = pd.DataFrame({
+        "Close": closes
+    }, index=pd.DatetimeIndex(date_only))
+    
+    # 중복된 날짜가 있는 경우 마지막 값만 유지
+    if df.index.duplicated().any():
+        df = df[~df.index.duplicated(keep='last')]
+    # 종료 - 수정된 부분
+    
+    # 시작일과 종료일 사이의 데이터만 필터링
+    df = df[(df.index >= pd.Timestamp(start_date)) & (df.index <= pd.Timestamp(end_date))]
+    
+    return df
 
 def collect_economic_data(start_date='2006-01-01', end_date=None):
     """
@@ -145,7 +225,10 @@ def collect_economic_data(start_date='2006-01-01', end_date=None):
     if end_date is None:
         end_date = datetime.today().strftime('%Y-%m-%d')
     
+    print(f"경제 데이터 수집 시작: {start_date} ~ {end_date}")
+    
     # FRED API를 통한 데이터 수집
+    print("FRED 경제 지표 수집 중...")
     fred_data_frames = []
     for code, name in fred_indicators.items():
         # 지표별 제공 주기에 따른 요청 주기 설정
@@ -204,45 +287,91 @@ def collect_economic_data(start_date='2006-01-01', end_date=None):
         except Exception as e:
             print(f"Error processing DataFrame {i}: {e}")
     
-    # yfinance를 통한 데이터 수집
+    # yfinance를 통한 데이터 수집 (yfinance.py의 방식으로 대체)
+    print("\nYahoo Finance 지표 데이터 수집 중...")
     yfinance_data_frames = []
     for name, ticker in yfinance_indicators.items():
-        df = yf.download(ticker, start=start_date, end=end_date, auto_adjust=True)
-        if not df.empty:
-            df = df[['Close']]
-            df.columns = [name]
-            df.index = df.index.tz_localize(None)
-            yfinance_data_frames.append(df)
-        else:
-            print(f"No data found for indicator {name} ({ticker}).")
+        try:
+            # download_yahoo_chart 함수를 사용하여 데이터 수집
+            df = download_yahoo_chart(ticker, start_date, end_date)
+            if not df.empty:
+                df.columns = [name]  # 'Close' 컬럼명을 지표 이름으로 변경
+                df.index = df.index.tz_localize(None)  # 시간대 정보 제거
+                yfinance_data_frames.append(df)
+                print(f"{name}({ticker}) 수집 완료, {len(df)}개")
+            else:
+                print(f"No data found for indicator {name} ({ticker}).")
+        except Exception as e:
+            print(f"Error downloading data for {ticker} ({name}): {e}")
+        # 요청 간 간격을 두어 rate limit 방지
+        time.sleep(1)
     
-    # 나스닥 100 상위 종목 데이터 수집
+    # 나스닥 100 상위 종목 데이터 수집 (yfinance.py의 방식으로 대체)
+    print("\n나스닥 100 상위 종목 데이터 수집 중...")
     nasdaq_data_frames = []
     for ticker, name in nasdaq_top_100:
         try:
-            df = yf.download(ticker, start=start_date, end=end_date, auto_adjust=True)
+            # download_yahoo_chart 함수를 사용하여 데이터 수집
+            df = download_yahoo_chart(ticker, start_date, end_date)
             if not df.empty:
-                df = df[['Close']]
-                df.columns = [name]
-                df.index = df.index.tz_localize(None)
+                df.columns = [name]  # 'Close' 컬럼명을 종목 한글 이름으로 변경
+                df.index = df.index.tz_localize(None)  # 시간대 정보 제거
                 nasdaq_data_frames.append(df)
+                print(f"{name}({ticker}) 수집 완료, {len(df)}개")
+            else:
+                print(f"No data found for stock {name} ({ticker}).")
         except Exception as e:
             print(f"Error downloading data for {ticker} ({name}): {e}")
+        # 요청 간 간격을 두어 rate limit 방지
+        time.sleep(1)
     
     # 모든 데이터를 날짜 기준으로 외부 결합하여 하나의 데이터프레임으로 결합
     all_data_frames = fred_data_frames + yfinance_data_frames + nasdaq_data_frames
     if all_data_frames:
+        # 중복된 인덱스 처리
+        for i, df in enumerate(all_data_frames):
+            if df.index.duplicated().any():
+                all_data_frames[i] = df[~df.index.duplicated(keep='first')]
+        
         # 결합
+        print("데이터프레임 병합 중...")
         result_df = pd.concat(all_data_frames, axis=1, join='outer')
     
         # 결측치 및 비정상적인 값 처리
         result_df.replace('.', pd.NA, inplace=True)
-        result_df = result_df.dropna(subset=['10년 기대 인플레이션율', '장단기 금리차'], how='any')
         
         # 결측치를 이전 값으로 채움
         result_df.sort_index(inplace=True)
         result_df.ffill(inplace=True)
         
+        # 주요 수정: 날짜 인덱스의 시간 부분을 제거하고 일자만 남김
+        # 동일 날짜의 데이터가 여러 개 있는 경우, 마지막 데이터만 사용
+        print("날짜 인덱스 표준화 중...")
+        result_df.index = pd.to_datetime(result_df.index.date)  # 날짜만 남김
+        result_df = result_df[~result_df.index.duplicated(keep='last')]  # 중복 날짜 제거, 마지막 값 유지
+        
+        # DDL 기준 제외된 주식 컬럼 제거 (코스트코, 넷플릭스, 페이팔, 시스코, 컴캐스트, 펩시코, 암젠, 허니웰 인터내셔널, 스타벅스, 몬델리즈, 어도비)
+        excluded_stocks = ['코스트코', '넷플릭스', '페이팔', '시스코', '컴캐스트', '펩시코', '암젠', '허니웰 인터내셔널', '스타벅스', '몬델리즈', '어도비']
+        for stock in excluded_stocks:
+            if stock in result_df.columns:
+                result_df = result_df.drop(columns=[stock])
+                print(f"제외된 주식 컬럼 제거: {stock}")
+        
+        # 결과 데이터프레임 로그 출력
+        print("\n=== 결과 데이터프레임 정보 ===")
+        print(f"행 수: {len(result_df)}")
+        print(f"열 수: {len(result_df.columns)}")
+        print("컬럼 목록:")
+        for col in result_df.columns:
+            print(f"  - {col}")
+        
+        print("\n=== 결과 데이터프레임 처음 5행 ===")
+        print(result_df.head())
+        
+        print("\n=== 결과 데이터프레임 마지막 5행 ===")
+        print(result_df.tail())
+        
+        print(f"\n데이터 수집 완료")
         return result_df
     else:
         print("No data collected for any indicators.")

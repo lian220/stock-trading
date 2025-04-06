@@ -179,8 +179,13 @@ def get_domestic_balance():
             else:
                 raise
 
-def get_overseas_balance():
-    """해외주식 잔고 조회"""
+def get_overseas_balance(ovrs_excg_cd="NASD"):
+    """해외주식 잔고 조회
+    
+    Args:
+        ovrs_excg_cd (str, optional): 거래소 코드. Defaults to "NASD".
+            NASD: 나스닥, NYSE: 뉴욕, AMEX: 아멕스
+    """
     # 토큰 가져오기
     access_token = get_access_token()
     
@@ -197,7 +202,7 @@ def get_overseas_balance():
     params = {
         "CANO": settings.KIS_CANO,
         "ACNT_PRDT_CD": settings.KIS_ACNT_PRDT_CD,
-        "OVRS_EXCG_CD": "NASD",  # NASD: 나스닥, NYSE: 뉴욕, AMEX: 아멕스
+        "OVRS_EXCG_CD": ovrs_excg_cd,  # 매개변수로 받은 거래소 코드 사용
         "TR_CRCY_CD": "USD",     # 통화코드 USD
         "CTX_AREA_FK200": "",
         "CTX_AREA_NK200": ""
@@ -226,6 +231,47 @@ def get_overseas_balance():
                 time.sleep(1)  # 재시도 전 1초 대기
             else:
                 raise
+
+def get_all_overseas_balances():
+    """모든 거래소의 해외주식 잔고 조회"""
+    # 주요 거래소 목록
+    exchanges = ["NASD", "NYSE", "AMEX"]
+    all_holdings = []
+    
+    for exchange in exchanges:
+        try:
+            result = get_overseas_balance(exchange)
+            
+            if result.get("rt_cd") == "0" and "output1" in result:
+                holdings = result.get("output1", [])
+                if holdings:
+                    all_holdings.extend(holdings)
+            else:
+                print(f"{exchange} 거래소 잔고 조회 실패: {result.get('msg1', '알 수 없는 오류')}")
+                
+            # API 요청 간 지연
+            time.sleep(0.5)
+            
+        except Exception as e:
+            print(f"{exchange} 거래소 잔고 조회 중 오류: {str(e)}")
+    
+    # 통합된 잔고 정보 반환
+    if all_holdings:
+        return {
+            "rt_cd": "0",
+            "msg_cd": "00000",
+            "msg1": "모든 거래소 잔고 조회 완료",
+            "output1": all_holdings,
+            "output2": {}  # 합산 정보는 필요시 계산
+        }
+    else:
+        return {
+            "rt_cd": "0",
+            "msg_cd": "00000",
+            "msg1": "보유 종목이 없습니다.",
+            "output1": [],
+            "output2": {}
+        }
 
 # 추가: 해외주식 예약주문 접수
 def overseas_order_resv(order_data):
@@ -657,6 +703,129 @@ def order_overseas_stock(order_data):
             "rt_cd": "1", 
             "msg_cd": "ERROR",
             "msg1": f"API 호출 오류: {str(e)}",
+            "output": {}
+        }
+
+def create_conditional_orders(params):
+    """
+    특정 가격에 도달했을 때 자동으로 실행되는 조건부 주문 설정
+    손절매(stop loss)와 이익실현(take profit) 주문을 동시에 설정
+    """
+    try:
+        # 1. 해외주식 잔고 조회
+        balance_result = get_overseas_balance()
+        
+        if balance_result.get("rt_cd") != "0":
+            return {
+                "rt_cd": "1",
+                "msg_cd": "BALANCE_ERROR",
+                "msg1": f"잔고 조회 실패: {balance_result.get('msg1', '알 수 없는 오류')}",
+                "output": {}
+            }
+        
+        # 2. 종목 정보 찾기
+        pdno = params.get("pdno")
+        ovrs_excg_cd = params.get("ovrs_excg_cd")
+        
+        holdings = balance_result.get("output1", [])
+        target_holding = None
+        
+        for holding in holdings:
+            if holding.get("ovrs_pdno") == pdno:
+                target_holding = holding
+                break
+        
+        if not target_holding:
+            return {
+                "rt_cd": "1",
+                "msg_cd": "NO_HOLDING",
+                "msg1": f"해당 종목({pdno})을 보유하고 있지 않습니다.",
+                "output": {}
+            }
+        
+        # 3. 기준 가격, 손절매 가격, 이익실현 가격 계산
+        base_price = params.get("base_price")
+        if not base_price:
+            # 매수 평균단가를 기준 가격으로 사용
+            base_price = float(target_holding.get("pchs_avg_pric", "0"))
+            
+        if base_price <= 0:
+            return {
+                "rt_cd": "1",
+                "msg_cd": "INVALID_PRICE",
+                "msg1": "유효하지 않은 기준 가격입니다.",
+                "output": {}
+            }
+        
+        # 손절매, Profit Taking 퍼센트 설정
+        stop_loss_percent = params.get("stop_loss_percent", -5.0)
+        take_profit_percent = params.get("take_profit_percent", 5.0)
+        
+        # 가격 계산
+        stop_loss_price = round(base_price * (1 + stop_loss_percent/100), 2)
+        take_profit_price = round(base_price * (1 + take_profit_percent/100), 2)
+        
+        # 주문 수량 설정 (params에 quantity가 없으면 전체 보유 수량 사용)
+        quantity = params.get("quantity", target_holding.get("ord_psbl_qty", "0"))
+        
+        # 4. 손절매 및 이익실현 주문 생성
+        order_results = []
+        
+        # 손절매 주문 생성 (마이너스이면 실행)
+        if stop_loss_percent < 0:
+            stop_loss_order = {
+                "CANO": settings.KIS_CANO,
+                "ACNT_PRDT_CD": settings.KIS_ACNT_PRDT_CD,
+                "PDNO": pdno,
+                "OVRS_EXCG_CD": ovrs_excg_cd,
+                "FT_ORD_QTY": quantity,
+                "FT_ORD_UNPR3": str(stop_loss_price),
+                "is_buy": False,  # 매도
+                "ORD_DVSN": "00"  # 지정가
+            }
+            
+            stop_loss_result = overseas_order_resv(stop_loss_order)
+            stop_loss_result["order_type"] = "stop_loss"
+            order_results.append(stop_loss_result)
+        
+        # 이익실현 주문 생성 (플러스이면 실행)
+        if take_profit_percent > 0:
+            take_profit_order = {
+                "CANO": settings.KIS_CANO,
+                "ACNT_PRDT_CD": settings.KIS_ACNT_PRDT_CD,
+                "PDNO": pdno,
+                "OVRS_EXCG_CD": ovrs_excg_cd,
+                "FT_ORD_QTY": quantity,
+                "FT_ORD_UNPR3": str(take_profit_price),
+                "is_buy": False,  # 매도
+                "ORD_DVSN": "00"  # 지정가
+            }
+            
+            take_profit_result = overseas_order_resv(take_profit_order)
+            take_profit_result["order_type"] = "take_profit"
+            order_results.append(take_profit_result)
+        
+        # 5. 결과 반환
+        success_count = sum(1 for r in order_results if r.get("rt_cd") == "0")
+        
+        return {
+            "rt_cd": "0" if success_count > 0 else "1",
+            "msg_cd": "SUCCESS" if success_count == len(order_results) else "PARTIAL_SUCCESS" if success_count > 0 else "FAILED",
+            "msg1": f"{success_count}/{len(order_results)} 주문이 성공적으로 처리되었습니다.",
+            "base_price": base_price,
+            "stop_loss_price": stop_loss_price,
+            "take_profit_price": take_profit_price,
+            "order_results": order_results
+        }
+        
+    except Exception as e:
+        print(f"조건부 주문 생성 중 오류 발생: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
+        return {
+            "rt_cd": "1",
+            "msg_cd": "ERROR",
+            "msg1": f"조건부 주문 생성 중 오류 발생: {str(e)}",
             "output": {}
         }
     

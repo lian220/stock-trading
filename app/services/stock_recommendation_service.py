@@ -7,7 +7,7 @@ import numpy as np
 from app.core.config import settings
 from app.services.balance_service import get_overseas_balance
 
-# 한국어 주식명과 티커 심볼 매핑
+# 한국어 주식명과 티커 심볼 매핑 (DDL 기준: 제외 주식 제외, 추가 주식 포함)
 STOCK_TO_TICKER = {
     "애플": "AAPL",
     "마이크로소프트": "MSFT",
@@ -17,31 +17,42 @@ STOCK_TO_TICKER = {
     "메타": "META",
     "테슬라": "TSLA",
     "엔비디아": "NVDA",
-    "코스트코": "COST",
-    "넷플릭스": "NFLX",
-    "페이팔": "PYPL",
     "인텔": "INTC",
-    "시스코": "CSCO",
-    "컴캐스트": "CMCSA",
-    "펩시코": "PEP",
-    "암젠": "AMGN",
-    "허니웰 인터내셔널": "HON",
-    "스타벅스": "SBUX",
-    "몬델리즈": "MDLZ",
     "마이크론": "MU",
     "브로드컴": "AVGO",
-    "어도비": "ADBE",
     "텍사스 인스트루먼트": "TXN",
     "AMD": "AMD",
     "어플라이드 머티리얼즈": "AMAT",
+    # DDL에 추가된 주식들
+    "셀레스티카": "CELH",
+    "버티브 홀딩스": "VRT",
+    "비스트라 에너지": "VST",
+    "블룸에너지": "BE",
+    "오클로": "OKLO",
+    "팔란티어": "PLTR",
+    "세일즈포스": "CRM",
+    "오라클": "ORCL",
+    "앱플로빈": "APPV",
+    "팔로알토 네트웍스": "PANW",
+    "크라우드 스트라이크": "CRWD",
+    "스노우플레이크": "SNOW",
+    "TSMC": "TSM",
+    "크리도 테크놀로지 그룹 홀딩": "CRDO",
+    "로빈후드": "HOOD",
+    "일라이릴리": "LLY",
+    "월마트": "WMT",
+    "존슨앤존슨": "JNJ",
+    # ETF
     "S&P 500 ETF": "SPY",
     "QQQ ETF": "QQQ"
 }
 
 class StockRecommendationService:
     def __init__(self):
-        # ETF 제외한 컬럼명 리스트
-        self.stock_columns = list(STOCK_TO_TICKER.keys())[:-2]
+        # ETF 제외한 컬럼명 리스트 (DDL 기준 제외 주식 제외: 코스트코, 넷플릭스, 페이팔, 시스코, 컴캐스트, 펩시코, 암젠, 허니웰 인터내셔널, 스타벅스, 몬델리즈, 어도비)
+        excluded_stocks = ['코스트코', '넷플릭스', '페이팔', '시스코', '컴캐스트', '펩시코', '암젠', '허니웰 인터내셔널', '스타벅스', '몬델리즈', '어도비']
+        all_stocks = list(STOCK_TO_TICKER.keys())[:-2]  # ETF 제외
+        self.stock_columns = [stock for stock in all_stocks if stock not in excluded_stocks]
         self.lookback_days = 180  # 6개월 데이터
 
     def calculate_sma(self, series, period):
@@ -440,10 +451,10 @@ class StockRecommendationService:
                 tech_conditions = [item["golden_cross"], item["rsi"] < 50, item["macd_buy_signal"]]
                 
                 if sentiment_score is not None and sentiment_score >= 0.15:
-                    if any(tech_conditions):
+                    if sum(tech_conditions) >= 2:
                         final_results.append(item)
                 else:
-                    if sum(tech_conditions) >= 2:
+                    if sum(tech_conditions) >= 3:
                         final_results.append(item)
 
             # 7. 종합 점수 계산 및 정렬
@@ -479,7 +490,7 @@ class StockRecommendationService:
         매도 대상 종목을 식별하는 함수
         
         매도 조건:
-        1. 구매가 대비 현재가가 +5% 이상(익절) 또는 -5% 이하(손절)인 종목
+        1. 구매가 대비 현재가가 +5% 이상(익절) 또는 -7% 이하(손절)인 종목
         2. 감성 점수 < -0.15이고 기술적 지표 중 2개 이상 매도 신호인 종목
         3. 기술적 지표 중 3개 이상 매도 신호인 종목
         
@@ -556,7 +567,7 @@ class StockRecommendationService:
                 # 조건 1: 가격 기반 매도 (익절/손절)
                 if price_change_percent >= 5:
                     sell_reasons.append(f"익절 조건 충족: 구매가 대비 {price_change_percent:.2f}% 상승")
-                elif price_change_percent <= -5:
+                elif price_change_percent <= -7:
                     sell_reasons.append(f"손절 조건 충족: 구매가 대비 {price_change_percent:.2f}% 하락")
                 
                 # 기술적 지표 확인

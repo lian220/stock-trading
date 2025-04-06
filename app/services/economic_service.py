@@ -9,6 +9,7 @@ import pytz
 from app.core.config import settings
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends
 from app.services.stock_recommendation_service import StockRecommendationService
+import httpx
 
 def get_last_updated_date():
     """
@@ -54,16 +55,19 @@ def get_existing_data_with_nulls():
         print(f"NULL 값 데이터 조회 중 오류 발생: {str(e)}")
         return pd.DataFrame()
 
-# 주가 관련 컬럼 목록 정의
+# 주가 관련 컬럼 목록 정의 (DDL 기준: 코스트코, 넷플릭스, 페이팔, 시스코, 컴캐스트, 펩시코, 암젠, 허니웰 인터내셔널, 스타벅스, 몬델리즈, 어도비 제외)
 stock_columns = [
     "나스닥 종합지수", "S&P 500 지수", "금 가격", "달러 인덱스", "나스닥 100", 
     "S&P 500 ETF", "QQQ ETF", "러셀 2000 ETF", "다우 존스 ETF", "VIX 지수", 
     "닛케이 225", "상해종합", "항셍", "영국 FTSE", "독일 DAX", "프랑스 CAC 40", 
     "미국 전체 채권시장 ETF", "TIPS ETF", "투자등급 회사채 ETF", "달러/엔", "달러/위안",
     "미국 리츠 ETF", "애플", "마이크로소프트", "아마존", "구글 A", "구글 C", "메타", 
-    "테슬라", "엔비디아", "코스트코", "넷플릭스", "페이팔", "인텔", "시스코", "컴캐스트", 
-    "펩시코", "암젠", "허니웰 인터내셔널", "스타벅스", "몬델리즈", "마이크론", "브로드컴", 
-    "어도비", "텍사스 인스트루먼트", "AMD", "어플라이드 머티리얼즈"
+    "테슬라", "엔비디아", "인텔", "마이크론", "브로드컴", 
+    "텍사스 인스트루먼트", "AMD", "어플라이드 머티리얼즈",
+    "셀레스티카", "버티브 홀딩스", "비스트라 에너지", "블룸에너지", "오클로", "팔란티어",
+    "세일즈포스", "오라클", "앱플로빈", "팔로알토 네트웍스", "크라우드 스트라이크",
+    "스노우플레이크", "TSMC", "크리도 테크놀로지 그룹 홀딩", "로빈후드", "일라이릴리",
+    "월마트", "존슨앤존슨"
 ]
 
 # 경제 지표 컬럼 목록 정의
@@ -76,10 +80,32 @@ economic_columns = [
 
 async def update_economic_data_in_background():
     """
-    경제 및 주식 데이터를 Supabase에 저장하는 백그라운드 작업입니다.
-    데이터 업데이트 후, 기술적 지표 생성과 뉴스 감정 분석도 자동으로 수행합니다.
+    백그라운드에서 경제 지표 데이터를 업데이트
     """
     try:
+        print("경제 지표 및 주가 데이터 업데이트 작업 시작...")
+        
+        # 미국 장 마감 여부 확인 (서머타임 여부와 관계없이 22:30~06:00는 미국 장 시간으로 처리)
+        now = datetime.now()
+        korea_time = now.strftime('%H:%M')
+        current_hour = int(korea_time.split(':')[0])
+        current_min = int(korea_time.split(':')[1])
+        
+        # 미국 장 시간인지 확인 (22:30~06:00)
+        is_market_hours = False
+        
+        # 22:30 이후
+        if current_hour >= 22 and (current_hour > 22 or current_min >= 30):
+            is_market_hours = True
+        # 다음 날 06:00 이전
+        elif current_hour < 6:
+            is_market_hours = True
+            
+        # 미국 주식 시장이 열려 있는 경우, 데이터 수집 연기
+        if is_market_hours:
+            print(f"현재 시간 {korea_time}은 미국 주식 시장 운영 시간입니다. 장 마감 후에 데이터를 수집합니다.")
+            return
+
         # 마지막 수집 날짜 조회
         start_date = get_last_updated_date()
         
@@ -121,66 +147,96 @@ async def update_economic_data_in_background():
         all_dates = pd.date_range(start=start_date, end=storage_end_date)
         saved_count = 0
         
+        # 재시도 로직이 포함된 데이터 저장 함수 (루프 밖으로 이동)
+        def save_data_with_retry(date_str, data_dict, max_retries=3):
+            """데이터 저장을 재시도하며 처리"""
+            for attempt in range(max_retries):
+                try:
+                    # 기존 데이터 확인
+                    check = supabase.table("economic_and_stock_data").select("*").eq("날짜", date_str).execute()
+                    
+                    # 중복 방지를 위해 기존 데이터가 있으면 업데이트, 없으면 삽입
+                    if check.data and len(check.data) > 0:
+                        # 기존 레코드가 있는 경우, null 값만 업데이트
+                        existing_data = check.data[0]
+                        update_dict = {}
+                        
+                        for col_name, value in data_dict.items():
+                            # 기존 값이 null이거나 누락된 경우에만 업데이트
+                            if col_name not in existing_data or existing_data[col_name] is None:
+                                update_dict[col_name] = value
+                        
+                        if update_dict:  # 업데이트할 값이 있는 경우에만
+                            supabase.table("economic_and_stock_data").update(update_dict).eq("날짜", date_str).execute()
+                    else:
+                        # 새 레코드 추가
+                        insert_dict = {"날짜": date_str}
+                        insert_dict.update(data_dict)
+                        supabase.table("economic_and_stock_data").insert(insert_dict).execute()
+                    
+                    return True  # 성공
+                    
+                except (httpx.RemoteProtocolError, httpx.ConnectError, httpx.TimeoutException) as e:
+                    if attempt < max_retries - 1:
+                        print(f"{date_str} 저장 실패 (시도 {attempt+1}/{max_retries}): {str(e)}. 재시도...")
+                    else:
+                        print(f"{date_str} 저장 최종 실패: {str(e)}")
+                        return False  # 실패해도 예외를 발생시키지 않음
+                except Exception as e:
+                    # 다른 종류의 에러는 즉시 재시도
+                    if attempt < max_retries - 1:
+                        print(f"{date_str} 저장 실패 (시도 {attempt+1}/{max_retries}): {str(e)}. 재시도...")
+                    else:
+                        print(f"{date_str} 저장 최종 실패: {str(e)}")
+                        return False  # 실패해도 예외를 발생시키지 않음
+            return False
+        
         # 어제까지 날짜에 대해서만 처리
         for date in all_dates:
-            date_str = date.strftime('%Y-%m-%d')
-            
-            # 해당 날짜의 데이터가 수집되었는지 확인
-            if date in new_data.index:
-                row = new_data.loc[date]
-                print(f"\n== {date_str} 데이터가 있음 (저장 대상) ==")
-                # 주요 주가 데이터 몇 개 출력
-                for stock in stock_columns[:5]:
-                    if stock in row.index:
-                        print(f"  원본 {stock}: {row[stock]}")
-            else:
-                print(f"\n== {date_str} 데이터가 없음, 이전 데이터 사용 (저장 대상) ==")
-                row = pd.Series(dtype='object')
-            
-            # 기존 데이터 확인
-            check = supabase.table("economic_and_stock_data").select("*").eq("날짜", date_str).execute()
-            
-            # 데이터 딕셔너리 생성
-            data_dict = {}
-            for col_name, value in row.items():
-                if not pd.isna(value):  # null이 아닌 값만 포함
-                    data_dict[col_name] = value
-            
-            # 이전 데이터로 null 값 채우기 (모든 컬럼 대상)
-            for col_name, value in previous_data.items():
-                if col_name != "날짜" and col_name not in data_dict and value is not None:
-                    data_dict[col_name] = value
-            
-            # 중복 방지를 위해 기존 데이터가 있으면 업데이트, 없으면 삽입
-            if check.data and len(check.data) > 0:
-                # 기존 레코드가 있는 경우, null 값만 업데이트
-                existing_data = check.data[0]
-                update_dict = {}
+            try:
+                date_str = date.strftime('%Y-%m-%d')
                 
-                for col_name, value in data_dict.items():
-                    # 기존 값이 null이거나 누락된 경우에만 업데이트
-                    if col_name not in existing_data or existing_data[col_name] is None:
-                        update_dict[col_name] = value
+                # 해당 날짜의 데이터가 수집되었는지 확인
+                if date in new_data.index:
+                    row = new_data.loc[date]
+                    print(f"\n== {date_str} 데이터가 있음 (저장 대상) ==")
+                    # 주요 주가 데이터 몇 개 출력
+                    for stock in stock_columns[:5]:
+                        if stock in row.index:
+                            print(f"  원본 {stock}: {row[stock]}")
+                else:
+                    print(f"\n== {date_str} 데이터가 없음, 이전 데이터 사용 (저장 대상) ==")
+                    row = pd.Series(dtype='object')
                 
-                if update_dict:  # 업데이트할 값이 있는 경우에만
-                    supabase.table("economic_and_stock_data").update(update_dict).eq("날짜", date_str).execute()
-            else:
-                # 새 레코드 추가
-                insert_dict = {"날짜": date_str}
-                insert_dict.update(data_dict)
-                supabase.table("economic_and_stock_data").insert(insert_dict).execute()
-            
-            # 현재 데이터를 다음 날짜 처리를 위한 이전 데이터로 설정
-            if data_dict:  # 데이터가 있는 경우에만
-                previous_data = {"날짜": date_str}
-                previous_data.update(data_dict)
-            
-            # 주요 주가 데이터 출력
-            for stock in stock_columns[:5]:
-                if stock in data_dict:
-                    print(f"  저장 전 {stock}: {data_dict[stock]}")
-            
-            saved_count += 1
+                # 데이터 딕셔너리 생성
+                data_dict = {}
+                for col_name, value in row.items():
+                    if not pd.isna(value):  # null이 아닌 값만 포함
+                        data_dict[col_name] = value
+                
+                # 이전 데이터로 null 값 채우기 (모든 컬럼 대상)
+                for col_name, value in previous_data.items():
+                    if col_name != "날짜" and col_name not in data_dict and value is not None:
+                        data_dict[col_name] = value
+                
+                # 재시도 로직이 포함된 저장 함수 호출
+                if save_data_with_retry(date_str, data_dict):
+                    # 현재 데이터를 다음 날짜 처리를 위한 이전 데이터로 설정
+                    if data_dict:  # 데이터가 있는 경우에만
+                        previous_data = {"날짜": date_str}
+                        previous_data.update(data_dict)
+                    
+                    # 주요 주가 데이터 출력
+                    for stock in stock_columns[:5]:
+                        if stock in data_dict:
+                            print(f"  저장 전 {stock}: {data_dict[stock]}")
+                    
+                    saved_count += 1
+                
+            except Exception as e:
+                # 개별 날짜 처리 중 에러가 발생해도 계속 진행
+                print(f"{date_str} 처리 중 오류 발생 (다음 날짜로 계속 진행): {str(e)}")
+                continue
         
         # 오늘 날짜 데이터는 수집했지만 저장하지 않는다고 표시
         if datetime.now().date() in new_data.index:
@@ -215,6 +271,13 @@ async def update_economic_data_in_background():
         print(f"경제 데이터 업데이트 중 오류 발생: {str(e)}")
         import traceback
         print(traceback.format_exc())
-        raise Exception(f"경제 데이터 업데이트 중 오류: {str(e)}")
+        # 에러가 발생해도 앱이 계속 실행되도록 예외를 다시 발생시키지 않고 로그만 남김
+        # 필요시 에러 정보를 반환
+        return {
+            "success": False,
+            "message": f"경제 데이터 업데이트 중 오류 발생: {str(e)}",
+            "total_records": 0,
+            "updated_records": 0
+        }
 
 print(f"Supabase URL: {settings.SUPABASE_URL}")
