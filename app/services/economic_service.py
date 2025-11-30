@@ -10,6 +10,7 @@ from app.core.config import settings
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends
 from app.services.stock_recommendation_service import StockRecommendationService
 import httpx
+import time
 
 def get_last_updated_date():
     """
@@ -55,20 +56,50 @@ def get_existing_data_with_nulls():
         print(f"NULL 값 데이터 조회 중 오류 발생: {str(e)}")
         return pd.DataFrame()
 
-# 주가 관련 컬럼 목록 정의 (DDL 기준: 코스트코, 넷플릭스, 페이팔, 시스코, 컴캐스트, 펩시코, 암젠, 허니웰 인터내셔널, 스타벅스, 몬델리즈, 어도비 제외)
-stock_columns = [
-    "나스닥 종합지수", "S&P 500 지수", "금 가격", "달러 인덱스", "나스닥 100", 
-    "S&P 500 ETF", "QQQ ETF", "러셀 2000 ETF", "다우 존스 ETF", "VIX 지수", 
-    "닛케이 225", "상해종합", "항셍", "영국 FTSE", "독일 DAX", "프랑스 CAC 40", 
-    "미국 전체 채권시장 ETF", "TIPS ETF", "투자등급 회사채 ETF", "달러/엔", "달러/위안",
-    "미국 리츠 ETF", "애플", "마이크로소프트", "아마존", "구글 A", "구글 C", "메타", 
-    "테슬라", "엔비디아", "인텔", "마이크론", "브로드컴", 
-    "텍사스 인스트루먼트", "AMD", "어플라이드 머티리얼즈",
-    "셀레스티카", "버티브 홀딩스", "비스트라 에너지", "블룸에너지", "오클로", "팔란티어",
-    "세일즈포스", "오라클", "앱플로빈", "팔로알토 네트웍스", "크라우드 스트라이크",
-    "스노우플레이크", "TSMC", "크리도 테크놀로지 그룹 홀딩", "로빈후드", "일라이릴리",
-    "월마트", "존슨앤존슨"
-]
+# 주가 관련 컬럼 목록을 stock_ticker_mapping 테이블에서 동적으로 가져오기
+def get_active_stock_columns():
+    """
+    stock_ticker_mapping 테이블에서 is_active=true인 주식 목록을 가져옵니다.
+    ETF와 경제 지표는 별도로 포함합니다.
+    """
+    try:
+        # 활성화된 주식 목록 가져오기
+        mapping_response = supabase.table("stock_ticker_mapping").select("stock_name").eq("is_active", True).execute()
+        active_stock_names = [item["stock_name"] for item in mapping_response.data]
+        
+        # 경제 지표 및 ETF는 항상 포함
+        economic_and_etf_columns = [
+            "나스닥 종합지수", "S&P 500 지수", "금 가격", "달러 인덱스", "나스닥 100", 
+            "S&P 500 ETF", "QQQ ETF", "러셀 2000 ETF", "다우 존스 ETF", "VIX 지수", 
+            "닛케이 225", "상해종합", "항셍", "영국 FTSE", "독일 DAX", "프랑스 CAC 40", 
+            "미국 전체 채권시장 ETF", "TIPS ETF", "투자등급 회사채 ETF", "달러/엔", "달러/위안",
+            "미국 리츠 ETF"
+        ]
+        
+        # 활성화된 주식 + 경제 지표/ETF 합치기
+        all_stock_columns = economic_and_etf_columns + active_stock_names
+        
+        print(f"활성화된 주식 {len(active_stock_names)}개를 stock_ticker_mapping에서 가져왔습니다.")
+        return all_stock_columns
+    except Exception as e:
+        print(f"⚠️ 경고: stock_ticker_mapping 테이블 조회 실패: {str(e)}. 기본 목록을 사용합니다.")
+        # 기본 목록 (fallback)
+        return [
+            "나스닥 종합지수", "S&P 500 지수", "금 가격", "달러 인덱스", "나스닥 100", 
+            "S&P 500 ETF", "QQQ ETF", "러셀 2000 ETF", "다우 존스 ETF", "VIX 지수", 
+            "닛케이 225", "상해종합", "항셍", "영국 FTSE", "독일 DAX", "프랑스 CAC 40", 
+            "미국 전체 채권시장 ETF", "TIPS ETF", "투자등급 회사채 ETF", "달러/엔", "달러/위안",
+            "미국 리츠 ETF", "애플", "마이크로소프트", "아마존", "구글 A", "구글 C", "메타", 
+            "테슬라", "엔비디아", "인텔", "마이크론", "브로드컴", 
+            "텍사스 인스트루먼트", "AMD", "어플라이드 머티리얼즈",
+            "셀레스티카", "버티브 홀딩스", "비스트라 에너지", "블룸에너지", "오클로", "팔란티어",
+            "세일즈포스", "오라클", "앱플로빈", "팔로알토 네트웍스", "크라우드 스트라이크",
+            "스노우플레이크", "TSMC", "크리도 테크놀로지 그룹 홀딩", "로빈후드", "일라이릴리",
+            "월마트", "존슨앤존슨"
+        ]
+
+# 주가 관련 컬럼 목록 (동적으로 가져옴)
+stock_columns = get_active_stock_columns()
 
 # 경제 지표 컬럼 목록 정의
 economic_columns = [
@@ -85,26 +116,33 @@ async def update_economic_data_in_background():
     try:
         print("경제 지표 및 주가 데이터 업데이트 작업 시작...")
         
-        # 미국 장 마감 여부 확인 (서머타임 여부와 관계없이 22:30~06:00는 미국 장 시간으로 처리)
-        now = datetime.now()
-        korea_time = now.strftime('%H:%M')
-        current_hour = int(korea_time.split(':')[0])
-        current_min = int(korea_time.split(':')[1])
+        # 미국 장 마감 여부 확인 (뉴욕 시간 기준으로 정확히 체크)
+        now_korea = datetime.now(pytz.timezone('Asia/Seoul'))
+        now_ny = datetime.now(pytz.timezone('America/New_York'))
         
-        # 미국 장 시간인지 확인 (22:30~06:00)
-        is_market_hours = False
+        korea_time = now_korea.strftime('%H:%M')
+        ny_hour = now_ny.hour
+        ny_minute = now_ny.minute
+        ny_weekday = now_ny.weekday()  # 0=월요일, 6=일요일
         
-        # 22:30 이후
-        if current_hour >= 22 and (current_hour > 22 or current_min >= 30):
-            is_market_hours = True
-        # 다음 날 06:00 이전
-        elif current_hour < 6:
-            is_market_hours = True
-            
-        # 미국 주식 시장이 열려 있는 경우, 데이터 수집 연기
+        # 미국 주식 시장은 평일(월-금) 9:30 AM - 4:00 PM ET
+        is_weekday = 0 <= ny_weekday <= 4  # 월요일에서 금요일까지
+        is_market_open_time = (
+            (ny_hour == 9 and ny_minute >= 30) or
+            (10 <= ny_hour < 16) or
+            (ny_hour == 16 and ny_minute == 0)
+        )
+        
+        is_market_hours = is_weekday and is_market_open_time
+        
+        # 미국 주식 시장이 열려 있는 경우에만 데이터 수집 연기
+        # 장이 마감된 후(뉴욕 시간 16:00 이후) 또는 주말에는 데이터 수집 진행
         if is_market_hours:
-            print(f"현재 시간 {korea_time}은 미국 주식 시장 운영 시간입니다. 장 마감 후에 데이터를 수집합니다.")
+            print(f"현재 시간 (한국: {korea_time}, 뉴욕: {now_ny.strftime('%Y-%m-%d %H:%M')})은 미국 주식 시장 운영 시간입니다.")
+            print(f"장 마감 후(뉴욕 시간 16:00 이후)에 데이터를 수집합니다.")
             return
+        
+        print(f"현재 시간 (한국: {korea_time}, 뉴욕: {now_ny.strftime('%Y-%m-%d %H:%M')}) - 미국 장 마감 시간이므로 데이터 수집을 진행합니다.")
 
         # 마지막 수집 날짜 조회
         start_date = get_last_updated_date()
@@ -127,12 +165,16 @@ async def update_economic_data_in_background():
         prev_data_response = supabase.table("economic_and_stock_data").select("*").eq("날짜", previous_date).execute()
         previous_data = prev_data_response.data[0] if prev_data_response.data else {}
         
+        # stock_columns를 최신 상태로 업데이트 (매번 실행 시 최신 활성화 상태 반영)
+        stock_columns = get_active_stock_columns()
+        
         # 데이터 수집 (오늘까지 수집)
         new_data = collect_economic_data(start_date=start_date, end_date=collection_end_date)
         
         # 디버깅: 수집된 데이터 확인
         print("\n=== 수집된 데이터 확인 ===")
-        for date_idx in new_data.index:
+        print(f"활성화된 주식 컬럼 수: {len(stock_columns)}")
+        for date_idx in new_data.index[:3]:  # 처음 3개 날짜만
             date_str = date_idx.strftime('%Y-%m-%d') if isinstance(date_idx, pd.Timestamp) else date_idx
             print(f"날짜: {date_str}")
             for stock in stock_columns[:5]:  # 몇 개의 주가만 출력
@@ -150,6 +192,18 @@ async def update_economic_data_in_background():
         # 재시도 로직이 포함된 데이터 저장 함수 (루프 밖으로 이동)
         def save_data_with_retry(date_str, data_dict, max_retries=3):
             """데이터 저장을 재시도하며 처리"""
+            # 데이터 딕셔너리 검증
+            if not data_dict:
+                print(f"⚠️ {date_str}: 저장할 데이터가 없습니다 (data_dict가 비어있음)")
+                return False
+            
+            # 날짜는 필수
+            if not date_str:
+                print(f"⚠️ 날짜가 없어서 저장할 수 없습니다")
+                return False
+            
+            print(f"📝 {date_str}: 저장 시작 (컬럼 수: {len(data_dict)})")
+            
             for attempt in range(max_retries):
                 try:
                     # 기존 데이터 확인
@@ -167,27 +221,39 @@ async def update_economic_data_in_background():
                                 update_dict[col_name] = value
                         
                         if update_dict:  # 업데이트할 값이 있는 경우에만
+                            print(f"  → {date_str}: 기존 레코드 업데이트 ({len(update_dict)}개 컬럼)")
                             supabase.table("economic_and_stock_data").update(update_dict).eq("날짜", date_str).execute()
+                            print(f"  ✅ {date_str}: 업데이트 성공")
+                        else:
+                            print(f"  ℹ️ {date_str}: 업데이트할 데이터가 없음 (모든 값이 이미 존재)")
                     else:
                         # 새 레코드 추가
                         insert_dict = {"날짜": date_str}
                         insert_dict.update(data_dict)
+                        print(f"  → {date_str}: 새 레코드 삽입 ({len(insert_dict)}개 컬럼)")
                         supabase.table("economic_and_stock_data").insert(insert_dict).execute()
+                        print(f"  ✅ {date_str}: 삽입 성공")
                     
                     return True  # 성공
                     
                 except (httpx.RemoteProtocolError, httpx.ConnectError, httpx.TimeoutException) as e:
                     if attempt < max_retries - 1:
-                        print(f"{date_str} 저장 실패 (시도 {attempt+1}/{max_retries}): {str(e)}. 재시도...")
+                        print(f"  ⚠️ {date_str} 저장 실패 (시도 {attempt+1}/{max_retries}): {str(e)}. 재시도...")
+                        time.sleep(2)  # 재시도 전 대기
                     else:
-                        print(f"{date_str} 저장 최종 실패: {str(e)}")
+                        print(f"  ❌ {date_str} 저장 최종 실패: {str(e)}")
+                        import traceback
+                        print(traceback.format_exc())
                         return False  # 실패해도 예외를 발생시키지 않음
                 except Exception as e:
                     # 다른 종류의 에러는 즉시 재시도
                     if attempt < max_retries - 1:
-                        print(f"{date_str} 저장 실패 (시도 {attempt+1}/{max_retries}): {str(e)}. 재시도...")
+                        print(f"  ⚠️ {date_str} 저장 실패 (시도 {attempt+1}/{max_retries}): {str(e)}. 재시도...")
+                        time.sleep(2)  # 재시도 전 대기
                     else:
-                        print(f"{date_str} 저장 최종 실패: {str(e)}")
+                        print(f"  ❌ {date_str} 저장 최종 실패: {str(e)}")
+                        import traceback
+                        print(traceback.format_exc())
                         return False  # 실패해도 예외를 발생시키지 않음
             return False
         
@@ -210,14 +276,24 @@ async def update_economic_data_in_background():
                 
                 # 데이터 딕셔너리 생성
                 data_dict = {}
-                for col_name, value in row.items():
-                    if not pd.isna(value):  # null이 아닌 값만 포함
-                        data_dict[col_name] = value
+                if date in new_data.index:
+                    for col_name, value in row.items():
+                        if not pd.isna(value):  # null이 아닌 값만 포함
+                            data_dict[col_name] = value
                 
                 # 이전 데이터로 null 값 채우기 (모든 컬럼 대상)
                 for col_name, value in previous_data.items():
                     if col_name != "날짜" and col_name not in data_dict and value is not None:
                         data_dict[col_name] = value
+                
+                # 데이터 딕셔너리 검증
+                if not data_dict:
+                    print(f"⚠️ {date_str}: 저장할 데이터가 없어서 건너뜁니다.")
+                    continue
+                
+                print(f"\n📊 {date_str} 데이터 준비 완료:")
+                print(f"  - 총 컬럼 수: {len(data_dict)}")
+                print(f"  - 샘플 컬럼: {list(data_dict.keys())[:5]}")
                 
                 # 재시도 로직이 포함된 저장 함수 호출
                 if save_data_with_retry(date_str, data_dict):

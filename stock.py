@@ -97,42 +97,43 @@ yfinance_indicators = {
     # '모기지 리츠 ETF': 'REM',      # iShares Mortgage Real Estate ETF
 }
 
-# 나스닥 100 상위 종목 티커 리스트와 한글 이름 (DDL 기준 제외 주식 제외: 코스트코, 넷플릭스, 페이팔, 시스코, 컴캐스트, 펩시코, 암젠, 허니웰 인터내셔널, 스타벅스, 몬델리즈, 어도비)
-nasdaq_top_100 = [
-    ("AAPL", "애플"),                      # 1위, 9.50%
-    ("MSFT", "마이크로소프트"),            # 3위, 7.67%
-    ("AMZN", "아마존"),                    # 4위, 5.80%
-    ("GOOGL", "구글 A"),                   # 10위, 2.58%
-    ("GOOG", "구글 C"),                    # 11위, 2.48%
-    ("META", "메타"),                      # 6위, 3.79%
-    ("TSLA", "테슬라"),                    # 8위, 2.76%
-    ("NVDA", "엔비디아"),                  # 2위, 7.95%
-    ("INTC", "인텔"),                      # 36위, 0.65%
-    ("MU", "마이크론"),                    # 35위, 0.67%
-    ("AVGO", "브로드컴"),                  # 5위, 4.00%
-    ("TXN", "텍사스 인스트루먼트"),        # 19위, 1.14%
-    ("AMD", "AMD"),                        # 24위, 1.04%
-    ("AMAT", "어플라이드 머티리얼즈"),     # 29위, 0.83%
-    # DDL에 추가된 주식들
-    ("CELH", "셀레스티카"),                # Celestica
-    ("VRT", "버티브 홀딩스"),              # Vertiv Holdings
-    ("VST", "비스트라 에너지"),            # Vistra Energy
-    ("BE", "블룸에너지"),                  # Bloom Energy
-    ("OKLO", "오클로"),                    # Oklo Inc
-    ("PLTR", "팔란티어"),                  # Palantir
-    ("CRM", "세일즈포스"),                 # Salesforce
-    ("ORCL", "오라클"),                    # Oracle
-    ("APPV", "앱플로빈"),                  # AppLovin
-    ("PANW", "팔로알토 네트웍스"),         # Palo Alto Networks
-    ("CRWD", "크라우드 스트라이크"),       # CrowdStrike
-    ("SNOW", "스노우플레이크"),            # Snowflake
-    ("TSM", "TSMC"),                       # Taiwan Semiconductor Manufacturing Company
-    ("CRDO", "크리도 테크놀로지 그룹 홀딩"), # Credo Technology Group Holding
-    ("HOOD", "로빈후드"),                  # Robinhood
-    ("LLY", "일라이릴리"),                # Eli Lilly
-    ("WMT", "월마트"),                     # Walmart
-    ("JNJ", "존슨앤존슨")                  # Johnson & Johnson
-]
+# 주의: 이 리스트는 더 이상 사용되지 않습니다.
+# stock_ticker_mapping 테이블에서 is_active=true인 주식만 수집합니다.
+# 폴백용으로만 남겨둠 (DB 조회 실패 시 사용)
+# nasdaq_top_100 = [
+#     ("AAPL", "애플"),
+#     ("MSFT", "마이크로소프트"),
+#     ("AMZN", "아마존"),
+#     ("GOOGL", "구글 A"),
+#     ("GOOG", "구글 C"),
+#     ("META", "메타"),
+#     ("TSLA", "테슬라"),
+#     ("NVDA", "엔비디아"),
+#     ("INTC", "인텔"),
+#     ("MU", "마이크론"),
+#     ("AVGO", "브로드컴"),
+#     ("TXN", "텍사스 인스트루먼트"),
+#     ("AMD", "AMD"),
+#     ("AMAT", "어플라이드 머티리얼즈"),
+#     ("CELH", "셀레스티카"),
+#     ("VRT", "버티브 홀딩스"),
+#     ("VST", "비스트라 에너지"),
+#     ("BE", "블룸에너지"),
+#     ("OKLO", "오클로"),
+#     ("PLTR", "팔란티어"),
+#     ("CRM", "세일즈포스"),
+#     ("ORCL", "오라클"),
+#     ("APPV", "앱플로빈"),
+#     ("PANW", "팔로알토 네트웍스"),
+#     ("CRWD", "크라우드 스트라이크"),
+#     ("SNOW", "스노우플레이크"),
+#     ("TSM", "TSMC"),
+#     ("CRDO", "크리도 테크놀로지 그룹 홀딩"),
+#     ("HOOD", "로빈후드"),
+#     ("LLY", "일라이릴리"),
+#     ("WMT", "월마트"),
+#     ("JNJ", "존슨앤존슨")
+# ]
 
 # 결과 데이터프레임을 전역 변수로 정의 (초기에는 None)
 result_df = None
@@ -306,10 +307,29 @@ def collect_economic_data(start_date='2006-01-01', end_date=None):
         # 요청 간 간격을 두어 rate limit 방지
         time.sleep(1)
     
-    # 나스닥 100 상위 종목 데이터 수집 (yfinance.py의 방식으로 대체)
-    print("\n나스닥 100 상위 종목 데이터 수집 중...")
+    # stock_ticker_mapping 테이블에서 활성화된 주식 목록 가져오기
+    print("\nstock_ticker_mapping 테이블에서 활성화된 주식 목록 조회 중...")
+    try:
+        # app.db.supabase를 동적으로 import (모듈이 없을 수 있으므로)
+        try:
+            from app.db.supabase import supabase
+            mapping_response = supabase.table("stock_ticker_mapping").select("ticker, stock_name").eq("is_active", True).execute()
+            active_stocks = [(item["ticker"], item["stock_name"]) for item in mapping_response.data]
+            print(f"✅ 활성화된 주식 {len(active_stocks)}개를 stock_ticker_mapping에서 찾았습니다.")
+            if len(active_stocks) == 0:
+                raise ValueError("활성화된 주식이 없습니다. stock_ticker_mapping 테이블에서 is_active=true인 주식을 확인하세요.")
+        except ImportError:
+            raise ImportError("app.db.supabase 모듈을 import할 수 없습니다. 데이터베이스 연결을 확인하세요.")
+    except Exception as e:
+        print(f"❌ 오류: stock_ticker_mapping 테이블 조회 실패: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise Exception(f"주식 목록을 가져올 수 없습니다. stock_ticker_mapping 테이블과 데이터베이스 연결을 확인하세요: {str(e)}")
+    
+    # 활성화된 주식 데이터 수집
+    print(f"\n활성화된 주식 {len(active_stocks)}개 데이터 수집 중...")
     nasdaq_data_frames = []
-    for ticker, name in nasdaq_top_100:
+    for ticker, name in active_stocks:
         try:
             # download_yahoo_chart 함수를 사용하여 데이터 수집
             df = download_yahoo_chart(ticker, start_date, end_date)

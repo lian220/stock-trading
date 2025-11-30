@@ -115,6 +115,15 @@ class StockScheduler:
     def _run_auto_buy(self):
         """자동 매수 실행 함수 - 스케줄링된 시간에 실행됨"""
         try:
+            # 주말 체크 (뉴욕 시간 기준)
+            now_ny = datetime.now(pytz.timezone('America/New_York'))
+            ny_weekday = now_ny.weekday()  # 0=월요일, 6=일요일
+            
+            # 주말(토요일=5, 일요일=6)이면 실행하지 않음
+            if ny_weekday >= 5:
+                logger.info(f"현재 시간 (뉴욕: {now_ny.strftime('%Y-%m-%d %H:%M:%S')})은 주말입니다. 매수 작업을 건너뜁니다.")
+                return False
+            
             logger.info("자동 매수 작업 시작")
             asyncio.run(self._execute_auto_buy())
             logger.info("자동 매수 작업 완료")
@@ -126,6 +135,15 @@ class StockScheduler:
     def _run_auto_sell(self):
         """자동 매도 실행 함수 - 1분마다 실행됨"""
         try:
+            # 주말 체크 (뉴욕 시간 기준)
+            now_ny = datetime.now(pytz.timezone('America/New_York'))
+            ny_weekday = now_ny.weekday()  # 0=월요일, 6=일요일
+            
+            # 주말(토요일=5, 일요일=6)이면 실행하지 않음
+            if ny_weekday >= 5:
+                logger.info(f"현재 시간 (뉴욕: {now_ny.strftime('%Y-%m-%d %H:%M:%S')})은 주말입니다. 매도 작업을 건너뜁니다.")
+                return False
+            
             logger.info("자동 매도 작업 시작")
             asyncio.run(self._execute_auto_sell())
             logger.info("자동 매도 작업 완료")
@@ -258,6 +276,35 @@ class StockScheduler:
     
     async def _execute_auto_buy(self):
         """자동 매수 실행 로직"""
+        # 현재 시간이 미국 장 시간인지 확인 (서머타임 고려)
+        now_in_korea = datetime.now(pytz.timezone('Asia/Seoul'))
+        now_in_ny = datetime.now(pytz.timezone('America/New_York'))
+        ny_hour = now_in_ny.hour
+        ny_minute = now_in_ny.minute
+        ny_weekday = now_in_ny.weekday()  # 0=월요일, 6=일요일
+        
+        # 주말 체크
+        if ny_weekday >= 5:  # 토요일(5) 또는 일요일(6)
+            logger.info(f"현재 시간 (한국: {now_in_korea.strftime('%Y-%m-%d %H:%M:%S')}, 뉴욕: {now_in_ny.strftime('%Y-%m-%d %H:%M:%S')})은 주말입니다. 매수 작업을 건너뜁니다.")
+            return
+        
+        # 미국 주식 시장은 평일(월-금) 9:30 AM - 4:00 PM ET
+        is_weekday = 0 <= ny_weekday <= 4  # 월요일에서 금요일까지
+        is_market_open_time = (
+            (ny_hour == 9 and ny_minute >= 30) or
+            (10 <= ny_hour < 16) or
+            (ny_hour == 16 and ny_minute == 0)
+        )
+        
+        is_market_hours = is_weekday and is_market_open_time
+        
+        if not is_market_hours:
+            # 주말이거나 장 시간이 아닌 경우
+            logger.info(f"현재 시간 (한국: {now_in_korea.strftime('%Y-%m-%d %H:%M:%S')}, 뉴욕: {now_in_ny.strftime('%Y-%m-%d %H:%M:%S')})은 미국 장 시간이 아닙니다. 매수 작업을 건너뜁니다.")
+            return
+        
+        logger.info(f"미국 장 시간 확인: {now_in_korea.strftime('%Y-%m-%d %H:%M:%S')} (뉴욕: {now_in_ny.strftime('%Y-%m-%d %H:%M:%S')})")
+        
         # 보유 종목 조회
         try:
             balance_result = get_all_overseas_balances()
