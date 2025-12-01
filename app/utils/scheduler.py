@@ -141,12 +141,9 @@ class StockScheduler:
             
             # 주말(토요일=5, 일요일=6)이면 실행하지 않음
             if ny_weekday >= 5:
-                logger.info(f"현재 시간 (뉴욕: {now_ny.strftime('%Y-%m-%d %H:%M:%S')})은 주말입니다. 매도 작업을 건너뜁니다.")
                 return False
-            
-            logger.info("자동 매도 작업 시작")
+        
             asyncio.run(self._execute_auto_sell())
-            logger.info("자동 매도 작업 완료")
             return True
         except Exception as e:
             logger.error(f"자동 매도 작업 중 오류 발생: {str(e)}", exc_info=True)
