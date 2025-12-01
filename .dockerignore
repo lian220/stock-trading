@@ -1,0 +1,47 @@
+# Git 관련
+.git
+.gitignore
+
+# Python 관련
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+
+# IDE 관련
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# 로그 파일
+*.log
+logs/
+
+# 환경 변수 파일 (docker-compose에서 사용)
+# .env
+
+# 문서
+documents/
+*.html
+
+# 데이터 파일
+*.csv
+*.xlsx
+
+# 테스트
+tests/
+.pytest_cache
+.coverage
+
+# 기타
+.DS_Store
+*.md
+!README.md
+
