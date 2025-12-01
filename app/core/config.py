@@ -33,7 +33,10 @@ class Settings(BaseSettings):
     KIS_APPSECRET: str = Field(..., description="한국투자증권 API 앱시크릿")
     KIS_CANO: str = Field(default="50124930", description="계좌번호 앞 8자리")
     KIS_ACNT_PRDT_CD: str = Field(default="01", description="계좌번호 뒤 2자리")
-    KIS_USE_MOCK: bool = Field(default=True, description="모의투자 사용 여부")
+    KIS_USE_MOCK: bool = Field(
+        default=False,
+        description="모의투자 사용 여부 (.env에서 KIS_USE_MOCK=true/false로 설정 가능)"
+    )
 
     ALPHA_VANTAGE_API_KEY: str = os.getenv("ALPHA_VANTAGE_API_KEY", "")
     TR_ID: str = os.getenv("TR_ID")

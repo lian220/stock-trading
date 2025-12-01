@@ -1,12 +1,19 @@
 import warnings
 import os
 # urllib3의 OpenSSL 경고 무시 (서브프로세스에서도 적용되도록 환경 변수 설정)
-os.environ['PYTHONWARNINGS'] = 'ignore::urllib3.exceptions.NotOpenSSLWarning'
+# 최신 urllib3에서는 NotOpenSSLWarning이 없을 수 있으므로 일반적인 urllib3 경고 무시
+try:
+    os.environ['PYTHONWARNINGS'] = 'ignore::urllib3.exceptions.NotOpenSSLWarning'
+except:
+    # NotOpenSSLWarning이 없는 경우 일반 경고 무시
+    pass
 # 메인 프로세스에서도 경고 필터 설정
 try:
     import urllib3
-    warnings.filterwarnings('ignore', category=urllib3.exceptions.NotOpenSSLWarning)
-except ImportError:
+    # urllib3 버전에 따라 NotOpenSSLWarning이 없을 수 있음
+    if hasattr(urllib3.exceptions, 'NotOpenSSLWarning'):
+        warnings.filterwarnings('ignore', category=urllib3.exceptions.NotOpenSSLWarning)
+except (ImportError, AttributeError):
     pass
 
 from fastapi import FastAPI
