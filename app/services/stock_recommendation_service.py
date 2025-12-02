@@ -7,45 +7,33 @@ import numpy as np
 from app.core.config import settings
 from app.services.balance_service import get_overseas_balance
 
-# 한국어 주식명과 티커 심볼 매핑 (DDL 기준: 제외 주식 제외, 추가 주식 포함)
-STOCK_TO_TICKER = {
-    "애플": "AAPL",
-    "마이크로소프트": "MSFT",
-    "아마존": "AMZN",
-    "구글 A": "GOOGL",
-    "구글 C": "GOOG",
-    "메타": "META",
-    "테슬라": "TSLA",
-    "엔비디아": "NVDA",
-    "인텔": "INTC",
-    "마이크론": "MU",
-    "브로드컴": "AVGO",
-    "텍사스 인스트루먼트": "TXN",
-    "AMD": "AMD",
-    "어플라이드 머티리얼즈": "AMAT",
-    # DDL에 추가된 주식들
-    "셀레스티카": "CELH",
-    "버티브 홀딩스": "VRT",
-    "비스트라 에너지": "VST",
-    "블룸에너지": "BE",
-    "오클로": "OKLO",
-    "팔란티어": "PLTR",
-    "세일즈포스": "CRM",
-    "오라클": "ORCL",
-    "앱플로빈": "APPV",
-    "팔로알토 네트웍스": "PANW",
-    "크라우드 스트라이크": "CRWD",
-    "스노우플레이크": "SNOW",
-    "TSMC": "TSM",
-    "크리도 테크놀로지 그룹 홀딩": "CRDO",
-    "로빈후드": "HOOD",
-    "일라이릴리": "LLY",
-    "월마트": "WMT",
-    "존슨앤존슨": "JNJ",
-    # ETF
-    "S&P 500 ETF": "SPY",
-    "QQQ ETF": "QQQ"
-}
+def load_stock_ticker_mapping():
+    """
+    Supabase의 stock_ticker_mapping 테이블에서 활성화된 주식명과 티커 심볼 매핑을 가져옵니다.
+    
+    Returns:
+        dict: {stock_name: ticker} 형태의 딕셔너리
+    """
+    try:
+        response = supabase.table("stock_ticker_mapping").select("stock_name, ticker").eq("is_active", True).execute()
+        
+        if not response.data:
+            print("경고: stock_ticker_mapping 테이블에서 데이터를 찾을 수 없습니다. 빈 딕셔너리를 반환합니다.")
+            return {}
+        
+        # 딕셔너리로 변환
+        mapping = {item["stock_name"]: item["ticker"] for item in response.data}
+        print(f"stock_ticker_mapping에서 {len(mapping)}개의 매핑을 로드했습니다.")
+        return mapping
+    
+    except Exception as e:
+        print(f"stock_ticker_mapping 로드 중 오류 발생: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
+        return {}
+
+# 한국어 주식명과 티커 심볼 매핑 (stock_ticker_mapping 테이블에서 동적으로 로드)
+STOCK_TO_TICKER = load_stock_ticker_mapping()
 
 class StockRecommendationService:
     def __init__(self):
