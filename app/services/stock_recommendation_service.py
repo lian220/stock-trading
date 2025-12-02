@@ -12,35 +12,38 @@ def load_stock_ticker_mapping():
     Supabase의 stock_ticker_mapping 테이블에서 활성화된 주식명과 티커 심볼 매핑을 가져옵니다.
     
     Returns:
-        dict: {stock_name: ticker} 형태의 딕셔너리
+        tuple: (전체 매핑 딕셔너리, ETF 목록 set)
+            - dict: {stock_name: ticker} 형태의 딕셔너리
+            - set: ETF 주식명들의 집합
     """
     try:
-        response = supabase.table("stock_ticker_mapping").select("stock_name, ticker").eq("is_active", True).execute()
+        response = supabase.table("stock_ticker_mapping").select("stock_name, ticker, is_etf").eq("is_active", True).execute()
         
         if not response.data:
             print("경고: stock_ticker_mapping 테이블에서 데이터를 찾을 수 없습니다. 빈 딕셔너리를 반환합니다.")
-            return {}
+            return {}, set()
         
         # 딕셔너리로 변환
         mapping = {item["stock_name"]: item["ticker"] for item in response.data}
-        print(f"stock_ticker_mapping에서 {len(mapping)}개의 매핑을 로드했습니다.")
-        return mapping
+        # ETF 목록 추출
+        etf_stocks = {item["stock_name"] for item in response.data if item.get("is_etf", False)}
+        
+        print(f"stock_ticker_mapping에서 {len(mapping)}개의 매핑을 로드했습니다. (ETF: {len(etf_stocks)}개)")
+        return mapping, etf_stocks
     
     except Exception as e:
         print(f"stock_ticker_mapping 로드 중 오류 발생: {str(e)}")
         import traceback
         print(traceback.format_exc())
-        return {}
+        return {}, set()
 
 # 한국어 주식명과 티커 심볼 매핑 (stock_ticker_mapping 테이블에서 동적으로 로드)
-STOCK_TO_TICKER = load_stock_ticker_mapping()
+STOCK_TO_TICKER, ETF_STOCKS = load_stock_ticker_mapping()
 
 class StockRecommendationService:
     def __init__(self):
-        # ETF 제외한 컬럼명 리스트 (DDL 기준 제외 주식 제외: 코스트코, 넷플릭스, 페이팔, 시스코, 컴캐스트, 펩시코, 암젠, 허니웰 인터내셔널, 스타벅스, 몬델리즈, 어도비)
-        excluded_stocks = ['코스트코', '넷플릭스', '페이팔', '시스코', '컴캐스트', '펩시코', '암젠', '허니웰 인터내셔널', '스타벅스', '몬델리즈', '어도비']
-        all_stocks = list(STOCK_TO_TICKER.keys())[:-2]  # ETF 제외
-        self.stock_columns = [stock for stock in all_stocks if stock not in excluded_stocks]
+        # ETF 제외한 활성화된 주식 목록 (stock_ticker_mapping 테이블의 is_etf=False, is_active=True인 주식)
+        self.stock_columns = [stock for stock in STOCK_TO_TICKER.keys() if stock not in ETF_STOCKS]
         self.lookback_days = 180  # 6개월 데이터
 
     def calculate_sma(self, series, period):
