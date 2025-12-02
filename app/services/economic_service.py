@@ -147,18 +147,30 @@ async def update_economic_data_in_background():
         # 마지막 수집 날짜 조회
         start_date = get_last_updated_date()
         
-        # 현재 날짜 계산
-        today = datetime.now().strftime('%Y-%m-%d')
-        yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+        # 한국 시간대 기준으로 현재 날짜 계산 (컨테이너 시간대 문제 방지)
+        korea_tz = pytz.timezone('Asia/Seoul')
+        now_korea_dt = datetime.now(korea_tz)
+        today = now_korea_dt.strftime('%Y-%m-%d')
+        yesterday = (now_korea_dt - timedelta(days=1)).strftime('%Y-%m-%d')
+        
+        print(f"한국 시간 기준 오늘: {today}, 어제: {yesterday}, 수집 시작일: {start_date}")
+        
+        # 수집 시작일이 오늘보다 크면 수집할 데이터가 없음
+        if start_date > today:
+            print(f"수집 시작일({start_date})이 오늘({today})보다 큽니다. 수집할 데이터가 없습니다.")
+            return {"success": True, "total_records": 0, "updated_records": 0}
         
         # 데이터 수집은 오늘까지 하되, 저장은 어제까지만
+        # start_date가 yesterday보다 크면, 어제 데이터는 이미 수집되었으므로 오늘 데이터만 수집
         collection_end_date = today
-        storage_end_date = yesterday
-        
-        # 수집 시작일이 종료일보다 크면 종료
-        if start_date > storage_end_date:
-            print(f"수집 시작일({start_date})이 저장 종료일({storage_end_date})보다 큽니다. 수집할 데이터가 없습니다.")
-            return {"success": True, "total_records": 0, "updated_records": 0}
+        if start_date > yesterday:
+            # 어제 데이터는 이미 수집되었으므로 오늘 데이터만 수집 (저장은 내일)
+            storage_end_date = yesterday
+            print(f"수집 시작일({start_date})이 어제({yesterday})보다 크므로, 오늘({today}) 데이터만 수집합니다. (저장은 내일)")
+        else:
+            # 어제까지의 데이터를 수집하고 저장
+            storage_end_date = yesterday
+            print(f"수집 시작일({start_date})부터 어제({yesterday})까지의 데이터를 수집하고 저장합니다.")
         
         # 이전 데이터 가져오기 (마지막 수집 날짜의 데이터)
         previous_date = (datetime.strptime(start_date, '%Y-%m-%d') - timedelta(days=1)).strftime('%Y-%m-%d')
