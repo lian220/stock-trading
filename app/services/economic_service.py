@@ -334,20 +334,22 @@ async def update_economic_data_in_background():
         print(f"총 {total_records}개 날짜 중 {saved_count}개가 처리되었습니다.")
         
         # ===== 추가: 데이터 업데이트 완료 후 기술적 지표 생성 및 뉴스 감정 분석 실행 =====
-        # try:
-        #     print("기술적 지표 생성 시작...")
-        #     stock_service = StockRecommendationService()
-        #     tech_result = stock_service.generate_technical_recommendations()
-        #     print(f"기술적 지표 생성 완료: {tech_result['message']}")
+        try:
+            from app.services.stock_recommendation_service import StockRecommendationService
             
-        #     print("뉴스 감정 분석 시작...")
-        #     sentiment_result = stock_service.fetch_and_store_sentiment_for_recommendations()
-        #     print(f"뉴스 감정 분석 완료: {sentiment_result['message']}")
-        # except Exception as sub_e:
-        #     # 추가 작업 실패 시에도 원래 작업은 성공으로 간주
-        #     print(f"추가 분석 작업 중 오류 발생: {str(sub_e)}")
-        #     import traceback
-        #     print(traceback.format_exc())
+            print("\n기술적 지표 생성 시작...")
+            stock_service = StockRecommendationService()
+            tech_result = stock_service.generate_technical_recommendations()
+            print(f"기술적 지표 생성 완료: {tech_result['message']}")
+            
+            print("\n뉴스 감정 분석 시작...")
+            sentiment_result = stock_service.fetch_and_store_sentiment_for_recommendations()
+            print(f"뉴스 감정 분석 완료: {sentiment_result['message']}")
+        except Exception as sub_e:
+            # 추가 작업 실패 시에도 원래 작업은 성공으로 간주
+            print(f"추가 분석 작업 중 오류 발생: {str(sub_e)}")
+            import traceback
+            print(traceback.format_exc())
         
         return {
             "success": True,
