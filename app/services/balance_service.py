@@ -7,6 +7,10 @@ from app.core.config import settings
 from app.db.supabase import supabase
 from threading import Lock
 from app.services.auth_service import parse_expiration_date
+import logging
+
+# 로거 설정
+logger = logging.getLogger('balance_service')
 
 # 메모리에 토큰 정보 저장 (캐싱) - 모의투자/실제투자별로 분리
 _token_cache = {
@@ -758,17 +762,19 @@ def order_overseas_stock(order_data):
         if "ORD_DVSN" not in request_body:
             request_body["ORD_DVSN"] = "00"  # 지정가
         
-        # 디버깅 정보 출력
-        print(f"해외주식 주문 API 요청: {url}")
-        print(f"헤더: {headers}")
-        print(f"요청 본문: {request_body}")
+        # 디버깅 정보 로깅
+        order_type = "매수" if is_buy else "매도"
+        logger.info(f"해외주식 {order_type} 주문 API 요청: {url}")
+        logger.info(f"TR_ID: {tr_id}, 거래소: {ovrs_excg_cd}, 종목: {request_body.get('PDNO')}, 수량: {request_body.get('ORD_QTY')}, 가격: {request_body.get('OVRS_ORD_UNPR')}")
+        logger.debug(f"요청 헤더: {headers}")
+        logger.debug(f"요청 본문: {request_body}")
         
         # API 호출
         response = requests.post(url, headers=headers, json=request_body)
         
         # 응답 확인
-        print(f"API 응답 상태 코드: {response.status_code}")
-        print(f"API 응답 본문: {response.text[:200] if response.text else '비어있음'}")
+        logger.info(f"API 응답 상태 코드: {response.status_code}")
+        logger.debug(f"API 응답 본문: {response.text[:200] if response.text else '비어있음'}")
         
         # 응답 처리
         if response.status_code != 200:
@@ -781,10 +787,20 @@ def order_overseas_stock(order_data):
         
         try:
             result = response.json()
+            
+            # 주문 결과 로깅
+            if result.get("rt_cd") == "0":
+                logger.info(f"해외주식 {order_type} 주문 성공: {result.get('msg1', '주문이 접수되었습니다.')}")
+                logger.info(f"주문 상세: 종목={request_body.get('PDNO')}, 수량={request_body.get('ORD_QTY')}, 가격={request_body.get('OVRS_ORD_UNPR')}")
+            else:
+                logger.error(f"해외주식 {order_type} 주문 실패: {result.get('msg1', '알 수 없는 오류')}")
+                logger.error(f"오류 코드: {result.get('msg_cd')}, 종목={request_body.get('PDNO')}")
+            
             # 주문 내역을 DB에 저장 (옵션)
             # save_order_history(request_body, result)
             return result
         except ValueError:
+            logger.error("주문 API 응답 파싱 오류")
             return {
                 "rt_cd": "1",
                 "msg_cd": "PARSEERR",
@@ -792,9 +808,7 @@ def order_overseas_stock(order_data):
                 "output": {}
             }
     except Exception as e:
-        print(f"해외주식 주문 중 오류 발생: {str(e)}")
-        import traceback
-        print(traceback.format_exc())
+        logger.error(f"해외주식 주문 중 오류 발생: {str(e)}", exc_info=True)
         return {
             "rt_cd": "1", 
             "msg_cd": "ERROR",
