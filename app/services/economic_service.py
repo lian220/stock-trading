@@ -79,7 +79,6 @@ def get_active_stock_columns():
         # 활성화된 주식 + 경제 지표/ETF 합치기
         all_stock_columns = economic_and_etf_columns + active_stock_names
         
-        print(f"활성화된 주식 {len(active_stock_names)}개를 stock_ticker_mapping에서 가져왔습니다.")
         return all_stock_columns
     except Exception as e:
         print(f"⚠️ 경고: stock_ticker_mapping 테이블 조회 실패: {str(e)}. 기본 목록을 사용합니다.")
@@ -214,7 +213,6 @@ async def update_economic_data_in_background():
                 print(f"⚠️ 날짜가 없어서 저장할 수 없습니다")
                 return False
             
-            print(f"📝 {date_str}: 저장 시작 (컬럼 수: {len(data_dict)})")
             
             for attempt in range(max_retries):
                 try:
@@ -233,7 +231,6 @@ async def update_economic_data_in_background():
                                 update_dict[col_name] = value
                         
                         if update_dict:  # 업데이트할 값이 있는 경우에만
-                            print(f"  → {date_str}: 기존 레코드 업데이트 ({len(update_dict)}개 컬럼)")
                             supabase.table("economic_and_stock_data").update(update_dict).eq("날짜", date_str).execute()
                             print(f"  ✅ {date_str}: 업데이트 성공")
                         else:
@@ -242,7 +239,6 @@ async def update_economic_data_in_background():
                         # 새 레코드 추가
                         insert_dict = {"날짜": date_str}
                         insert_dict.update(data_dict)
-                        print(f"  → {date_str}: 새 레코드 삽입 ({len(insert_dict)}개 컬럼)")
                         supabase.table("economic_and_stock_data").insert(insert_dict).execute()
                         print(f"  ✅ {date_str}: 삽입 성공")
                     
@@ -304,8 +300,6 @@ async def update_economic_data_in_background():
                     continue
                 
                 print(f"\n📊 {date_str} 데이터 준비 완료:")
-                print(f"  - 총 컬럼 수: {len(data_dict)}")
-                print(f"  - 샘플 컬럼: {list(data_dict.keys())[:5]}")
                 
                 # 재시도 로직이 포함된 저장 함수 호출
                 if save_data_with_retry(date_str, data_dict):

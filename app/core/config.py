@@ -31,8 +31,8 @@ class Settings(BaseSettings):
     )
     KIS_APPKEY: str = Field(..., description="한국투자증권 API 앱키")
     KIS_APPSECRET: str = Field(..., description="한국투자증권 API 앱시크릿")
-    KIS_CANO: str = Field(default="50124930", description="계좌번호 앞 8자리")
-    KIS_ACNT_PRDT_CD: str = Field(default="01", description="계좌번호 뒤 2자리")
+    KIS_CANO: str = os.getenv("KIS_CANO", "")  # 환경변수에서 읽어오되, 없으면 기본값 사용
+    KIS_ACNT_PRDT_CD: str = os.getenv("KIS_ACNT_PRDT_CD", "01")  # 환경변수에서 읽어오되, 없으면 기본값 사용
     KIS_USE_MOCK: bool = Field(
         default=False,
         description="모의투자 사용 여부 (.env에서 KIS_USE_MOCK=true/false로 설정 가능)"
@@ -40,6 +40,16 @@ class Settings(BaseSettings):
 
     ALPHA_VANTAGE_API_KEY: str = os.getenv("ALPHA_VANTAGE_API_KEY", "")
     TR_ID: str = os.getenv("TR_ID")
+    
+    # Slack 알림 설정
+    SLACK_WEBHOOK_URL: Optional[str] = Field(
+        default=None,
+        description="Slack Webhook URL (매수/매도 알림용)"
+    )
+    SLACK_ENABLED: bool = Field(
+        default=False,
+        description="Slack 알림 활성화 여부"
+    )
     
     @property
     def kis_base_url(self) -> str:

@@ -5,10 +5,11 @@ import pytz
 from datetime import datetime, timedelta
 import threading
 from app.services.stock_recommendation_service import StockRecommendationService
-from app.services.balance_service import get_current_price, order_overseas_stock, get_all_overseas_balances
+from app.services.balance_service import get_current_price, order_overseas_stock, get_all_overseas_balances, get_overseas_balance, get_overseas_order_possible_amount
 from app.core.config import settings
 import logging
 from app.services.economic_service import update_economic_data_in_background
+from app.utils.slack_notifier import slack_notifier
 
 # 로깅 설정
 logging.basicConfig(
@@ -125,7 +126,21 @@ class StockScheduler:
                 return False
             
             logger.info("자동 매수 작업 시작")
-            asyncio.run(self._execute_auto_buy())
+            
+            # 새 스레드에서 비동기 함수 실행
+            import threading
+            def run_in_thread():
+                new_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(new_loop)
+                try:
+                    new_loop.run_until_complete(self._execute_auto_buy())
+                finally:
+                    new_loop.close()
+            
+            thread = threading.Thread(target=run_in_thread)
+            thread.start()
+            thread.join()
+            
             logger.info("자동 매수 작업 완료")
             return True
         except Exception as e:
@@ -143,7 +158,20 @@ class StockScheduler:
             if ny_weekday >= 5:
                 return False
         
-            asyncio.run(self._execute_auto_sell())
+            # 새 스레드에서 비동기 함수 실행
+            import threading
+            def run_in_thread():
+                new_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(new_loop)
+                try:
+                    new_loop.run_until_complete(self._execute_auto_sell())
+                finally:
+                    new_loop.close()
+            
+            thread = threading.Thread(target=run_in_thread)
+            thread.start()
+            thread.join()
+            
             return True
         except Exception as e:
             logger.error(f"자동 매도 작업 중 오류 발생: {str(e)}", exc_info=True)
@@ -172,7 +200,6 @@ class StockScheduler:
         
         if not is_market_hours:
             # 주말이거나 장 시간이 아닌 경우
-            logger.info(f"현재 시간 {now_in_korea.strftime('%Y-%m-%d %H:%M:%S')} (뉴욕: {now_in_ny.strftime('%Y-%m-%d %H:%M:%S')})은 미국 장 시간이 아닙니다. 매도 작업을 건너뜁니다.")
             return
         
         logger.info(f"미국 장 시간 확인: {now_in_korea.strftime('%Y-%m-%d %H:%M:%S')} (뉴욕: {now_in_ny.strftime('%Y-%m-%d %H:%M:%S')})")
@@ -181,7 +208,6 @@ class StockScheduler:
         sell_candidates_result = self.recommendation_service.get_stocks_to_sell()
         
         if not sell_candidates_result or not sell_candidates_result.get("sell_candidates"):
-            logger.info("매도 대상 종목이 없습니다.")
             return
         
         sell_candidates = sell_candidates_result.get("sell_candidates", [])
@@ -259,8 +285,30 @@ class StockScheduler:
                 
                 if order_result.get("rt_cd") == "0":
                     logger.info(f"{stock_name}({ticker}) 매도 주문 성공: {order_result.get('msg1', '주문이 접수되었습니다.')}")
+                    # Slack 알림 전송
+                    slack_notifier.send_sell_notification(
+                        stock_name=stock_name,
+                        ticker=ticker,
+                        quantity=quantity,
+                        price=current_price,
+                        exchange_code=exchange_code,
+                        sell_reasons=sell_reasons,
+                        success=True
+                    )
                 else:
-                    logger.error(f"{stock_name}({ticker}) 매도 주문 실패: {order_result.get('msg1', '알 수 없는 오류')}")
+                    error_msg = order_result.get('msg1', '알 수 없는 오류')
+                    logger.error(f"{stock_name}({ticker}) 매도 주문 실패: {error_msg}")
+                    # Slack 실패 알림 전송
+                    slack_notifier.send_sell_notification(
+                        stock_name=stock_name,
+                        ticker=ticker,
+                        quantity=quantity,
+                        price=current_price,
+                        exchange_code=exchange_code,
+                        sell_reasons=sell_reasons,
+                        success=False,
+                        error_message=error_msg
+                    )
                 
                 # 요청 간 지연 (API 요청 제한 방지)
                 await asyncio.sleep(2)  # 1초에서 2초로 증가
@@ -302,8 +350,9 @@ class StockScheduler:
         
         logger.info(f"미국 장 시간 확인: {now_in_korea.strftime('%Y-%m-%d %H:%M:%S')} (뉴욕: {now_in_ny.strftime('%Y-%m-%d %H:%M:%S')})")
         
-        # 보유 종목 조회
+        # 보유 종목 및 잔고 조회
         try:
+            # 1. 모든 거래소의 보유 종목 조회
             balance_result = get_all_overseas_balances()
             if balance_result.get("rt_cd") != "0":
                 logger.error(f"보유 종목 조회 실패: {balance_result.get('msg1', '알 수 없는 오류')}")
@@ -319,8 +368,29 @@ class StockScheduler:
                     holding_tickers.add(ticker)
             
             logger.info(f"현재 보유 중인 종목 수: {len(holding_tickers)}")
+            
+            # 2. 주문가능금액 조회 - TTTS3007R API 사용
+            order_psbl_result = get_overseas_order_possible_amount("NASD", "AAPL")
+            available_cash = 0.0
+            
+            if order_psbl_result.get("rt_cd") == "0":
+                output = order_psbl_result.get("output", {})
+                
+                if output:
+                    # ord_psbl_frcr_amt: 주문가능외화금액
+                    # ovrs_ord_psbl_amt: 해외주문가능금액
+                    cash_str = output.get("ord_psbl_frcr_amt") or output.get("ovrs_ord_psbl_amt") or "0"
+                    available_cash = float(cash_str)
+                    logger.info(f"💰 구매 가능 금액: ${available_cash:,.2f}")
+                else:
+                    logger.warning("⚠️ 주문가능금액 조회 실패: output이 비어있습니다.")
+                    return
+            else:
+                logger.error(f"주문가능금액 조회 실패: {order_psbl_result.get('msg1', '알 수 없는 오류')}")
+                return
+                
         except Exception as e:
-            logger.error(f"보유 종목 조회 중 오류 발생: {str(e)}", exc_info=True)
+            logger.error(f"보유 종목 및 잔고 조회 중 오류 발생: {str(e)}", exc_info=True)
             return
             
         # StockRecommendationService에서 이미 필터링된 매수 대상 종목 가져오기
@@ -336,9 +406,14 @@ class StockScheduler:
             logger.info("매수 조건을 만족하는 종목이 없습니다.")
             return
         
-        logger.info(f"매수 대상 종목 {len(buy_candidates)}개를 찾았습니다.")
+        logger.info(f"매수 대상 종목 {len(buy_candidates)}개를 찾았습니다. (종합 점수 높은 순)")
+        
+        # 성공한 매수 건수 추적
+        successful_purchases = 0
+        skipped_no_cash = 0
         
         # 각 종목에 대해 API 호출하여 현재 체결가 조회 및 매수 주문
+        # buy_candidates는 이미 composite_score 순으로 정렬되어 있음
         for candidate in buy_candidates:
             try:
                 ticker = candidate["ticker"]
@@ -371,7 +446,6 @@ class StockScheduler:
                     "SYMB": pure_ticker
                 }
                 
-                logger.info(f"{stock_name}({ticker}) 현재가 조회 요청. 거래소: {api_exchange_code}, 심볼: {pure_ticker}")
                 price_result = get_current_price(price_params)
                 
                 if price_result.get("rt_cd") != "0":
@@ -385,9 +459,16 @@ class StockScheduler:
                     logger.error(f"{stock_name}({ticker}) 현재가가 유효하지 않습니다: {current_price}")
                     continue
                 
-                # 매수 수량 계산 (종목당 계좌 잔고의 5%를 사용)
-                # 실제 환경에서는 계좌 잔고를 조회하는 로직을 추가해야 함
-                quantity = 1  # 기본값 설정
+                # 매수 가능 여부 확인
+                estimated_cost = current_price  # 1주 기준
+                
+                if available_cash < estimated_cost:
+                    logger.warning(f"{stock_name}({ticker}) - 잔고 부족으로 매수 건너뜀. 필요금액: ${estimated_cost:.2f}, 잔고: ${available_cash:.2f}")
+                    skipped_no_cash += 1
+                    continue
+                
+                # 매수 수량 계산: 기본 1주
+                quantity = 1
                 
                 # 매수 주문 실행
                 order_data = {
@@ -406,8 +487,34 @@ class StockScheduler:
                 
                 if order_result.get("rt_cd") == "0":
                     logger.info(f"{stock_name}({ticker}) 매수 주문 성공: {order_result.get('msg1', '주문이 접수되었습니다.')}")
+                    
+                    # 매수 성공 시 잔고 차감
+                    available_cash -= (current_price * quantity)
+                    successful_purchases += 1
+                    logger.info(f"매수 후 잔고: ${available_cash:,.2f}")
+                    
+                    # Slack 알림 전송
+                    slack_notifier.send_buy_notification(
+                        stock_name=stock_name,
+                        ticker=ticker,
+                        quantity=quantity,
+                        price=current_price,
+                        exchange_code=exchange_code,
+                        success=True
+                    )
                 else:
-                    logger.error(f"{stock_name}({ticker}) 매수 주문 실패: {order_result.get('msg1', '알 수 없는 오류')}")
+                    error_msg = order_result.get('msg1', '알 수 없는 오류')
+                    logger.error(f"{stock_name}({ticker}) 매수 주문 실패: {error_msg}")
+                    # Slack 실패 알림 전송
+                    slack_notifier.send_buy_notification(
+                        stock_name=stock_name,
+                        ticker=ticker,
+                        quantity=quantity,
+                        price=current_price,
+                        exchange_code=exchange_code,
+                        success=False,
+                        error_message=error_msg
+                    )
                 
                 # 요청 간 지연 (API 요청 제한 방지)
                 await asyncio.sleep(1)
@@ -415,7 +522,14 @@ class StockScheduler:
             except Exception as e:
                 logger.error(f"{candidate['stock_name']}({candidate['ticker']}) 매수 처리 중 오류: {str(e)}", exc_info=True)
         
-        logger.info("자동 매수 처리가 완료되었습니다.")
+        # 매수 처리 완료 요약
+        logger.info("=" * 60)
+        logger.info(f"자동 매수 처리가 완료되었습니다.")
+        logger.info(f"총 매수 대상: {len(buy_candidates)}개")
+        logger.info(f"매수 성공: {successful_purchases}개")
+        logger.info(f"잔고 부족으로 건너뜀: {skipped_no_cash}개")
+        logger.info(f"남은 잔고: ${available_cash:,.2f}")
+        logger.info("=" * 60)
 
 # 싱글톤 인스턴스 생성
 stock_scheduler = StockScheduler()
@@ -445,7 +559,23 @@ def get_scheduler_status():
 
 def run_auto_buy_now():
     """즉시 매수 실행 함수 (테스트용)"""
-    stock_scheduler._run_auto_buy()
+    import asyncio
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # 이미 실행 중인 루프가 있으면 create_task 사용
+            asyncio.create_task(stock_scheduler._execute_auto_buy())
+        else:
+            # 실행 중인 루프가 없으면 asyncio.run 사용
+            asyncio.run(stock_scheduler._execute_auto_buy())
+    except RuntimeError:
+        # RuntimeError 발생 시 새 스레드에서 실행
+        import threading
+        def run_in_thread():
+            asyncio.run(stock_scheduler._execute_auto_buy())
+        thread = threading.Thread(target=run_in_thread)
+        thread.start()
+        thread.join()
     
 def run_auto_sell_now():
     """즉시 매도 실행 함수 (테스트용)"""

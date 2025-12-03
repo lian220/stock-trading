@@ -77,20 +77,17 @@ def get_access_token():
     # 메모리에 캐시된 토큰이 있고 유효하면 그것을 사용
     cache = _token_cache[cache_key]
     if cache["access_token"] and cache["expires_at"] and now < cache["expires_at"]:
-        print(f"메모리에 캐시된 {token_type} 토큰 사용")
         return cache["access_token"]
     
     # 1분 제한 체크 및 락 획득
     current_time = time.time()
     if current_time - _last_refresh_time[cache_key] < 60:
         time_to_wait = 60 - (current_time - _last_refresh_time[cache_key])
-        print(f"{token_type} 토큰 1분 제한으로 {time_to_wait:.1f}초 대기")
         time.sleep(time_to_wait)
     
     with _refresh_lock:  # 동시성 방지
         # 락 획득 후 다시 캐시 확인
         if cache["access_token"] and cache["expires_at"] and now < cache["expires_at"]:
-            print(f"락 내에서 캐시된 {token_type} 토큰 사용")
             return cache["access_token"]
         
         try:
@@ -105,13 +102,11 @@ def get_access_token():
                 expiration_time = parse_expiration_date(token_data["expiration_time"])
                 
                 if now < expiration_time:  # 토큰이 아직 유효한 경우
-                    print(f"기존 {token_type} 토큰 사용 - 만료까지 남은 시간: {(expiration_time - now)}")
                     cache["access_token"] = token_data["access_token"]
                     cache["expires_at"] = expiration_time
                     _last_refresh_time[cache_key] = current_time
                     return token_data["access_token"]
                 
-                print(f"{token_type} 토큰 만료됨, 갱신 필요")
                 # 토큰이 만료된 경우 갱신
                 token = refresh_token_with_retry(token_data["id"])
                 cache["access_token"] = token
@@ -119,7 +114,6 @@ def get_access_token():
                 _last_refresh_time[cache_key] = current_time
                 return token
             else:
-                print(f"{token_type} 토큰 레코드 없음, 새로 생성")
                 token = refresh_token_with_retry()
                 cache["access_token"] = token
                 cache["expires_at"] = now + timedelta(days=1)
@@ -127,9 +121,7 @@ def get_access_token():
                 return token
                 
         except Exception as e:
-            print(f"{token_type} 토큰 조회 오류: {str(e)}")
             if cache["access_token"]:
-                print(f"DB 조회 오류 - 메모리에 캐시된 {token_type} 토큰 사용")
                 return cache["access_token"]
             raise Exception(f"{token_type} 토큰 발급 실패: {str(e)}")
 
@@ -312,6 +304,50 @@ def get_overseas_balance(ovrs_excg_cd="NASD"):
                 time.sleep(1)  # 재시도 전 1초 대기
             else:
                 raise
+
+def get_overseas_order_possible_amount(exchange_code="NASD", ticker="AAPL"):
+    """해외주식 매수주문가능금액 조회 (TTTS3007R)
+    
+    Args:
+        exchange_code (str): 거래소 코드 (NASD, NYSE, AMEX 등)
+        ticker (str): 종목 심볼
+        
+    Returns:
+        dict: API 응답 (주문가능금액 정보 포함)
+    """
+    access_token = get_access_token()
+    
+    url = f"{settings.kis_base_url}/uapi/overseas-stock/v1/trading/inquire-psamount"
+    
+    # 모의투자/실제투자에 따라 TR_ID 설정
+    is_virtual = settings.KIS_USE_MOCK
+    tr_id = "VTTS3007R" if is_virtual else "TTTS3007R"
+    
+    headers = {
+        "Content-Type": "application/json; charset=utf-8",
+        "authorization": f"Bearer {access_token}",
+        "appkey": settings.KIS_APPKEY,
+        "appsecret": settings.KIS_APPSECRET,
+        "tr_id": tr_id
+    }
+    
+    params = {
+        "CANO": settings.KIS_CANO,
+        "ACNT_PRDT_CD": settings.KIS_ACNT_PRDT_CD,
+        "OVRS_EXCG_CD": exchange_code,
+        "OVRS_ORD_UNPR": "0",  # 해외주문단가 (0: 시장가)
+        "ITEM_CD": ticker  # 종목코드
+    }
+    
+    try:
+        _wait_for_api_rate_limit()
+        response = requests.get(url, headers=headers, params=params)
+        result = response.json()
+        return result
+        
+    except Exception as e:
+        logger.error(f"주문가능금액 조회 중 오류: {str(e)}")
+        return {"rt_cd": "1", "msg1": str(e)}
 
 def get_all_overseas_balances():
     """모든 거래소의 해외주식 잔고 조회"""
@@ -764,8 +800,6 @@ def order_overseas_stock(order_data):
         
         # 디버깅 정보 로깅
         order_type = "매수" if is_buy else "매도"
-        logger.info(f"해외주식 {order_type} 주문 API 요청: {url}")
-        logger.info(f"TR_ID: {tr_id}, 거래소: {ovrs_excg_cd}, 종목: {request_body.get('PDNO')}, 수량: {request_body.get('ORD_QTY')}, 가격: {request_body.get('OVRS_ORD_UNPR')}")
         logger.debug(f"요청 헤더: {headers}")
         logger.debug(f"요청 본문: {request_body}")
         
@@ -773,8 +807,6 @@ def order_overseas_stock(order_data):
         response = requests.post(url, headers=headers, json=request_body)
         
         # 응답 확인
-        logger.info(f"API 응답 상태 코드: {response.status_code}")
-        logger.debug(f"API 응답 본문: {response.text[:200] if response.text else '비어있음'}")
         
         # 응답 처리
         if response.status_code != 200:
@@ -791,7 +823,6 @@ def order_overseas_stock(order_data):
             # 주문 결과 로깅
             if result.get("rt_cd") == "0":
                 logger.info(f"해외주식 {order_type} 주문 성공: {result.get('msg1', '주문이 접수되었습니다.')}")
-                logger.info(f"주문 상세: 종목={request_body.get('PDNO')}, 수량={request_body.get('ORD_QTY')}, 가격={request_body.get('OVRS_ORD_UNPR')}")
             else:
                 logger.error(f"해외주식 {order_type} 주문 실패: {result.get('msg1', '알 수 없는 오류')}")
                 logger.error(f"오류 코드: {result.get('msg_cd')}, 종목={request_body.get('PDNO')}")
