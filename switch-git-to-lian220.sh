@@ -11,6 +11,17 @@ echo ""
 
 if [ "$CURRENT_NAME" = "lian220" ]; then
     echo "⚠️  이미 'lian220' 계정으로 설정되어 있습니다."
+    
+    # 원격 URL 확인 및 수정
+    CURRENT_URL=$(git remote get-url origin)
+    if [[ "$CURRENT_URL" == *"lian220/stock-trading"* ]]; then
+        if [[ "$CURRENT_URL" == ssh://* ]] || [[ "$CURRENT_URL" == git@* ]]; then
+            echo "원격 URL을 HTTPS로 변경합니다..."
+            git remote set-url origin https://github.com/lian220/stock-trading.git
+            git remote set-url --push origin https://github.com/lian220/stock-trading.git
+            echo "✅ 원격 URL이 HTTPS로 변경되었습니다."
+        fi
+    fi
     exit 0
 fi
 
@@ -26,7 +37,16 @@ fi
 
 echo "✅ Git 사용자 이름이 'lian220'으로 변경되었습니다."
 echo ""
+
+# 원격 URL을 HTTPS로 변경 (lian220 계정은 HTTPS 사용)
+echo "원격 URL을 HTTPS로 변경합니다..."
+git remote set-url origin https://github.com/lian220/stock-trading.git
+git remote set-url --push origin https://github.com/lian220/stock-trading.git
+
 echo "변경된 Git 설정:"
 echo "  User name: $(git config user.name)"
 echo "  User email: $(git config user.email)"
+echo ""
+echo "변경된 원격 저장소:"
+git remote -v
 
