@@ -56,18 +56,23 @@ case $choice in
             exit 1
         fi
         
-        if ! command -v docker-compose &> /dev/null; then
-            echo -e "${RED}❌ docker-compose가 설치되어 있지 않습니다.${NC}"
+        # docker-compose 명령어 설정 (v2는 docker compose, v1은 docker-compose)
+        if docker compose version &> /dev/null; then
+            DOCKER_COMPOSE="docker compose"
+        elif command -v docker-compose &> /dev/null; then
+            DOCKER_COMPOSE="docker-compose"
+        else
+            echo -e "${RED}❌ docker compose가 설치되어 있지 않습니다.${NC}"
             exit 1
         fi
         
         echo ""
         echo -e "${BLUE}📦 Docker 이미지 빌드 중...${NC}"
-        docker-compose build
+        $DOCKER_COMPOSE build
         
         echo ""
         echo -e "${BLUE}🚀 컨테이너 실행 중...${NC}"
-        docker-compose up -d
+        $DOCKER_COMPOSE up -d
         
         echo ""
         echo -e "${GREEN}✅ 애플리케이션이 실행되었습니다!${NC}"
@@ -76,9 +81,9 @@ case $choice in
         echo -e "${GREEN}📍 API 문서: http://localhost:8000/docs${NC}"
         echo ""
         echo -e "${YELLOW}💡 유용한 명령어:${NC}"
-        echo "  - 로그 확인: docker-compose logs -f"
-        echo "  - 컨테이너 중지: docker-compose down"
-        echo "  - 컨테이너 재시작: docker-compose restart"
+        echo "  - 로그 확인: $DOCKER_COMPOSE logs -f"
+        echo "  - 컨테이너 중지: $DOCKER_COMPOSE down"
+        echo "  - 컨테이너 재시작: $DOCKER_COMPOSE restart"
         echo ""
         ;;
         
@@ -138,6 +143,16 @@ case $choice in
         echo ""
         echo -e "${BLUE}🔧 개발 모드로 실행합니다...${NC}"
         
+        # Docker compose 명령어 설정
+        if docker compose version &> /dev/null; then
+            DOCKER_COMPOSE="docker compose"
+        elif command -v docker-compose &> /dev/null; then
+            DOCKER_COMPOSE="docker-compose"
+        else
+            echo -e "${RED}❌ docker compose가 설치되어 있지 않습니다.${NC}"
+            exit 1
+        fi
+        
         # .env 파일 확인
         if [ ! -f .env ]; then
             cp .env.example .env
@@ -158,13 +173,24 @@ services:
 EOF
         
         echo -e "${BLUE}📦 개발 모드로 Docker 컨테이너 실행 중...${NC}"
-        docker-compose up --build
+        $DOCKER_COMPOSE up --build
         ;;
         
     4)
         echo ""
         echo -e "${BLUE}🛑 애플리케이션을 중지합니다...${NC}"
-        docker-compose down
+        
+        # Docker compose 명령어 설정
+        if docker compose version &> /dev/null; then
+            DOCKER_COMPOSE="docker compose"
+        elif command -v docker-compose &> /dev/null; then
+            DOCKER_COMPOSE="docker-compose"
+        else
+            echo -e "${RED}❌ docker compose가 설치되어 있지 않습니다.${NC}"
+            exit 1
+        fi
+        
+        $DOCKER_COMPOSE down
         echo -e "${GREEN}✅ 중지되었습니다.${NC}"
         
         # override 파일 삭제
@@ -178,7 +204,18 @@ EOF
         echo ""
         echo -e "${BLUE}📋 로그를 확인합니다...${NC}"
         echo ""
-        docker-compose logs -f
+        
+        # Docker compose 명령어 설정
+        if docker compose version &> /dev/null; then
+            DOCKER_COMPOSE="docker compose"
+        elif command -v docker-compose &> /dev/null; then
+            DOCKER_COMPOSE="docker-compose"
+        else
+            echo -e "${RED}❌ docker compose가 설치되어 있지 않습니다.${NC}"
+            exit 1
+        fi
+        
+        $DOCKER_COMPOSE logs -f
         ;;
         
     *)

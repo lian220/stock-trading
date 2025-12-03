@@ -367,3 +367,72 @@ ALTER TABLE predicted_stocks ADD COLUMN IF NOT EXISTS "SOXX ETF_Actual" NUMERIC;
 -- stock_daily_volume 테이블에 SOXX ETF 컬럼 추가
 ALTER TABLE stock_daily_volume ADD COLUMN IF NOT EXISTS "SOXX ETF" BIGINT;
 
+-- ============================================
+-- 자동매매 관련 테이블
+-- ============================================
+
+-- auto_trading_config 테이블 생성 (자동매매 설정)
+CREATE TABLE IF NOT EXISTS auto_trading_config (
+    id SERIAL PRIMARY KEY,
+    enabled BOOLEAN DEFAULT FALSE,                    -- 자동매매 활성화 여부
+    min_composite_score FLOAT DEFAULT 70.0,           -- 최소 종합 점수
+    max_stocks_to_buy INTEGER DEFAULT 5,              -- 최대 매수 종목 수
+    max_amount_per_stock FLOAT DEFAULT 10000.0,       -- 종목당 최대 매수 금액 (USD)
+    stop_loss_percent FLOAT DEFAULT -7.0,             -- 손절 기준 (%)
+    take_profit_percent FLOAT DEFAULT 5.0,            -- 익절 기준 (%)
+    use_sentiment BOOLEAN DEFAULT TRUE,               -- 감정 분석 사용 여부
+    min_sentiment_score FLOAT DEFAULT 0.15,           -- 최소 감정 점수
+    order_type VARCHAR(10) DEFAULT '00',              -- 주문 구분 (00: 지정가)
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- 인덱스 생성
+CREATE INDEX IF NOT EXISTS idx_auto_trading_config_enabled ON auto_trading_config (enabled);
+
+-- 주석 추가
+COMMENT ON TABLE auto_trading_config IS '자동매매 설정 테이블';
+COMMENT ON COLUMN auto_trading_config.enabled IS '자동매매 활성화 여부';
+COMMENT ON COLUMN auto_trading_config.min_composite_score IS '최소 종합 점수 (0-100)';
+COMMENT ON COLUMN auto_trading_config.max_stocks_to_buy IS '최대 매수 종목 수';
+COMMENT ON COLUMN auto_trading_config.max_amount_per_stock IS '종목당 최대 매수 금액 (USD)';
+COMMENT ON COLUMN auto_trading_config.stop_loss_percent IS '손절 기준 (%)';
+COMMENT ON COLUMN auto_trading_config.take_profit_percent IS '익절 기준 (%)';
+COMMENT ON COLUMN auto_trading_config.use_sentiment IS '감정 분석 사용 여부';
+COMMENT ON COLUMN auto_trading_config.min_sentiment_score IS '최소 감정 점수 (-1 ~ 1)';
+
+-- auto_trading_logs 테이블 생성 (자동매매 주문 기록)
+CREATE TABLE IF NOT EXISTS auto_trading_logs (
+    id SERIAL PRIMARY KEY,
+    order_type VARCHAR(10) NOT NULL,                  -- 주문 유형 (buy/sell)
+    ticker VARCHAR(10) NOT NULL,                      -- 티커 심볼
+    stock_name VARCHAR(100),                          -- 주식명
+    price FLOAT,                                      -- 주문 가격
+    quantity INTEGER,                                 -- 주문 수량
+    status VARCHAR(20),                               -- 주문 상태 (success/failed/dry_run)
+    composite_score FLOAT,                            -- 종합 점수 (매수 시)
+    price_change_percent FLOAT,                       -- 가격 변동률 (매도 시)
+    sell_reasons TEXT[],                              -- 매도 사유 (매도 시)
+    order_result JSONB,                               -- 주문 결과 (API 응답)
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- 인덱스 생성
+CREATE INDEX IF NOT EXISTS idx_auto_trading_logs_ticker ON auto_trading_logs (ticker);
+CREATE INDEX IF NOT EXISTS idx_auto_trading_logs_order_type ON auto_trading_logs (order_type);
+CREATE INDEX IF NOT EXISTS idx_auto_trading_logs_status ON auto_trading_logs (status);
+CREATE INDEX IF NOT EXISTS idx_auto_trading_logs_created_at ON auto_trading_logs (created_at);
+
+-- 주석 추가
+COMMENT ON TABLE auto_trading_logs IS '자동매매 주문 기록 테이블';
+COMMENT ON COLUMN auto_trading_logs.order_type IS '주문 유형 (buy: 매수, sell: 매도)';
+COMMENT ON COLUMN auto_trading_logs.ticker IS '티커 심볼';
+COMMENT ON COLUMN auto_trading_logs.stock_name IS '주식명';
+COMMENT ON COLUMN auto_trading_logs.price IS '주문 가격';
+COMMENT ON COLUMN auto_trading_logs.quantity IS '주문 수량';
+COMMENT ON COLUMN auto_trading_logs.status IS '주문 상태 (success: 성공, failed: 실패, dry_run: 테스트)';
+COMMENT ON COLUMN auto_trading_logs.composite_score IS '종합 점수 (매수 시)';
+COMMENT ON COLUMN auto_trading_logs.price_change_percent IS '가격 변동률 (매도 시)';
+COMMENT ON COLUMN auto_trading_logs.sell_reasons IS '매도 사유 배열 (매도 시)';
+COMMENT ON COLUMN auto_trading_logs.order_result IS '주문 결과 (API 응답 JSON)';
+
