@@ -95,6 +95,9 @@ yfinance_indicators = {
     # 리츠(부동산) 관련
     '미국 리츠 ETF': 'VNQ',       # Vanguard Real Estate ETF
     # '모기지 리츠 ETF': 'REM',      # iShares Mortgage Real Estate ETF
+    
+    # 반도체 ETF
+    'SOXX ETF': 'SOXX',           # iShares Semiconductor ETF
 }
 
 # 주의: 이 리스트는 더 이상 사용되지 않습니다.

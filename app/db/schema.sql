@@ -35,7 +35,8 @@ CREATE TABLE IF NOT EXISTS stock_daily_volume (
     "월마트" BIGINT,
     "존슨앤존슨" BIGINT,
     "S&P 500 ETF" BIGINT,
-    "QQQ ETF" BIGINT
+    "QQQ ETF" BIGINT,
+    "SOXX ETF" BIGINT
 );
 
 -- predicted_stocks 테이블 생성 (최종 제외 컬럼 및 추가 컬럼 반영)
@@ -116,6 +117,8 @@ CREATE TABLE IF NOT EXISTS predicted_stocks (
     "S&P 500 ETF_Actual" NUMERIC,
     "QQQ ETF_Predicted" NUMERIC,
     "QQQ ETF_Actual" NUMERIC,
+    "SOXX ETF_Predicted" NUMERIC,
+    "SOXX ETF_Actual" NUMERIC,
     
     -- 생성 시간 기록
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -167,6 +170,7 @@ CREATE TABLE IF NOT EXISTS economic_and_stock_data (
     "달러/엔" NUMERIC,
     "달러/위안" NUMERIC,
     "미국 리츠 ETF" NUMERIC,
+    "SOXX ETF" NUMERIC,
     "애플" NUMERIC,
     "마이크로소프트" NUMERIC,
     "아마존" NUMERIC,
@@ -348,4 +352,18 @@ ALTER TABLE predicted_stocks ADD COLUMN IF NOT EXISTS "앱플로빈_Actual" NUME
 
 -- stock_daily_volume 테이블에 앱플로빈 컬럼 추가
 ALTER TABLE stock_daily_volume ADD COLUMN IF NOT EXISTS "앱플로빈" BIGINT;
+
+-- ============================================
+-- 마이그레이션: SOXX ETF 컬럼 추가
+-- ============================================
+
+-- economic_and_stock_data 테이블에 SOXX ETF 컬럼 추가
+ALTER TABLE economic_and_stock_data ADD COLUMN IF NOT EXISTS "SOXX ETF" NUMERIC;
+
+-- predicted_stocks 테이블에 SOXX ETF 컬럼 추가
+ALTER TABLE predicted_stocks ADD COLUMN IF NOT EXISTS "SOXX ETF_Predicted" NUMERIC;
+ALTER TABLE predicted_stocks ADD COLUMN IF NOT EXISTS "SOXX ETF_Actual" NUMERIC;
+
+-- stock_daily_volume 테이블에 SOXX ETF 컬럼 추가
+ALTER TABLE stock_daily_volume ADD COLUMN IF NOT EXISTS "SOXX ETF" BIGINT;
 
