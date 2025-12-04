@@ -29,6 +29,7 @@ class StockScheduler:
         self.recommendation_service = StockRecommendationService()
         self.running = False
         self.sell_running = False  # 매도 스케줄러 실행 상태
+        self.analysis_running = False  # 분석 스케줄러 실행 상태
         self.scheduler_thread = None
     
     def start(self):
@@ -37,34 +38,42 @@ class StockScheduler:
             logger.warning("매수 스케줄러가 이미 실행 중입니다.")
             return False
         
+        # 한국 시간 기준 밤 11시 45분에 분석 작업 실행
+        schedule.every().day.at("23:45").do(self._run_analysis)
+        
         # 한국 시간 기준 밤 12시(00:00)에 매수 작업 실행
         schedule.every().day.at("00:00").do(self._run_auto_buy)
         
         # 별도 스레드에서 스케줄러 실행
         self.running = True
+        self.analysis_running = True
         self.scheduler_thread = threading.Thread(target=self._run_scheduler)
         self.scheduler_thread.daemon = True
         self.scheduler_thread.start()
         
-        logger.info("주식 자동매매 스케줄러가 시작되었습니다. 한국 시간 밤 12시(00:00)에 매수 작업이 실행됩니다.")
+        logger.info("주식 자동매매 스케줄러가 시작되었습니다.")
+        logger.info("  - 분석: 매일 밤 11시 45분 (기술적+감정+AI 통합 분석)")
+        logger.info("  - 매수: 매일 밤 12시 (통합 분석 결과 기반)")
         return True
     
     def stop(self):
-        """매수 스케줄러 중지"""
+        """매수 스케줄러 중지 (분석 스케줄러도 함께 중지)"""
         if not self.running:
             logger.warning("매수 스케줄러가 실행 중이 아닙니다.")
             return False
         
         self.running = False
+        self.analysis_running = False
         if self.scheduler_thread:
             self.scheduler_thread.join(timeout=5)
         
-        # 매수 관련 작업 취소 (sell 스케줄러는 유지)
+        # 매수 및 분석 관련 작업 취소 (sell 스케줄러는 유지)
         buy_jobs = [job for job in schedule.jobs if job.job_func.__name__ == '_run_auto_buy']
-        for job in buy_jobs:
+        analysis_jobs = [job for job in schedule.jobs if job.job_func.__name__ == '_run_analysis']
+        for job in buy_jobs + analysis_jobs:
             schedule.cancel_job(job)
         
-        logger.info("매수 스케줄러가 중지되었습니다.")
+        logger.info("매수 및 분석 스케줄러가 중지되었습니다.")
         return True
     
     def start_sell_scheduler(self):
@@ -109,9 +118,41 @@ class StockScheduler:
     
     def _run_scheduler(self):
         """스케줄러 백그라운드 실행 함수"""
-        while self.running or self.sell_running:
+        while self.running or self.sell_running or self.analysis_running:
             schedule.run_pending()
             time.sleep(1)
+    
+    def _run_analysis(self):
+        """통합 분석 실행 (기술적 지표 + 감정 분석)"""
+        logger.info("=" * 50)
+        logger.info("통합 분석 작업 시작")
+        logger.info("=" * 50)
+        
+        try:
+            # 1단계: 기술적 지표 생성 및 저장
+            logger.info("1단계: 기술적 지표 분석 시작...")
+            tech_result = self.recommendation_service.generate_technical_recommendations()
+            logger.info(f"✅ 기술적 지표 분석 완료: {tech_result.get('message', '')}")
+            
+            # 2단계: 뉴스 감정 분석 수행
+            logger.info("2단계: 뉴스 감정 분석 시작...")
+            sentiment_result = self.recommendation_service.fetch_and_store_sentiment_for_recommendations()
+            logger.info(f"✅ 뉴스 감정 분석 완료: {sentiment_result.get('message', '')}")
+            
+            # 3단계: 통합 분석 결과 조회 (슬랙 알림 포함)
+            logger.info("3단계: 통합 분석 결과 조회 및 슬랙 알림...")
+            combined_result = self.recommendation_service.get_combined_recommendations_with_technical_and_sentiment()
+            
+            final_count = len(combined_result.get('results', []))
+            logger.info(f"✅ 통합 분석 완료: {final_count}개 종목 추천")
+            logger.info(f"   매수 대상: {combined_result.get('message', '')}")
+            
+            logger.info("=" * 50)
+            logger.info("통합 분석 작업 완료 - 슬랙 알림 전송됨")
+            logger.info("=" * 50)
+            
+        except Exception as e:
+            logger.error(f"❌ 통합 분석 중 오류 발생: {str(e)}", exc_info=True)
     
     def _run_auto_buy(self):
         """자동 매수 실행 함수 - 스케줄링된 시간에 실행됨"""
@@ -188,21 +229,8 @@ class StockScheduler:
         ny_minute = now_in_ny.minute
         ny_weekday = now_in_ny.weekday()  # 0=월요일, 6=일요일
         
-        # 미국 주식 시장은 평일(월-금) 9:30 AM - 4:00 PM ET
-        is_weekday = 0 <= ny_weekday <= 4  # 월요일에서 금요일까지
-        is_market_open_time = (
-            (ny_hour == 9 and ny_minute >= 30) or
-            (10 <= ny_hour < 16) or
-            (ny_hour == 16 and ny_minute == 0)
-        )
-        
-        is_market_hours = is_weekday and is_market_open_time
-        
-        if not is_market_hours:
-            # 주말이거나 장 시간이 아닌 경우
-            return
-        
-        logger.info(f"미국 장 시간 확인: {now_in_korea.strftime('%Y-%m-%d %H:%M:%S')} (뉴욕: {now_in_ny.strftime('%Y-%m-%d %H:%M:%S')})")
+        # 매도는 장시간이 아니어도 실행 가능 (시간 제한 제거)
+        logger.info(f"매도 체크 시작: 한국 {now_in_korea.strftime('%Y-%m-%d %H:%M:%S')} | 뉴욕 {now_in_ny.strftime('%Y-%m-%d %H:%M:%S')}")
         
         # 매도 대상 종목 조회
         sell_candidates_result = self.recommendation_service.get_stocks_to_sell()

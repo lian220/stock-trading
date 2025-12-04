@@ -534,13 +534,18 @@ class SlackNotifier:
             blocks.append({"type": "divider"})
         
         # 4가지 분석 결과
-        if success and analysis_stats and recommendations:
+        if success and analysis_stats:
             analysis_results = "*🔍 세부 분석 결과*\n\n"
             
             # 종목별 분류
-            technical_stocks = [r for r in recommendations if r.get('golden_cross') or r.get('rsi', 100) < 50 or r.get('macd_buy_signal')]
-            ai_stocks = [r for r in recommendations if r.get('rise_probability', 0) >= 3]
-            sentiment_stocks = [r for r in recommendations if r.get('sentiment_score', 0) >= 0.15]
+            technical_stocks = []
+            ai_stocks = []
+            sentiment_stocks = []
+            
+            if recommendations:
+                technical_stocks = [r for r in recommendations if r.get('golden_cross') or r.get('rsi', 100) < 50 or r.get('macd_buy_signal')]
+                ai_stocks = [r for r in recommendations if r.get('rise_probability', 0) >= 3]
+                sentiment_stocks = [r for r in recommendations if r.get('sentiment_score', 0) >= 0.15]
             
             # 1. 기술적 분석
             analysis_results += f"📊 *기술적 지표 분석*\n"
@@ -580,7 +585,7 @@ class SlackNotifier:
             
             # 4. 통합 결과
             analysis_results += f"🎯 *종합 추천*\n"
-            if len(recommendations) > 0:
+            if recommendations and len(recommendations) > 0:
                 stock_names = ", ".join([f"{r['stock_name']}({r['ticker']})" for r in recommendations[:3]])
                 analysis_results += f"   └ {stock_names}"
                 if len(recommendations) > 3:
