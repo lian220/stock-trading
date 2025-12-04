@@ -48,3 +48,11 @@ Thumbs.db
 .env.local
 .env.*.local
 
+# Sensitive Scripts
+run_colab_selenium.py
+
+# Credentials
+credentials/
+*.json
+!package.json
+!tsconfig.json

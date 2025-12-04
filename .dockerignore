@@ -1,6 +1,7 @@
 # Git 관련
 .git
 .gitignore
+.gitattributes
 
 # Python 관련
 __pycache__
@@ -12,36 +13,77 @@ env/
 venv/
 ENV/
 .venv
+*.egg-info/
+dist/
+build/
+*.egg
 
 # IDE 관련
-.vscode
-.idea
+.vscode/
+.idea/
 *.swp
 *.swo
 *~
+.cursor/
 
 # 로그 파일
 *.log
 logs/
+*.log.*
 
-# 환경 변수 파일 (docker-compose에서 사용)
-# .env
+# 환경 변수 파일 (프로덕션에서는 제외, docker-compose에서 사용)
+.env
+.env.local
+.env.*.local
 
 # 문서
 documents/
 *.html
+*.md
+!README.md
 
 # 데이터 파일
 *.csv
 *.xlsx
+*.xls
+*.json
+!package*.json
 
 # 테스트
 tests/
-.pytest_cache
+.pytest_cache/
 .coverage
+htmlcov/
+.tox/
+
+# Docker 관련
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
 
 # 기타
 .DS_Store
-*.md
-!README.md
+*.tmp
+*.bak
+*.swp
+*.swo
+*.orig
 
+# 스크립트
+*.sh
+!start.sh
+!stop.sh
+
+# 백업 파일
+*.backup
+backup/
+
+# 임시 파일
+tmp/
+temp/
+*.tmp

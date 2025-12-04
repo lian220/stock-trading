@@ -653,6 +653,92 @@ class SlackNotifier:
         
         return self.send_message(text, blocks, webhook_type='analysis')
     
+    def send_vertex_ai_job_started_notification(
+        self, 
+        job_name: str, 
+        job_resource: str,
+        project_id: str
+    ) -> bool:
+        """Vertex AI Job 시작 알림"""
+        if not self.analysis_enabled:
+            return False
+        
+        blocks = [
+            {
+                "type": "header",
+                "text": {
+                    "type": "plain_text",
+                    "text": "☁️ Vertex AI Job 시작"
+                }
+            },
+            {
+                "type": "section",
+                "fields": [
+                    {
+                        "type": "mrkdwn",
+                        "text": f"*Job 이름:*\n{job_name}"
+                    },
+                    {
+                        "type": "mrkdwn",
+                        "text": f"*프로젝트:*\n{project_id}"
+                    }
+                ]
+            },
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*상태 확인:*\n<https://console.cloud.google.com/vertex-ai/training/custom-jobs?project={project_id}|Google Cloud Console>"
+                }
+            },
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": f"🕒 시작 시각: {self._get_current_time()}"
+                    }
+                ]
+            }
+        ]
+        
+        text = f"Vertex AI Job 시작: {job_name}"
+        return self.send_message(text, blocks, webhook_type='analysis')
+    
+    def send_vertex_ai_job_error_notification(self, error_message: str) -> bool:
+        """Vertex AI Job 오류 알림"""
+        if not self.analysis_enabled:
+            return False
+        
+        blocks = [
+            {
+                "type": "header",
+                "text": {
+                    "type": "plain_text",
+                    "text": "❌ Vertex AI Job 오류"
+                }
+            },
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*오류 메시지:*\n```{error_message[:500]}```"
+                }
+            },
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": f"🕒 오류 시각: {self._get_current_time()}"
+                    }
+                ]
+            }
+        ]
+        
+        text = f"Vertex AI Job 오류 발생"
+        return self.send_message(text, blocks, webhook_type='analysis')
+    
     def _get_current_time(self) -> str:
         """현재 시각을 포맷팅해서 반환"""
         from datetime import datetime

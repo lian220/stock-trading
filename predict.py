@@ -17,8 +17,8 @@ import json
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 # Supabase 연결 설정
-url: str = ""
-key: str = ""
+url: str = os.getenv("SUPABASE_URL")
+key: str = os.getenv("SUPABASE_KEY")
 supabase: Client = create_client(url, key)
 
 # Supabase에서 데이터 가져오기
@@ -273,15 +273,49 @@ if data is None or data.empty:
 
 forecast_horizon = 14  # 예측 기간 (14일 후를 예측)
 
-target_columns = [
-    '애플', '마이크로소프트', '아마존', '구글 A', '구글 C', '메타',
-    '테슬라', '엔비디아', '인텔', '마이크론', '브로드컴',
-    '텍사스 인스트루먼트', 'AMD', '어플라이드 머티리얼즈',
-    '셀레스티카', '버티브 홀딩스', '비스트라 에너지', '블룸에너지', '오클로', '팔란티어',
-    '세일즈포스', '오라클', '앱플로빈', '팔로알토 네트웍스', '크라우드 스트라이크',
-    '스노우플레이크', 'TSMC', '크리도 테크놀로지 그룹 홀딩', '로빈후드', '일라이릴리',
-    '월마트', '존슨앤존슨', 'S&P 500 ETF', 'QQQ ETF'
-]
+# DB에서 활성화된 주식 목록 조회
+def get_target_columns_from_db():
+    """stock_ticker_mapping 테이블에서 활성화된 주식명 목록을 가져옵니다."""
+    try:
+        response = supabase.table("stock_ticker_mapping").select("stock_name, is_etf").eq("is_active", True).execute()
+        
+        if not response.data:
+            print("경고: stock_ticker_mapping 테이블에서 활성화된 주식을 찾을 수 없습니다.")
+            print("기본 주식 목록을 사용합니다.")
+            # 기본값 반환 (fallback)
+            return [
+                '애플', '마이크로소프트', '아마존', '구글 A', '구글 C', '메타',
+                '테슬라', '엔비디아', '인텔', '마이크론', '브로드컴',
+                '텍사스 인스트루먼트', 'AMD', '어플라이드 머티리얼즈',
+                '셀레스티카', '버티브 홀딩스', '비스트라 에너지', '블룸에너지', '오클로', '팔란티어',
+                '세일즈포스', '오라클', '앱플로빈', '팔로알토 네트웍스', '크라우드 스트라이크',
+                '스노우플레이크', 'TSMC', '크리도 테크놀로지 그룹 홀딩', '로빈후드', '일라이릴리',
+                '월마트', '존슨앤존슨', 'S&P 500 ETF', 'QQQ ETF'
+            ]
+        
+        # 주식명 목록 추출 (ETF 포함)
+        target_columns = [item["stock_name"] for item in response.data]
+        
+        print(f"DB에서 {len(target_columns)}개의 활성화된 주식을 가져왔습니다.")
+        print(f"주식 목록: {target_columns[:10]}... (총 {len(target_columns)}개)")
+        
+        return target_columns
+    except Exception as e:
+        print(f"DB에서 주식 목록 조회 중 오류 발생: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        # 오류 발생 시 기본값 반환
+        return [
+            '애플', '마이크로소프트', '아마존', '구글 A', '구글 C', '메타',
+            '테슬라', '엔비디아', '인텔', '마이크론', '브로드컴',
+            '텍사스 인스트루먼트', 'AMD', '어플라이드 머티리얼즈',
+            '셀레스티카', '버티브 홀딩스', '비스트라 에너지', '블룸에너지', '오클로', '팔란티어',
+            '세일즈포스', '오라클', '앱플로빈', '팔로알토 네트웍스', '크라우드 스트라이크',
+            '스노우플레이크', 'TSMC', '크리도 테크놀로지 그룹 홀딩', '로빈후드', '일라이릴리',
+            '월마트', '존슨앤존슨', 'S&P 500 ETF', 'QQQ ETF'
+        ]
+
+target_columns = get_target_columns_from_db()
 
 economic_features = [
     '10년 기대 인플레이션율', '장단기 금리차', '기준금리', '미시간대 소비자 심리지수',

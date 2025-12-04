@@ -17,8 +17,8 @@ echo ""
 
 # 실행 모드 선택
 echo -e "${YELLOW}실행 모드를 선택하세요:${NC}"
-echo "1) Docker로 실행 (권장)"
-echo "2) 로컬 Python으로 실행"
+echo "1) Docker로 실행 (./start-docker.sh)"
+echo "2) 로컬 Python으로 실행 (./start-local.sh)"
 echo "3) 개발 모드로 실행 (코드 변경 시 자동 재시작)"
 echo "4) 중지"
 echo "5) 로그 확인"
@@ -28,115 +28,16 @@ read -p "선택 (1-5): " choice
 case $choice in
     1)
         echo ""
-        echo -e "${BLUE}🐳 Docker로 실행합니다...${NC}"
-        
-        # .env 파일 확인
-        if [ ! -f .env ]; then
-            echo -e "${YELLOW}⚠️  .env 파일이 없습니다.${NC}"
-            read -p ".env.example을 복사하여 .env를 생성하시겠습니까? (y/n): " create_env
-            if [ "$create_env" = "y" ] || [ "$create_env" = "Y" ]; then
-                cp .env.example .env
-                echo -e "${GREEN}✅ .env 파일이 생성되었습니다.${NC}"
-                echo -e "${YELLOW}⚠️  .env 파일을 편집하여 실제 API 키를 입력해주세요.${NC}"
-                echo ""
-                read -p "계속하시겠습니까? (y/n): " continue_run
-                if [ "$continue_run" != "y" ] && [ "$continue_run" != "Y" ]; then
-                    exit 0
-                fi
-            else
-                echo -e "${RED}❌ .env 파일이 필요합니다. 종료합니다.${NC}"
-                exit 1
-            fi
-        fi
-        
-        # Docker 확인
-        if ! command -v docker &> /dev/null; then
-            echo -e "${RED}❌ Docker가 설치되어 있지 않습니다.${NC}"
-            echo "Docker를 설치해주세요: https://www.docker.com/get-started"
-            exit 1
-        fi
-        
-        # docker-compose 명령어 설정 (v2는 docker compose, v1은 docker-compose)
-        if docker compose version &> /dev/null; then
-            DOCKER_COMPOSE="docker compose"
-        elif command -v docker-compose &> /dev/null; then
-            DOCKER_COMPOSE="docker-compose"
-        else
-            echo -e "${RED}❌ docker compose가 설치되어 있지 않습니다.${NC}"
-            exit 1
-        fi
-        
-        echo ""
-        echo -e "${BLUE}📦 Docker 이미지 빌드 중...${NC}"
-        $DOCKER_COMPOSE build
-        
-        echo ""
-        echo -e "${BLUE}🚀 컨테이너 실행 중...${NC}"
-        $DOCKER_COMPOSE up -d
-        
-        echo ""
-        echo -e "${GREEN}✅ 애플리케이션이 실행되었습니다!${NC}"
-        echo ""
-        echo -e "${GREEN}📍 API 주소: http://localhost:8000${NC}"
-        echo -e "${GREEN}📍 API 문서: http://localhost:8000/docs${NC}"
-        echo ""
-        echo -e "${YELLOW}💡 유용한 명령어:${NC}"
-        echo "  - 로그 확인: $DOCKER_COMPOSE logs -f"
-        echo "  - 컨테이너 중지: $DOCKER_COMPOSE down"
-        echo "  - 컨테이너 재시작: $DOCKER_COMPOSE restart"
-        echo ""
+        echo -e "${BLUE}🐳 Docker 스크립트를 실행합니다...${NC}"
+        chmod +x ./start-docker.sh
+        ./start-docker.sh
         ;;
         
     2)
         echo ""
-        echo -e "${BLUE}🐍 로컬 Python으로 실행합니다...${NC}"
-        
-        # Python 확인
-        if ! command -v python3 &> /dev/null; then
-            echo -e "${RED}❌ Python3가 설치되어 있지 않습니다.${NC}"
-            exit 1
-        fi
-        
-        # .env 파일 확인
-        if [ ! -f .env ]; then
-            echo -e "${YELLOW}⚠️  .env 파일이 없습니다.${NC}"
-            read -p ".env.example을 복사하여 .env를 생성하시겠습니까? (y/n): " create_env
-            if [ "$create_env" = "y" ] || [ "$create_env" = "Y" ]; then
-                cp .env.example .env
-                echo -e "${GREEN}✅ .env 파일이 생성되었습니다.${NC}"
-                echo -e "${YELLOW}⚠️  .env 파일을 편집하여 실제 API 키를 입력해주세요.${NC}"
-                echo ""
-            else
-                echo -e "${RED}❌ .env 파일이 필요합니다. 종료합니다.${NC}"
-                exit 1
-            fi
-        fi
-        
-        # 가상환경 확인
-        if [ ! -d "venv" ]; then
-            echo -e "${YELLOW}가상환경이 없습니다. 생성하시겠습니까? (y/n):${NC}"
-            read create_venv
-            if [ "$create_venv" = "y" ] || [ "$create_venv" = "Y" ]; then
-                echo -e "${BLUE}📦 가상환경 생성 중...${NC}"
-                python3 -m venv venv
-                echo -e "${GREEN}✅ 가상환경이 생성되었습니다.${NC}"
-            fi
-        fi
-        
-        # 가상환경 활성화
-        if [ -d "venv" ]; then
-            echo -e "${BLUE}🔄 가상환경 활성화 중...${NC}"
-            source venv/bin/activate
-        fi
-        
-        # 의존성 설치
-        echo -e "${BLUE}📦 의존성 설치 중...${NC}"
-        pip install -r requirements.txt
-        
-        echo ""
-        echo -e "${BLUE}🚀 애플리케이션 실행 중...${NC}"
-        echo ""
-        python3 run.py
+        echo -e "${BLUE}🐍 로컬 Python 스크립트를 실행합니다...${NC}"
+        chmod +x ./start-local.sh
+        ./start-local.sh
         ;;
         
     3)

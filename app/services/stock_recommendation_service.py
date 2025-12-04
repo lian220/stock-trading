@@ -129,14 +129,15 @@ class StockRecommendationService:
 
         # 기존 데이터 삭제 후 새 데이터 저장
         try:
-            # 전체 데이터 삭제 (항상 TRUE인 조건 사용)
-            supabase.table("stock_recommendations").delete().eq("날짜", "1900-01-01").gte("날짜", "1900-01-01").execute()
+            # 오늘 날짜의 데이터만 삭제 (중복 방지)
+            today_str = latest_date.strftime("%Y-%m-%d")
+            supabase.table("stock_recommendations").delete().eq("날짜", today_str).execute()
+            print(f"기존 데이터 삭제 완료: {today_str}")
             
-            # 또는 이런 방식도 가능합니다 (모든 레코드와 매치되는 조건)
-            supabase.table("stock_recommendations").delete().gte("날짜", "1900-01-01").execute()
-            
-            # 새 데이터 삽입
-            supabase.table("stock_recommendations").insert(recommendations).execute()
+            # 새 데이터 삽입 (UPSERT 사용하여 중복 시 업데이트)
+            # upsert는 기본 키("날짜", "종목")가 중복되면 업데이트, 없으면 삽입
+            supabase.table("stock_recommendations").upsert(recommendations).execute()
+            print(f"새 데이터 삽입 완료: {len(recommendations)}개 레코드")
         
         except Exception as e:
             print(f"오류 발생: {str(e)}")
@@ -582,8 +583,6 @@ class StockRecommendationService:
                     "message": "보유 종목이 없습니다",
                     "sell_candidates": []
                 }
-            
-            print(f"보유 종목 정보를 성공적으로 가져왔습니다. 총 {len(holdings)}개 종목 보유 중")
             
             # 2. 티커와 한글명 매핑 생성
             ticker_to_korean = {}
