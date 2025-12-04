@@ -42,9 +42,13 @@ class Settings(BaseSettings):
     TR_ID: str = os.getenv("TR_ID")
     
     # Slack 알림 설정
-    SLACK_WEBHOOK_URL: Optional[str] = Field(
+    SLACK_WEBHOOK_URL_TRADING: Optional[str] = Field(
         default=None,
         description="Slack Webhook URL (매수/매도 알림용)"
+    )
+    SLACK_WEBHOOK_URL_ANALYSIS: Optional[str] = Field(
+        default=None,
+        description="Slack Webhook URL (주식 분석/추천 알림용)"
     )
     SLACK_ENABLED: bool = Field(
         default=False,

@@ -6,6 +6,7 @@ from app.db.supabase import supabase
 import numpy as np
 from app.core.config import settings
 from app.services.balance_service import get_overseas_balance
+from app.utils.slack_notifier import slack_notifier
 
 def load_stock_ticker_mapping():
     """
@@ -141,7 +142,34 @@ class StockRecommendationService:
             print(f"오류 발생: {str(e)}")
             import traceback
             print(traceback.format_exc())  # 상세 스택 트레이스 출력
+            
+            # 슬랙 알림 - 실패
+            slack_notifier.send_analysis_notification(
+                analysis_type='technical',
+                total_stocks=len(self.stock_columns),
+                success=False,
+                error_message=str(e)
+            )
+            
             raise Exception(f"추천 주식 분석 중 오류: {str(e)}")
+        
+        # 슬랙 알림 - 성공
+        recommended_stocks = [rec for rec in recommendations if rec.get('추천_여부', False)]
+        formatted_recommendations = [
+            {
+                'stock_name': rec['종목'],
+                'ticker': STOCK_TO_TICKER.get(rec['종목'], 'N/A'),
+                'recommendation_score': rec.get('RSI', 0)
+            }
+            for rec in recommended_stocks
+        ]
+        
+        slack_notifier.send_analysis_notification(
+            analysis_type='technical',
+            total_stocks=len(self.stock_columns),
+            recommendations=formatted_recommendations,
+            success=True
+        )
 
         return {"message": f"{len(recommendations)}개의 추천 데이터가 생성되었습니다", "data": recommendations}
 
@@ -464,7 +492,46 @@ class StockRecommendationService:
 
             final_results.sort(key=lambda x: x["composite_score"], reverse=True)
 
-            # 8. 결과 반환
+            # 8. 슬랙 알림 - 통합 분석 완료 (4가지 분석 결과 포함)
+            try:
+                # 상위 5개 추천 종목 정보 준비
+                top_recommendations = [
+                    {
+                        'stock_name': item['stock_name'],
+                        'ticker': item['ticker'],
+                        'recommendation_score': item['composite_score'],
+                        'rise_probability': item['rise_probability'],
+                        'sentiment_score': item['sentiment_score'] if item['sentiment_score'] else 0,
+                        'golden_cross': item['golden_cross'],
+                        'rsi': item['rsi'],
+                        'macd_buy_signal': item['macd_buy_signal']
+                    }
+                    for item in final_results[:5]
+                ]
+                
+                # 각 분석 통계 계산
+                technical_count = sum(1 for item in final_results if item['technical_recommended'])
+                sentiment_count = sum(1 for item in final_results if item['sentiment_score'] and item['sentiment_score'] >= 0.15)
+                ai_predictions = [item for item in final_results if item['rise_probability'] >= 3]
+                
+                slack_notifier.send_combined_analysis_notification(
+                    total_stocks=len(results),
+                    recommendations=top_recommendations,
+                    analysis_stats={
+                        'total_analyzed': len(results),
+                        'final_recommendations': len(final_results),
+                        'avg_composite_score': sum(item['composite_score'] for item in final_results) / len(final_results) if final_results else 0,
+                        'technical_signals': technical_count,
+                        'positive_sentiment': sentiment_count,
+                        'ai_predictions': len(ai_predictions),
+                        'avg_rise_probability': sum(item['rise_probability'] for item in final_results) / len(final_results) if final_results else 0
+                    },
+                    success=True
+                )
+            except Exception as slack_error:
+                print(f"슬랙 알림 전송 실패: {str(slack_error)}")
+
+            # 9. 결과 반환
             return {
                 "message": f"{len(final_results)}개의 매수 추천 주식을 찾았습니다",
                 "results": final_results
@@ -474,6 +541,16 @@ class StockRecommendationService:
             print(f"오류 발생: {str(e)}")
             import traceback
             print(traceback.format_exc())  # 상세 스택 트레이스 출력
+            
+            # 슬랙 알림 - 실패
+            slack_notifier.send_combined_analysis_notification(
+                total_stocks=0,
+                recommendations=[],
+                analysis_stats={},
+                success=False,
+                error_message=str(e)
+            )
+            
             raise Exception(f"추천 주식 분석 중 오류: {str(e)}")
 
     def get_stocks_to_sell(self):

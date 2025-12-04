@@ -8,6 +8,7 @@ from app.db.supabase import supabase
 from threading import Lock
 from app.services.auth_service import parse_expiration_date
 import logging
+from app.utils.slack_notifier import slack_notifier
 
 # 로거 설정
 logger = logging.getLogger('balance_service')
@@ -820,12 +821,63 @@ def order_overseas_stock(order_data):
         try:
             result = response.json()
             
-            # 주문 결과 로깅
+            # 주문 정보 추출
+            ticker = request_body.get('PDNO', 'N/A')
+            quantity = int(request_body.get('ORD_QTY', 0))
+            price = float(request_body.get('OVRS_ORD_UNPR', 0))
+            exchange_code = request_body.get('OVRS_EXCG_CD', 'N/A')
+            
+            # 주문 결과 로깅 및 슬랙 알림
             if result.get("rt_cd") == "0":
                 logger.info(f"해외주식 {order_type} 주문 성공: {result.get('msg1', '주문이 접수되었습니다.')}")
+                
+                # 슬랙 알림 전송 (매수만)
+                if is_buy:
+                    slack_notifier.send_buy_notification(
+                        stock_name=ticker,  # 종목명이 없으면 티커 사용
+                        ticker=ticker,
+                        quantity=quantity,
+                        price=price,
+                        exchange_code=exchange_code,
+                        success=True
+                    )
+                else:
+                    # 매도 알림
+                    slack_notifier.send_sell_notification(
+                        stock_name=ticker,
+                        ticker=ticker,
+                        quantity=quantity,
+                        price=price,
+                        exchange_code=exchange_code,
+                        sell_reasons=["수동 매도"],
+                        success=True
+                    )
             else:
                 logger.error(f"해외주식 {order_type} 주문 실패: {result.get('msg1', '알 수 없는 오류')}")
                 logger.error(f"오류 코드: {result.get('msg_cd')}, 종목={request_body.get('PDNO')}")
+                
+                # 슬랙 알림 전송 (실패)
+                if is_buy:
+                    slack_notifier.send_buy_notification(
+                        stock_name=ticker,
+                        ticker=ticker,
+                        quantity=quantity,
+                        price=price,
+                        exchange_code=exchange_code,
+                        success=False,
+                        error_message=result.get('msg1', '알 수 없는 오류')
+                    )
+                else:
+                    slack_notifier.send_sell_notification(
+                        stock_name=ticker,
+                        ticker=ticker,
+                        quantity=quantity,
+                        price=price,
+                        exchange_code=exchange_code,
+                        sell_reasons=["수동 매도"],
+                        success=False,
+                        error_message=result.get('msg1', '알 수 없는 오류')
+                    )
             
             # 주문 내역을 DB에 저장 (옵션)
             # save_order_history(request_body, result)

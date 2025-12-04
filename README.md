@@ -105,9 +105,28 @@ TR_ID=your_tr_id_here
 ALPHA_VANTAGE_API_KEY=your_alpha_vantage_key_here
 
 # Slack 알림 설정 (선택사항)
-SLACK_WEBHOOK_URL=https://hooks.slack.com/services/YOUR/WEBHOOK/URL
+SLACK_WEBHOOK_URL_TRADING=https://hooks.slack.com/services/YOUR/WEBHOOK/URL  # 매수/매도 알림용
+SLACK_WEBHOOK_URL_ANALYSIS=https://hooks.slack.com/services/YOUR/WEBHOOK/URL  # 주식 분석/추천 알림용
 SLACK_ENABLED=true
 ```
+
+### Slack 웹훅 설정 방법
+
+Slack 알림을 활성화하려면:
+
+1. **Slack 워크스페이스 설정**:
+   - [Slack API](https://api.slack.com/apps)에서 앱 생성
+   - "Incoming Webhooks" 활성화
+   - 웹훅 URL 2개 생성 (매수/매도용, 분석용)
+
+2. **두 개의 웹훅 구분**:
+   - `SLACK_WEBHOOK_URL_TRADING`: 매수/매도 체결 알림 (중요도 높음)
+   - `SLACK_WEBHOOK_URL_ANALYSIS`: 주식 분석 결과 알림 (정보성)
+   - 서로 다른 채널에 알림을 보낼 수 있습니다
+
+3. **알림 유형**:
+   - 매수/매도 알림: ✅ 매수 체결, 💰 매도 체결, ❌ 주문 실패
+   - 분석 알림: 📊 기술적 분석, 🔮 AI 예측, 💬 감정 분석
 
 자세한 설정 방법은 `env.sample` 파일을 참고하세요.
 

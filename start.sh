@@ -180,23 +180,43 @@ EOF
         echo ""
         echo -e "${BLUE}🛑 애플리케이션을 중지합니다...${NC}"
         
-        # Docker compose 명령어 설정
-        if docker compose version &> /dev/null; then
-            DOCKER_COMPOSE="docker compose"
-        elif command -v docker-compose &> /dev/null; then
-            DOCKER_COMPOSE="docker-compose"
+        # stop.sh 스크립트 실행
+        if [ -f "./stop.sh" ]; then
+            chmod +x ./stop.sh
+            ./stop.sh
         else
-            echo -e "${RED}❌ docker compose가 설치되어 있지 않습니다.${NC}"
-            exit 1
-        fi
-        
-        $DOCKER_COMPOSE down
-        echo -e "${GREEN}✅ 중지되었습니다.${NC}"
-        
-        # override 파일 삭제
-        if [ -f "docker-compose.override.yml" ]; then
-            rm docker-compose.override.yml
-            echo -e "${GREEN}✅ 개발 모드 설정이 제거되었습니다.${NC}"
+            # stop.sh가 없으면 직접 중지
+            # Docker compose 명령어 설정
+            DOCKER_COMPOSE=""
+            if docker compose version &> /dev/null; then
+                DOCKER_COMPOSE="docker compose"
+            elif command -v docker-compose &> /dev/null; then
+                DOCKER_COMPOSE="docker-compose"
+            fi
+            
+            # Docker compose로 중지 시도
+            if [ -n "$DOCKER_COMPOSE" ]; then
+                $DOCKER_COMPOSE down 2>/dev/null
+                
+                # 실패하면 직접 컨테이너 중지
+                if docker ps -a | grep -q "stock-trading"; then
+                    docker stop $(docker ps -a | grep "stock-trading" | awk '{print $1}') 2>/dev/null
+                    docker rm $(docker ps -a | grep "stock-trading" | awk '{print $1}') 2>/dev/null
+                fi
+            fi
+            
+            # Python 프로세스 중지
+            PYTHON_PIDS=$(pgrep -f "python.*run.py|uvicorn.*main:app" 2>/dev/null)
+            if [ -n "$PYTHON_PIDS" ]; then
+                echo "$PYTHON_PIDS" | xargs kill -15 2>/dev/null
+            fi
+            
+            # override 파일 삭제
+            if [ -f "docker-compose.override.yml" ]; then
+                rm docker-compose.override.yml
+            fi
+            
+            echo -e "${GREEN}✅ 중지되었습니다.${NC}"
         fi
         ;;
         
