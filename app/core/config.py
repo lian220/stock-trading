@@ -55,6 +55,12 @@ class Settings(BaseSettings):
         description="Slack 알림 활성화 여부"
     )
     
+    # 서버 시작 시 경제 데이터 수집 실행 여부
+    RUN_ECONOMIC_DATA_ON_STARTUP: bool = Field(
+        default=False,
+        description="서버 시작 시 경제 데이터 수집 실행 여부 (.env에서 RUN_ECONOMIC_DATA_ON_STARTUP=true/false로 설정 가능)"
+    )
+    
     @property
     def kis_base_url(self) -> str:
         """사용할 한국투자증권 API URL 반환"""

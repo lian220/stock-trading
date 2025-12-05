@@ -19,7 +19,10 @@ except (ImportError, AttributeError):
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
+import asyncio
+from datetime import datetime
 from app.api.api import api_router
+from app.core.config import settings
 from app.services.economic_service import update_economic_data_in_background
 from app.utils.scheduler import (
     start_scheduler, stop_scheduler, 
@@ -28,12 +31,29 @@ from app.utils.scheduler import (
 )
 from contextlib import asynccontextmanager
 
+async def periodic_status_log():
+    """30분마다 서버 상태를 로깅하는 백그라운드 태스크"""
+    while True:
+        await asyncio.sleep(1800)  # 30분 = 1800초
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        print(f"[{current_time}] 서버 실행 중...")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: runs once when app starts
     await startup()
+    
+    # 30분마다 상태 로그를 출력하는 백그라운드 태스크 시작
+    status_task = asyncio.create_task(periodic_status_log())
+    
     yield
+    
     # Shutdown: 필요한 정리 작업
+    status_task.cancel()  # 상태 로그 태스크 종료
+    try:
+        await status_task
+    except asyncio.CancelledError:
+        pass
     stop_scheduler()  # 매수 스케줄러 종료
     stop_sell_scheduler()  # 매도 스케줄러 종료
     stop_economic_data_scheduler()  # 경제 데이터 스케줄러 종료
@@ -58,20 +78,22 @@ def read_root():
 
 # APScheduler 대신 직접 실행
 async def startup():
-    # 시작 시 즉시 한 번 경제 데이터 수집 실행 (에러가 발생해도 앱은 시작되도록 처리)
-    print("서비스 시작 시 경제 데이터 수집을 즉시 실행합니다...")
-    try:
-        await update_economic_data_in_background()
-        print("초기 경제 데이터 수집이 완료되었습니다.")
-    except Exception as e:
-        print(f"초기 경제 데이터 수집 중 오류 발생 (앱은 계속 실행됩니다): {str(e)}")
-        import traceback
-        print(traceback.format_exc())
+    # 시작 시 즉시 한 번 경제 데이터 수집 실행 (옵션으로 제어)
+    if settings.RUN_ECONOMIC_DATA_ON_STARTUP:
+        print("서비스 시작 시 경제 데이터 수집을 즉시 실행합니다...")
+        try:
+            await update_economic_data_in_background()
+            print("초기 경제 데이터 수집이 완료되었습니다.")
+        except Exception as e:
+            print(f"초기 경제 데이터 수집 중 오류 발생 (앱은 계속 실행됩니다): {str(e)}")
+            import traceback
+            print(traceback.format_exc())
+    else:
+        print("서버 시작 시 경제 데이터 수집이 비활성화되어 있습니다. (RUN_ECONOMIC_DATA_ON_STARTUP=false)")
     
     # 경제 데이터 업데이트 스케줄러 시작 (매일 한국시간 새벽 6시 5분에 실행)
     try:
         start_economic_data_scheduler()
-        print("경제 데이터 업데이트 스케줄러가 시작되었습니다. (매일 한국시간 새벽 6시 5분)")
     except Exception as e:
         print(f"경제 데이터 스케줄러 시작 중 오류 발생: {str(e)}")
     
@@ -89,4 +111,4 @@ async def startup():
         print(f"매도 스케줄러 시작 중 오류 발생: {str(e)}")
 
 if __name__ == "__main__":
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True, access_log=False)

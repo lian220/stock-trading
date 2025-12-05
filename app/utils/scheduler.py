@@ -38,6 +38,9 @@ class StockScheduler:
             logger.warning("매수 스케줄러가 이미 실행 중입니다.")
             return False
         
+        # 한국 시간 기준 밤 10시에 Colab 트리거 실행
+        schedule.every().day.at("22:00").do(self._run_colab_trigger)
+
         # 한국 시간 기준 밤 11시 45분에 분석 작업 실행
         schedule.every().day.at("23:45").do(self._run_analysis)
         
@@ -52,6 +55,7 @@ class StockScheduler:
         self.scheduler_thread.start()
         
         logger.info("주식 자동매매 스케줄러가 시작되었습니다.")
+        logger.info("  - Colab 트리거: 매일 밤 10시")
         logger.info("  - 분석: 매일 밤 11시 45분 (기술적+감정+AI 통합 분석)")
         logger.info("  - 매수: 매일 밤 12시 (통합 분석 결과 기반)")
         return True
@@ -70,12 +74,47 @@ class StockScheduler:
         # 매수 및 분석 관련 작업 취소 (sell 스케줄러는 유지)
         buy_jobs = [job for job in schedule.jobs if job.job_func.__name__ == '_run_auto_buy']
         analysis_jobs = [job for job in schedule.jobs if job.job_func.__name__ == '_run_analysis']
-        for job in buy_jobs + analysis_jobs:
+        colab_jobs = [job for job in schedule.jobs if job.job_func.__name__ == '_run_colab_trigger']
+        for job in buy_jobs + analysis_jobs + colab_jobs:
             schedule.cancel_job(job)
         
         logger.info("매수 및 분석 스케줄러가 중지되었습니다.")
         return True
-    
+
+    def _run_colab_trigger(self):
+        """Colab 트리거 실행 함수 - 스케줄링된 시간에 실행됨"""
+        logger.info("Colab 트리거 작업 시작")
+        
+        # 새 스레드에서 비동기 함수 실행
+        import threading
+        def run_in_thread():
+            new_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(new_loop)
+            try:
+                new_loop.run_until_complete(self._execute_colab_trigger())
+            finally:
+                new_loop.close()
+        
+        thread = threading.Thread(target=run_in_thread)
+        thread.start()
+        thread.join()
+        
+        logger.info("Colab 트리거 작업 완료")
+
+    async def _execute_colab_trigger(self):
+        """Colab 트리거 실행 로직"""
+        import httpx
+        url = "https://lian-shop-frontend.vercel.app/product/1"
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(url)
+                if response.status_code == 200:
+                    logger.info(f"Colab 트리거 성공: {url}")
+                else:
+                    logger.error(f"Colab 트리거 실패: {url}, 상태 코드: {response.status_code}")
+        except Exception as e:
+            logger.error(f"Colab 트리거 중 오류 발생: {str(e)}", exc_info=True)
+
     def start_sell_scheduler(self):
         """매도 스케줄러 시작"""
         if self.sell_running:
@@ -605,6 +644,10 @@ def run_auto_buy_now():
 def run_auto_sell_now():
     """즉시 매도 실행 함수 (테스트용)"""
     stock_scheduler._run_auto_sell()
+
+def run_colab_trigger_now():
+    """즉시 Colab 트리거 실행 함수 (테스트용)"""
+    stock_scheduler._run_colab_trigger()
 
 # 경제 데이터 스케줄러 관련 변수 및 함수
 economic_data_scheduler_running = False
