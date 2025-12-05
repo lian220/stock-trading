@@ -229,9 +229,6 @@ class StockScheduler:
         ny_minute = now_in_ny.minute
         ny_weekday = now_in_ny.weekday()  # 0=월요일, 6=일요일
         
-        # 매도는 장시간이 아니어도 실행 가능 (시간 제한 제거)
-        logger.info(f"매도 체크 시작: 한국 {now_in_korea.strftime('%Y-%m-%d %H:%M:%S')} | 뉴욕 {now_in_ny.strftime('%Y-%m-%d %H:%M:%S')}")
-        
         # 매도 대상 종목 조회
         sell_candidates_result = self.recommendation_service.get_stocks_to_sell()
         
