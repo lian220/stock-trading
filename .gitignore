@@ -37,6 +37,11 @@ env/
 .DS_Store
 Thumbs.db
 
+# macOS 중복 파일 (자동 생성 파일)
+* 2.*
+* 2
+*\ 2*
+
 # Logs
 *.log
 

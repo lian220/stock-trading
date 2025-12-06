@@ -36,26 +36,9 @@ if [ ! -f .env ]; then
     fi
 fi
 
-# 가상환경 확인
-if [ ! -d "venv" ]; then
-    echo -e "${YELLOW}가상환경이 없습니다. 생성하시겠습니까? (y/n):${NC}"
-    read create_venv
-    if [ "$create_venv" = "y" ] || [ "$create_venv" = "Y" ]; then
-        echo -e "${BLUE}📦 가상환경 생성 중...${NC}"
-        python3 -m venv venv
-        echo -e "${GREEN}✅ 가상환경이 생성되었습니다.${NC}"
-    fi
-fi
-
-# 가상환경 활성화
-if [ -d "venv" ]; then
-    echo -e "${BLUE}🔄 가상환경 활성화 중...${NC}"
-    source venv/bin/activate
-fi
-
-# 의존성 설치
+# 의존성 설치 (시스템 Python 사용)
 echo -e "${BLUE}📦 의존성 설치 중...${NC}"
-pip install -r requirements.txt
+python3 -m pip install -r requirements.txt --user
 
 echo ""
 echo -e "${BLUE}🚀 애플리케이션 실행 중...${NC}"
