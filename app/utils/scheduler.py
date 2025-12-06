@@ -71,10 +71,9 @@ class StockScheduler:
             schedule.cancel_job(job)
             logger.info(f"기존 작업 취소: {job.job_func.__name__}")
         
-        # 한국 시간 기준 새벽 1시 6분에 Vertex AI Job 실행
-        # schedule 라이브러리는 자동으로 오늘 시간이 지났으면 내일 실행하도록 처리
+        # 한국 시간 기준 밤 11시에 Colab 트리거 실행
         schedule.every().day.at("11:00").do(self._run_colab_trigger)
-        logger.info("Colab 트리거 스케줄 등록: 매일 01:06에 실행")
+        logger.info("Colab 트리거 스케줄 등록: 매일 11:00에 실행")
 
         # 한국 시간 기준 밤 11시 45분에 분석 작업 실행
         schedule.every().day.at("23:45").do(self._run_analysis)
@@ -109,8 +108,6 @@ class StockScheduler:
             self.scheduler_thread.join(timeout=5)
         
         # 매수 및 분석 관련 작업 취소 (sell 스케줄러는 유지)
-        buy_jobs = [job for job in schedule.jobs if job.job_func.__name__ == '_run_auto_buy']
-        analysis_jobs = [job for job in schedule.jobs if job.job_func.__name__ == '_run_analysis']
         vertex_ai_jobs = [job for job in schedule.jobs if job.job_func.__name__ == '_run_colab_trigger']
         for job in buy_jobs + analysis_jobs + vertex_ai_jobs:
             schedule.cancel_job(job)

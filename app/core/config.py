@@ -87,10 +87,6 @@ class Settings(BaseSettings):
         description="서버 시작 시 경제 데이터 수집 실행 여부 (.env에서 RUN_ECONOMIC_DATA_ON_STARTUP=true/false로 설정 가능)"
     )
     
-    # Vertex AI 설정 제거됨
-    
-
-    
     @field_validator('KIS_USE_MOCK', mode='before')
     @classmethod
     def parse_kis_use_mock(cls, v):
