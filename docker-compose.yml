@@ -13,10 +13,13 @@ services:
     volumes:
       # 로그 파일 저장용 (호스트에 영구 저장)
       - ./logs:/app/logs
+      # Google Cloud 인증 파일 마운트
+      - ./credentials:/app/credentials:ro
     restart: unless-stopped
     environment:
       - PYTHONUNBUFFERED=1
       - TZ=Asia/Seoul
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/vertex-ai-key.json
     healthcheck:
       test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/', timeout=5).raise_for_status()"]
       interval: 30s

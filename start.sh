@@ -68,7 +68,7 @@ services:
   stock-trading-api:
     volumes:
       - ./app:/app/app
-      - ./run.py:/app/run.py
+      - ./scripts/run/run.py:/app/scripts/run/run.py
     environment:
       - APP_ENV=development
 EOF

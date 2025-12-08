@@ -1,8 +1,7 @@
 import pandas as pd
 from app.db.supabase import supabase
-# stock.py는 아직 모듈로 옮기지 않았으므로 기존 임포트 유지
-from stock import collect_economic_data
-import stock
+# stock.py가 scripts/utils/로 이동했으므로 경로 수정
+from scripts.utils.stock import collect_economic_data
 import numpy as np
 from datetime import datetime, timedelta
 import pytz

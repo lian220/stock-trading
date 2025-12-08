@@ -22,18 +22,33 @@ VS Code의 Colab Extension을 사용하여 Google Colab 노트북을 T4 GPU로 �
 
 #### VS Code에서 설정:
 
-1. **노트북 파일 열기**
+1. **Colab Extension 설치**
+   - VS Code에서 Extensions 탭 열기 (Ctrl+Shift+X 또는 Cmd+Shift+X)
+   - "Google Colab" 검색
+   - Extension ID: `Google.colab` 설치
+
+2. **노트북 파일 열기**
    - `predict.py`를 `.ipynb` 형식으로 변환하거나
    - 기존 Colab 노트북을 VS Code에서 열기
+   - 또는 새 `.ipynb` 파일 생성
 
-2. **Colab 런타임 선택**
-   - 노트북 상단의 **"Select Kernel"** 버튼 클릭
-   - **"Colab"** 선택
-   - Google 계정으로 로그인
+3. **Colab 런타임 선택 및 로그인**
+   - 노트북 파일을 열면 상단 오른쪽에 **"Select Kernel"** 버튼이 표시됩니다
+   - **"Select Kernel"** 버튼 클릭
+   - 목록에서 **"Colab"** 선택
+   - **처음 선택 시**: 브라우저가 자동으로 열리거나 VS Code 내에서 Google 계정 로그인 창이 나타납니다
+   - Google 계정으로 로그인 (Gmail 계정 사용)
+   - 로그인 완료 후 VS Code로 돌아오면 Colab 런타임에 연결됩니다
 
-3. **GPU 런타임 선택**
-   - 런타임 선택 시 **"GPU"** 옵션 선택
+4. **GPU 런타임 선택**
+   - 런타임이 연결되면 다시 **"Select Kernel"** 클릭
+   - 또는 노트북 상단의 런타임 정보 클릭
+   - **"Change Runtime Type"** 또는 **"GPU"** 옵션 선택
    - T4 GPU가 자동으로 할당됩니다 (Colab Pro/Pro+ 사용 시)
+
+5. **노트북 실행**
+   - 노트북 셀을 클릭하고 **Shift + Enter** 또는 **▶️ Run** 버튼 클릭
+   - 또는 상단 메뉴에서 **"Run All"** 선택하여 모든 셀 실행
 
 #### 또는 Colab 웹에서 직접:
 
@@ -226,6 +241,105 @@ run_colab_trigger_now()
 **비교**:
 - Colab Pro+: 고정 비용 ($49.99/월)
 - Vertex AI: 사용한 만큼만 과금 (더 유연함)
+
+---
+
+## ❓ 자주 묻는 질문 (FAQ)
+
+### Q1: "Google 계정으로 로그인"은 파일을 어떻게 실행하는 건가요?
+
+**A**: 이것은 파일을 실행하는 것이 아니라, VS Code Extension의 UI를 통한 설정 과정입니다.
+
+**단계별 설명**:
+
+1. **VS Code에서 노트북 파일 열기**
+   ```bash
+   # 예: predict.ipynb 파일을 VS Code에서 열기
+   code predict.ipynb
+   ```
+
+2. **Select Kernel 버튼 클릭**
+   - 노트북 파일을 열면 상단 오른쪽에 "Select Kernel" 버튼이 보입니다
+   - 이 버튼을 클릭합니다
+
+3. **Colab 선택**
+   - 드롭다운 메뉴에서 "Colab" 선택
+   - 처음 선택하면 자동으로 브라우저가 열리거나 VS Code 내에서 로그인 창이 나타납니다
+
+4. **Google 계정 로그인**
+   - 브라우저에서 Google 계정 선택 및 로그인
+   - 권한 승인 (VS Code가 Colab에 접근할 수 있도록)
+   - 로그인 완료 후 VS Code로 자동으로 돌아옵니다
+
+5. **실제 코드 실행**
+   - 로그인 후 노트북 셀에서 **Shift + Enter** 또는 **▶️ Run** 버튼 클릭
+   - 이때 코드가 Google Colab의 원격 서버에서 실행됩니다
+
+**요약**: 
+- 로그인 = VS Code와 Google Colab을 연결하는 설정 과정
+- 실행 = 노트북 셀에서 Shift+Enter 또는 Run 버튼 클릭
+
+### Q2: 명령줄에서 실행할 수 있나요?
+
+**A**: Colab Extension은 VS Code UI를 통해서만 작동합니다. 명령줄로는 직접 실행할 수 없습니다.
+
+**대안**:
+- **Colab 웹에서 직접 실행**: https://colab.research.google.com
+- **Vertex AI Job 사용** (권장): 현재 프로젝트의 `run_predict_vertex_ai.py` 사용
+  ```bash
+  python run_predict_vertex_ai.py
+  ```
+
+### Q3: 자동으로 실행되게 할 수 있나요?
+
+**A**: Colab Extension 자체는 자동 실행을 지원하지 않습니다. 하지만 현재 프로젝트의 스케줄러를 사용하면 자동 실행이 가능합니다:
+
+```python
+# 스케줄러 시작 (매일 밤 11시 자동 실행)
+from app.utils.scheduler import start_scheduler
+start_scheduler()
+```
+
+이 방식은 Vertex AI Job을 사용하여 자동으로 실행됩니다.
+
+### Q4: Docker 컨테이너에서 Colab Extension을 사용할 수 있나요?
+
+**A**: ❌ **불가능합니다.**
+
+**이유**:
+1. **VS Code Extension 필요**: Colab Extension은 VS Code Extension이므로 VS Code 환경이 필요합니다
+2. **GUI 없음**: Docker 컨테이너는 일반적으로 GUI가 없는 헤드리스 환경입니다
+3. **브라우저 없음**: Google 계정 로그인을 위한 브라우저가 컨테이너 내부에 없습니다
+
+**코드 확인**:
+현재 프로젝트의 `scheduler.py`에서도 Docker 환경을 감지하고 Colab 실행을 차단합니다:
+
+```python
+# Docker 환경 확인
+is_docker = os.path.exists('/.dockerenv') or os.environ.get('DOCKER_CONTAINER') == 'true'
+
+if is_docker:
+    raise Exception("Docker 환경에서는 Selenium을 사용한 Colab 실행이 지원되지 않습니다.")
+```
+
+**Docker에서 사용 가능한 대안**:
+
+✅ **Vertex AI Job 사용** (권장):
+```python
+# Docker 컨테이너 내에서도 작동
+from app.utils.scheduler import start_scheduler
+start_scheduler()  # Vertex AI Job으로 자동 실행
+```
+
+또는 직접 실행:
+```bash
+# Docker 컨테이너 내에서
+python run_predict_vertex_ai.py
+```
+
+**요약**:
+- ❌ Colab Extension: VS Code에서만 작동, Docker 불가
+- ✅ Vertex AI Job: Docker에서도 작동 가능 (현재 프로젝트 방식)
 
 ---
 

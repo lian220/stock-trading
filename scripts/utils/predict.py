@@ -1,5 +1,5 @@
 # Supabase 클라이언트 설정
-!pip install supabase
+import os
 from supabase import create_client, Client
 import pandas as pd
 import numpy as np

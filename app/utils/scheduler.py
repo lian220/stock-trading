@@ -13,12 +13,22 @@ from app.services.economic_service import update_economic_data_in_background
 from app.utils.slack_notifier import slack_notifier
 import httpx
 
+# 타임아웃 방지를 위한 커스텀 StreamHandler
+class SafeStreamHandler(logging.StreamHandler):
+    """flush 실패 시 타임아웃 에러를 무시하는 안전한 StreamHandler"""
+    def flush(self):
+        try:
+            super().flush()
+        except (TimeoutError, OSError) as e:
+            # 로깅 실패를 무시 (무한 루프 방지)
+            pass
+
 # 로깅 설정
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.StreamHandler(),
+        SafeStreamHandler(),  # 타임아웃 방지 핸들러 사용
         logging.FileHandler('stock_scheduler.log')
     ]
 )
@@ -72,7 +82,7 @@ class StockScheduler:
             logger.info(f"기존 작업 취소: {job.job_func.__name__}")
         
         # 한국 시간 기준 밤 11시에 Colab 트리거 실행
-        schedule.every().day.at("11:00").do(self._run_colab_trigger)
+        schedule.every().day.at("23:00").do(self._run_colab_trigger)
         logger.info("Colab 트리거 스케줄 등록: 매일 11:00에 실행")
 
         # 한국 시간 기준 밤 11시 45분에 분석 작업 실행
@@ -116,100 +126,113 @@ class StockScheduler:
         return True
 
     def _run_colab_trigger(self, send_slack_notification: bool = True):
-        """Vertex AI Job 실행 함수 - 스케줄링된 시간에 실행됨"""
+        """Vertex AI Job 실행 (run_predict_vertex_ai.py)"""
         function_name = "_run_colab_trigger"
+        logger.info("=" * 60)
+        logger.info(f"[{function_name}] 함수 실행 시작")
+        logger.info("=" * 60)
         
-        # 중복 실행 방지: 이미 실행 중이면 건너뜀
         if self.colab_trigger_executing:
-            logger.warning(f"[{function_name}] Colab 트리거 작업이 이미 실행 중입니다. 중복 실행을 건너뜁니다.")
+            logger.warning(f"[{function_name}] 이미 실행 중입니다. 중복 실행을 방지합니다.")
             return False
         
         self.colab_trigger_executing = True
-        logger.info(f"[{function_name}] 함수 실행 시작")
-        if send_slack_notification:
-            send_scheduler_slack_notification(f"🚀 *Colab 트리거 작업 시작*\nVertex AI Job 실행을 시작합니다.")
         
         try:
-            # 새 스레드에서 비동기 함수 실행
-            import threading
-            def run_in_thread():
-                new_loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(new_loop)
-                try:
-                    new_loop.run_until_complete(self._execute_colab_trigger())
-                finally:
-                    new_loop.close()
-            
-            thread = threading.Thread(target=run_in_thread)
-            thread.start()
-            thread.join()
-            
-            logger.info(f"[{function_name}] 함수 실행 완료")
             if send_slack_notification:
-                send_scheduler_slack_notification(f"✅ *Colab 트리거 작업 완료*\nVertex AI Job 실행이 완료되었습니다.")
-        except Exception as e:
-            logger.error(f"[{function_name}] 함수 실행 중 오류 발생: {str(e)}", exc_info=True)
-            if send_slack_notification:
-                send_scheduler_slack_notification(f"❌ *Colab 트리거 작업 오류*\n오류 발생: {str(e)}")
-        finally:
-            # 실행 완료 후 플래그 해제
-            self.colab_trigger_executing = False
-
-    async def _execute_colab_trigger(self):
-        """Vertex AI Job으로 predict.py 실행 (Training Jobs 또는 Custom Jobs 선택)"""
-        function_name = "_execute_colab_trigger"
-        logger.info(f"[{function_name}] 함수 실행 시작")
-        
-        import os
-        
-        # Docker 환경 확인
-        is_docker = os.path.exists('/.dockerenv') or os.environ.get('DOCKER_CONTAINER') == 'true'
-        
-        if is_docker:
-            logger.warning(f"[{function_name}] ⚠️ Docker 환경에서는 Selenium을 사용한 Colab 실행이 지원되지 않습니다.")
-            logger.warning(f"[{function_name}] Docker 컨테이너 내부에는 GUI 브라우저가 없습니다.")
-            logger.warning(f"[{function_name}] 대안:")
-            logger.warning(f"[{function_name}]   1. 호스트 머신에서 API를 호출하거나")
-            logger.warning(f"[{function_name}]   2. Vertex AI Job API를 직접 호출하는 방식으로 변경하세요.")
-            raise Exception("Docker 환경에서는 Selenium을 사용한 Colab 실행이 지원되지 않습니다. 호스트 머신에서 실행하거나 Vertex AI Job API를 직접 사용하세요.")
-        
-        # Selenium 스크립트 실행 (run_colab_selenium.py)
-        import subprocess
-        import sys
-        
-        # 프로젝트 루트 디렉토리 찾기
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        project_root = os.path.dirname(os.path.dirname(current_dir))
-        script_path = os.path.join(project_root, "run_colab_selenium.py")
-        
-        if not os.path.exists(script_path):
-            logger.error(f"[{function_name}] ❌ Selenium 스크립트를 찾을 수 없습니다: {script_path}")
-            return
+                send_scheduler_slack_notification(f"🚀 *Vertex AI Job 시작*\nrun_predict_vertex_ai.py 실행을 시작합니다.")
             
-        logger.info(f"[{function_name}] Selenium 스크립트 실행: {script_path}")
-        
-        try:
-            # 비동기로 실행하지 않고 동기로 실행 (스레드 내부이므로 괜찮음)
-            result = subprocess.run(
-                [sys.executable, script_path],
-                capture_output=True,
-                text=True,
-                cwd=project_root
-            )
+            import subprocess
+            import sys
+            import os
+            from pathlib import Path
             
-            if result.returncode == 0:
-                logger.info(f"[{function_name}] ✅ Selenium 스크립트 실행 성공")
-                logger.info(result.stdout)
-            else:
-                logger.error(f"[{function_name}] ❌ Selenium 스크립트 실행 실패 (Exit Code: {result.returncode})")
-                logger.error(result.stderr)
-                raise Exception(f"Selenium Script Failed: {result.stderr}")
+            # run_predict_vertex_ai.py 파일 경로 확인
+            project_root = Path(__file__).parent.parent.parent
+            script_path = project_root / "scripts" / "run" / "run_predict_vertex_ai.py"
+            
+            if not script_path.exists():
+                logger.error(f"[{function_name}] ❌ run_predict_vertex_ai.py 파일을 찾을 수 없습니다: {script_path}")
+                if send_slack_notification:
+                    send_scheduler_slack_notification(f"❌ *Vertex AI Job 실패*\nrun_predict_vertex_ai.py 파일을 찾을 수 없습니다.")
+                return False
+            
+            logger.info(f"[{function_name}] 스크립트 경로: {script_path}")
+            
+            # 환경변수 설정
+            env = os.environ.copy()
+            if hasattr(settings, 'SUPABASE_URL') and settings.SUPABASE_URL:
+                env['SUPABASE_URL'] = settings.SUPABASE_URL
+            if hasattr(settings, 'SUPABASE_KEY') and settings.SUPABASE_KEY:
+                env['SUPABASE_KEY'] = settings.SUPABASE_KEY
+            if hasattr(settings, 'GCP_PROJECT_ID') and settings.GCP_PROJECT_ID:
+                env['GCP_PROJECT_ID'] = settings.GCP_PROJECT_ID
+            if hasattr(settings, 'GCP_REGION') and settings.GCP_REGION:
+                env['GCP_REGION'] = settings.GCP_REGION
+            if hasattr(settings, 'GCP_BUCKET_NAME') and settings.GCP_BUCKET_NAME:
+                env['GCP_BUCKET_NAME'] = settings.GCP_BUCKET_NAME
+            if hasattr(settings, 'GCP_STAGING_BUCKET') and settings.GCP_STAGING_BUCKET:
+                env['GCP_STAGING_BUCKET'] = settings.GCP_STAGING_BUCKET
+            
+            # GOOGLE_APPLICATION_CREDENTIALS 환경 변수 확인
+            if not env.get('GOOGLE_APPLICATION_CREDENTIALS'):
+                # 컨테이너 내부 경로 확인
+                container_creds_path = Path("/app/credentials/vertex-ai-key.json")
+                if container_creds_path.exists():
+                    env['GOOGLE_APPLICATION_CREDENTIALS'] = str(container_creds_path)
+                    logger.info(f"[{function_name}] 인증 파일 경로 설정: {container_creds_path}")
+            
+            try:
+                # run_predict_vertex_ai.py 실행
+                logger.info(f"[{function_name}] Vertex AI Job 실행 시작...")
+                result = subprocess.run(
+                    [sys.executable, str(script_path)],
+                    capture_output=True,
+                    text=True,
+                    cwd=str(project_root),
+                    env=env,
+                    timeout=7200  # 2시간 타임아웃
+                )
                 
-        except Exception as e:
-            logger.error(f"[{function_name}] 실행 중 오류 발생: {str(e)}")
-            raise
-    
-    # Vertex AI 관련 메서드 제거됨 (사용자 요청)
+                if result.returncode == 0:
+                    logger.info(f"[{function_name}] ✅ Vertex AI Job 실행 성공")
+                    logger.info(result.stdout)
+                    if send_slack_notification:
+                        # 출력의 마지막 부분만 전송 (너무 길면 잘림)
+                        output_preview = result.stdout[-1000:] if len(result.stdout) > 1000 else result.stdout
+                        send_scheduler_slack_notification(
+                            f"✅ *Vertex AI Job 완료*\n"
+                            f"run_predict_vertex_ai.py 실행이 성공적으로 완료되었습니다.\n\n"
+                            f"출력:\n```\n{output_preview}\n```"
+                        )
+                    return True
+                else:
+                    logger.error(f"[{function_name}] ❌ Vertex AI Job 실행 실패 (Exit Code: {result.returncode})")
+                    logger.error(result.stderr)
+                    if send_slack_notification:
+                        error_preview = result.stderr[-1000:] if len(result.stderr) > 1000 else result.stderr
+                        send_scheduler_slack_notification(
+                            f"❌ *Vertex AI Job 실패*\n"
+                            f"Exit Code: {result.returncode}\n\n"
+                            f"오류:\n```\n{error_preview}\n```"
+                        )
+                    return False
+                    
+            except subprocess.TimeoutExpired:
+                logger.error(f"[{function_name}] ❌ Vertex AI Job 타임아웃 (2시간 초과)")
+                if send_slack_notification:
+                    send_scheduler_slack_notification(f"❌ *Vertex AI Job 타임아웃*\n실행 시간이 2시간을 초과했습니다.")
+                return False
+            except Exception as e:
+                logger.error(f"[{function_name}] 실행 중 오류 발생: {str(e)}", exc_info=True)
+                if send_slack_notification:
+                    send_scheduler_slack_notification(f"❌ *Vertex AI Job 오류*\n오류 발생: {str(e)}")
+                return False
+                
+        finally:
+            self.colab_trigger_executing = False
+            logger.info(f"[{function_name}] 함수 실행 완료")
+            logger.info("=" * 60)
 
     def _run_predict_model(self):
         """AI 예측 모델 학습 및 예측 실행 (predict.py)"""
@@ -224,9 +247,10 @@ class StockScheduler:
         import os
         
         # predict.py 파일 경로 확인
-        predict_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "predict.py")
-        
-        if not os.path.exists(predict_path):
+        project_root = Path(__file__).parent.parent.parent
+        predict_path = project_root / "scripts" / "utils" / "predict.py"
+
+        if not predict_path.exists():
             logger.error(f"[{function_name}] ❌ predict.py 파일을 찾을 수 없습니다: {predict_path}")
             logger.info(f"[{function_name}] 함수 실행 완료 (실패)")
             return False
@@ -242,12 +266,12 @@ class StockScheduler:
             # predict.py 실행 (최대 2시간 타임아웃)
             logger.info(f"predict.py 실행 중... (경로: {predict_path})")
             result = subprocess.run(
-                [sys.executable, predict_path],
+                [sys.executable, str(predict_path)],
                 capture_output=True,
                 text=True,
                 timeout=7200,  # 2시간 타임아웃
                 env=env,
-                cwd=os.path.dirname(predict_path)  # 작업 디렉토리를 프로젝트 루트로 설정
+                cwd=str(predict_path.parent)  # 작업 디렉토리를 predict.py가 있는 디렉토리로 설정
             )
             
             if result.returncode == 0:

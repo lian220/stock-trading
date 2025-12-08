@@ -49,5 +49,5 @@ echo ""
 echo -e "${GREEN}✅ 로컬 환경에서는 Colab Selenium 실행이 지원됩니다!${NC}"
 echo ""
 
-python3 run.py
+python3 scripts/run/run.py
 

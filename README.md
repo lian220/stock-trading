@@ -74,7 +74,7 @@ cp env.sample .env
 # .env 파일을 편집하여 API 키 입력
 
 # 실행
-python run.py
+python scripts/run/run.py
 ```
 
 ## 📋 환경 변수 설정

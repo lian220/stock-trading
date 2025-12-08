@@ -1,0 +1,33 @@
+# 📚 문서 가이드
+
+이 폴더에는 프로젝트의 모든 가이드 문서가 분류별로 정리되어 있습니다.
+
+## 📁 폴더 구조
+
+### 🏗️ [gcp/](./gcp/)
+Google Cloud Platform 및 Vertex AI 관련 가이드
+- Colab Extension 스케줄링 가이드
+- Vertex AI DWS 가이드
+- GPU 할당량 증가 가이드
+- Colab Enterprise 스케줄링 가이드
+
+### ⚙️ [system/](./system/)
+시스템 및 스케줄러 관련 가이드
+- 스케줄러 가이드
+
+### 🤖 [recommendation/](./recommendation/)
+추천 시스템 및 예측 모델 관련 가이드
+- 추천시스템 전체 가이드
+- 통합추천시스템 가이드
+- 주식예측모델 가이드
+
+### 💰 [trading/](./trading/)
+자동매매 및 거래 관련 가이드
+- 매수 동작 가이드
+
+## 🔍 빠른 찾기
+
+- **GCP/Vertex AI 설정이 필요하신가요?** → [gcp/](./gcp/)
+- **스케줄러를 설정하고 싶으신가요?** → [system/](./system/)
+- **추천 시스템을 이해하고 싶으신가요?** → [recommendation/](./recommendation/)
+- **자동매매 동작을 확인하고 싶으신가요?** → [trading/](./trading/)
