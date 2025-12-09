@@ -6,7 +6,7 @@ Colab/Vertex AI Job 호출 API 라우터
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from typing import Optional
-from app.utils.scheduler import run_colab_trigger_now, stock_scheduler
+from app.utils.scheduler import run_vertex_ai_prediction_now, stock_scheduler
 import logging
 
 router = APIRouter()
@@ -36,30 +36,30 @@ async def trigger_colab_job(
     """
     try:
         # 이미 실행 중인지 확인
-        if stock_scheduler.colab_trigger_executing:
+        if stock_scheduler.prediction_executing:
             return {
                 "success": False,
-                "message": "Colab 트리거 작업이 이미 실행 중입니다. 잠시 후 다시 시도해주세요.",
+                "message": "Vertex AI 주가 예측 작업이 이미 실행 중입니다. 잠시 후 다시 시도해주세요.",
                 "status": "running"
             }
         
-        # 백그라운드에서 Colab 트리거 실행
-        def run_colab_task():
+        # 백그라운드에서 Vertex AI 예측 작업 실행
+        def run_prediction_task():
             try:
-                run_colab_trigger_now(send_slack_notification=send_slack_notification)
+                run_vertex_ai_prediction_now(send_slack_notification=send_slack_notification)
             except Exception as e:
-                logger.error(f"Colab 트리거 실행 중 오류 발생: {str(e)}", exc_info=True)
+                logger.error(f"Vertex AI 주가 예측 작업 실행 중 오류 발생: {str(e)}", exc_info=True)
         
-        background_tasks.add_task(run_colab_task)
+        background_tasks.add_task(run_prediction_task)
         
         return {
             "success": True,
-            "message": "Colab/Vertex AI Job이 시작되었습니다. 백그라운드에서 실행됩니다.",
+            "message": "Vertex AI 주가 예측 작업이 시작되었습니다. 백그라운드에서 실행됩니다.",
             "status": "started"
         }
     except Exception as e:
-        logger.error(f"Colab 트리거 실행 요청 중 오류 발생: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Colab 트리거 실행 중 오류 발생: {str(e)}")
+        logger.error(f"Vertex AI 주가 예측 작업 실행 요청 중 오류 발생: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Vertex AI 주가 예측 작업 실행 중 오류 발생: {str(e)}")
 
 
 @router.get("/status", summary="Colab/Vertex AI Job 실행 상태 조회")
@@ -72,13 +72,13 @@ def get_colab_job_status():
     - **status**: 상태 메시지
     """
     try:
-        is_running = stock_scheduler.colab_trigger_executing
+        is_running = stock_scheduler.prediction_executing
         
         return {
             "success": True,
             "is_running": is_running,
             "status": "running" if is_running else "idle",
-            "message": "Colab/Vertex AI Job이 실행 중입니다." if is_running else "Colab/Vertex AI Job이 대기 중입니다."
+            "message": "Vertex AI 주가 예측 작업이 실행 중입니다." if is_running else "Vertex AI 주가 예측 작업이 대기 중입니다."
         }
     except Exception as e:
         logger.error(f"Colab Job 상태 조회 중 오류 발생: {str(e)}", exc_info=True)

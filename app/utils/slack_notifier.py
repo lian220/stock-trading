@@ -1,9 +1,14 @@
 import httpx
 import logging
+import time
+import json
 from typing import Optional, Dict, Any
 from app.core.config import settings
 
 logger = logging.getLogger('slack_notifier')
+
+# httpx의 INFO 레벨 로그 비활성화
+logging.getLogger('httpx').setLevel(logging.WARNING)
 
 class SlackNotifier:
     """Slack 알림을 보내는 클래스"""
@@ -60,15 +65,60 @@ class SlackNotifier:
             if blocks:
                 payload["blocks"] = blocks
             
+            max_retries = 3
+            retry_count = 0
+            
             with httpx.Client(timeout=10.0) as client:
-                response = client.post(webhook_url, json=payload)
+                while retry_count <= max_retries:
+                    response = client.post(webhook_url, json=payload)
+                    
+                    if response.status_code == 200:
+                        logger.info(f"Slack 메시지 전송 성공 ({webhook_type})")
+                        return True
+                    elif response.status_code == 429:
+                        # Rate limit 에러 처리
+                        try:
+                            error_data = response.json()
+                            retry_after = error_data.get('retry_after', 1)
+                            retry_after = max(1, int(retry_after))  # 최소 1초
+                            
+                            if retry_count < max_retries:
+                                logger.warning(
+                                    f"Slack API rate limit 도달 ({webhook_type}). "
+                                    f"{retry_after}초 후 재시도합니다. (시도 {retry_count + 1}/{max_retries})"
+                                )
+                                time.sleep(retry_after)
+                                retry_count += 1
+                                continue
+                            else:
+                                logger.error(
+                                    f"Slack 메시지 전송 실패 ({webhook_type}): "
+                                    f"rate limit 재시도 횟수 초과 - {response.status_code} - {response.text}"
+                                )
+                                return False
+                        except (json.JSONDecodeError, ValueError, KeyError):
+                            # JSON 파싱 실패 시 기본값 사용
+                            logger.warning(
+                                f"Slack API rate limit 도달 ({webhook_type}). "
+                                f"1초 후 재시도합니다. (시도 {retry_count + 1}/{max_retries})"
+                            )
+                            if retry_count < max_retries:
+                                time.sleep(1)
+                                retry_count += 1
+                                continue
+                            else:
+                                logger.error(
+                                    f"Slack 메시지 전송 실패 ({webhook_type}): "
+                                    f"rate limit 재시도 횟수 초과 - {response.status_code} - {response.text}"
+                                )
+                                return False
+                    else:
+                        logger.error(f"Slack 메시지 전송 실패 ({webhook_type}): {response.status_code} - {response.text}")
+                        return False
                 
-                if response.status_code == 200:
-                    logger.info(f"Slack 메시지 전송 성공 ({webhook_type})")
-                    return True
-                else:
-                    logger.error(f"Slack 메시지 전송 실패 ({webhook_type}): {response.status_code} - {response.text}")
-                    return False
+                # 모든 재시도 실패
+                logger.error(f"Slack 메시지 전송 실패 ({webhook_type}): 최대 재시도 횟수 초과")
+                return False
                     
         except Exception as e:
             logger.error(f"Slack 메시지 전송 중 오류 발생 ({webhook_type}): {str(e)}")
@@ -176,6 +226,71 @@ class SlackNotifier:
         
         # 간단한 텍스트 메시지 (알림용)
         text = f"{title}: {stock_name}({ticker}) {quantity}주 @ ${price:,.2f}"
+        
+        return self.send_message(text, blocks, webhook_type='trading')
+    
+    def send_no_buy_notification(
+        self,
+        reason: str,
+        details: Optional[str] = None
+    ) -> bool:
+        """
+        매수를 하지 않을 때 알림을 전송합니다.
+        
+        Args:
+            reason: 매수를 하지 않는 이유 (예: "매수 대상 없음", "주말", "장 시간 아님", "잔고 부족" 등)
+            details: 추가 상세 정보 (선택)
+        
+        Returns:
+            bool: 전송 성공 여부
+        """
+        if not self.trading_enabled:
+            return False
+        
+        title = "⏸️ 자동 매수 작업 건너뜀"
+        
+        # Slack Block Kit 형식의 메시지 생성
+        blocks = [
+            {
+                "type": "header",
+                "text": {
+                    "type": "plain_text",
+                    "text": title,
+                    "emoji": True
+                }
+            },
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*이유:* {reason}"
+                }
+            }
+        ]
+        
+        if details:
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*상세 정보:*\n{details}"
+                }
+            })
+        
+        blocks.append({
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": f"🕒 시각: {self._get_current_time()}"
+                }
+            ]
+        })
+        
+        # 간단한 텍스트 메시지 (알림용)
+        text = f"{title}: {reason}"
+        if details:
+            text += f"\n{details}"
         
         return self.send_message(text, blocks, webhook_type='trading')
     

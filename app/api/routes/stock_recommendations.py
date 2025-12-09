@@ -1,9 +1,11 @@
 from fastapi import APIRouter, HTTPException
 from app.services.stock_recommendation_service import StockRecommendationService
 from app.utils.scheduler import run_auto_buy_now, start_scheduler, stop_scheduler, stock_scheduler, run_auto_sell_now, start_sell_scheduler, stop_sell_scheduler, get_scheduler_status
+import logging
 
 router = APIRouter()
 service = StockRecommendationService()
+logger = logging.getLogger(__name__)
 
 @router.get("/recommended-stocks", response_model=dict)
 async def get_recommended_stocks_route():
@@ -63,7 +65,8 @@ async def get_recommended_stocks_with_technical_and_sentiment():
     - get_stock_recommendations의 결과와 통합하여 반환
     """
     try:
-        result = service.get_combined_recommendations_with_technical_and_sentiment()
+        # API 호출 시에는 Slack 알림을 보내지 않음
+        result = service.get_combined_recommendations_with_technical_and_sentiment(send_slack_notification=False)
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"기술적 지표 및 감정 분석 조회 중 오류 발생: {str(e)}")
@@ -77,36 +80,48 @@ async def generate_complete_analysis():
     """
     try:
         # 1. 기술적 지표 생성 및 저장
-        print("1단계: 기술적 지표 생성 시작...")
+        logger.info("통합 분석 시작: 1단계 - 기술적 지표 생성 시작...")
         tech_results = service.generate_technical_recommendations()
-        print(f"기술적 지표 생성 완료: {tech_results['message']}")
+        tech_count = len(tech_results.get("data", []))
+        logger.info(f"통합 분석: 1단계 완료 - 기술적 지표 생성 완료 ({tech_count}개 종목)")
         
         # 2. 뉴스 감정 분석 수행
-        print("2단계: 뉴스 감정 분석 시작...")
+        logger.info("통합 분석: 2단계 - 뉴스 감정 분석 시작...")
         sentiment_results = service.fetch_and_store_sentiment_for_recommendations()
-        print(f"뉴스 감정 분석 완료: {sentiment_results['message']}")
+        sentiment_count = len(sentiment_results.get("results", []))
+        logger.info(f"통합 분석: 2단계 완료 - 뉴스 감정 분석 완료 ({sentiment_count}개 티커)")
         
         # 3. 통합 분석 조회
-        print("3단계: 통합 분석 결과 조회...")
-        combined_results = service.get_combined_recommendations_with_technical_and_sentiment()
+        logger.info("통합 분석: 3단계 - 통합 분석 결과 조회 시작...")
+        # 통합 분석 완료 시 슬랙 알림 전송
+        combined_results = service.get_combined_recommendations_with_technical_and_sentiment(send_slack_notification=True)
+        combined_count = len(combined_results.get("results", []))
+        logger.info(f"통합 분석: 3단계 완료 - 통합 분석 결과 조회 완료 ({combined_count}개 추천 종목)")
         
         # 4. 결과 통합 및 반환
+        logger.info("=" * 60)
+        logger.info("통합 분석 완료:")
+        logger.info(f"  - 기술적 지표 분석: {tech_count}개 종목")
+        logger.info(f"  - 감정 분석: {sentiment_count}개 티커")
+        logger.info(f"  - 최종 추천 종목: {combined_count}개")
+        logger.info("=" * 60)
+        
         return {
             "message": "통합 분석이 완료되었습니다",
             "technical_analysis": {
                 "message": tech_results["message"],
-                "count": len(tech_results.get("data", [])),
+                "count": tech_count,
             },
             "sentiment_analysis": {
                 "message": sentiment_results["message"],
-                "count": len(sentiment_results.get("results", [])),
+                "count": sentiment_count,
             },
             "combined_results": combined_results
         }
     except Exception as e:
-        print(f"통합 분석 중 오류 발생: {str(e)}")
+        logger.error(f"통합 분석 중 오류 발생: {str(e)}")
         import traceback
-        print(traceback.format_exc())
+        logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"통합 분석 중 오류 발생: {str(e)}")
 
 @router.get("/sell-candidates", response_model=dict)

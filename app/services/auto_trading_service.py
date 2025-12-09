@@ -99,8 +99,8 @@ class AutoTradingService:
             config = self.get_auto_trading_config()
         
         try:
-            # 통합 추천 데이터 가져오기
-            recommendations = self.stock_service.get_combined_recommendations_with_technical_and_sentiment()
+            # 통합 추천 데이터 가져오기 (서비스 호출 시에는 Slack 알림을 보내지 않음)
+            recommendations = self.stock_service.get_combined_recommendations_with_technical_and_sentiment(send_slack_notification=False)
             
             if not recommendations.get("results"):
                 return []

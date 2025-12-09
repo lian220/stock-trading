@@ -55,6 +55,7 @@ Thumbs.db
 
 # Sensitive Scripts
 run_colab_selenium.py
+switch-git.sh
 
 # Credentials
 credentials/

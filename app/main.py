@@ -30,13 +30,16 @@ from app.utils.scheduler import (
     start_economic_data_scheduler, stop_economic_data_scheduler
 )
 from contextlib import asynccontextmanager
+import logging
+
+logger = logging.getLogger('main')
 
 async def periodic_status_log():
     """30분마다 서버 상태를 로깅하는 백그라운드 태스크"""
     while True:
         await asyncio.sleep(1800)  # 30분 = 1800초
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        print(f"[{current_time}] 서버 실행 중...")
+        logger.info(f"서버 실행 중... [{current_time}]")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -80,35 +83,33 @@ def read_root():
 async def startup():
     # 시작 시 즉시 한 번 경제 데이터 수집 실행 (옵션으로 제어)
     if settings.RUN_ECONOMIC_DATA_ON_STARTUP:
-        print("서비스 시작 시 경제 데이터 수집을 즉시 실행합니다...")
+        logger.info("서비스 시작 시 경제 데이터 수집을 즉시 실행합니다...")
         try:
             await update_economic_data_in_background()
-            print("초기 경제 데이터 수집이 완료되었습니다.")
+            logger.info("초기 경제 데이터 수집이 완료되었습니다.")
         except Exception as e:
-            print(f"초기 경제 데이터 수집 중 오류 발생 (앱은 계속 실행됩니다): {str(e)}")
+            logger.error(f"초기 경제 데이터 수집 중 오류 발생 (앱은 계속 실행됩니다): {str(e)}")
             import traceback
-            print(traceback.format_exc())
+            logger.error(traceback.format_exc())
     else:
-        print("서버 시작 시 경제 데이터 수집이 비활성화되어 있습니다. (RUN_ECONOMIC_DATA_ON_STARTUP=false)")
+        logger.info("서버 시작 시 경제 데이터 수집이 비활성화되어 있습니다. (RUN_ECONOMIC_DATA_ON_STARTUP=false)")
     
     # 경제 데이터 업데이트 스케줄러 시작 (매일 한국시간 새벽 6시 5분에 실행)
     try:
         start_economic_data_scheduler()
     except Exception as e:
-        print(f"경제 데이터 스케줄러 시작 중 오류 발생: {str(e)}")
+        logger.error(f"경제 데이터 스케줄러 시작 중 오류 발생: {str(e)}")
     
     # 주식 자동매매 스케줄러 시작
     try:
         start_scheduler()
-        print("주식 자동매매 스케줄러가 시작되었습니다.")
     except Exception as e:
-        print(f"매수 스케줄러 시작 중 오류 발생: {str(e)}")
+        logger.error(f"매수 스케줄러 시작 중 오류 발생: {str(e)}")
     
     try:
         start_sell_scheduler()
-        print("주식 자동매도 스케줄러가 시작되었습니다.")
     except Exception as e:
-        print(f"매도 스케줄러 시작 중 오류 발생: {str(e)}")
+        logger.error(f"매도 스케줄러 시작 중 오류 발생: {str(e)}")
 
 if __name__ == "__main__":
     uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True, access_log=False)

@@ -3,6 +3,7 @@ import schedule
 import time
 import pytz
 from datetime import datetime, timedelta
+from pathlib import Path
 import threading
 from typing import Callable
 from app.services.stock_recommendation_service import StockRecommendationService
@@ -65,7 +66,8 @@ class StockScheduler:
         self.scheduler_thread = None
         self.buy_executing = False  # 매수 작업 실행 중 플래그 (중복 실행 방지)
         self.analysis_executing = False  # 분석 작업 실행 중 플래그 (중복 실행 방지)
-        self.colab_trigger_executing = False  # Colab 트리거 작업 실행 중 플래그 (중복 실행 방지)
+        self.prediction_executing = False  # Vertex AI 예측 작업 실행 중 플래그 (중복 실행 방지)
+        self.stopping = False  # 중지 중 플래그 (중복 중지 방지)
     
     def start(self):
         """매수 스케줄러 시작"""
@@ -76,22 +78,18 @@ class StockScheduler:
         # 기존 작업이 있다면 먼저 취소 (중복 등록 방지)
         buy_jobs = [job for job in schedule.jobs if job.job_func.__name__ == '_run_auto_buy']
         analysis_jobs = [job for job in schedule.jobs if job.job_func.__name__ == '_run_analysis']
-        vertex_ai_jobs = [job for job in schedule.jobs if job.job_func.__name__ == '_run_colab_trigger']
-        for job in buy_jobs + analysis_jobs + vertex_ai_jobs:
+        prediction_jobs = [job for job in schedule.jobs if job.job_func.__name__ == '_run_vertex_ai_prediction']
+        for job in buy_jobs + analysis_jobs + prediction_jobs:
             schedule.cancel_job(job)
-            logger.info(f"기존 작업 취소: {job.job_func.__name__}")
         
-        # 한국 시간 기준 밤 11시에 Colab 트리거 실행
-        schedule.every().day.at("23:00").do(self._run_colab_trigger)
-        logger.info("Colab 트리거 스케줄 등록: 매일 11:00에 실행")
+        # 한국 시간 기준 밤 11시에 Vertex AI 예측 작업 실행
+        schedule.every().day.at("23:00").do(self._run_vertex_ai_prediction)
 
         # 한국 시간 기준 밤 11시 45분에 분석 작업 실행
         schedule.every().day.at("23:45").do(self._run_analysis)
-        logger.info("분석 스케줄 등록: 매일 23:45에 실행")
         
         # 한국 시간 기준 밤 12시(00:00)에 매수 작업 실행
         schedule.every().day.at("00:00").do(self._run_auto_buy)
-        logger.info("매수 스케줄 등록: 매일 00:00에 실행")
         
         # 별도 스레드에서 스케줄러 실행
         self.running = True
@@ -100,47 +98,54 @@ class StockScheduler:
         self.scheduler_thread.daemon = True
         self.scheduler_thread.start()
         
+        # 하나의 상세한 로그로 통합
         logger.info("주식 자동매매 스케줄러가 시작되었습니다.")
-        logger.info("  - Colab 트리거: 매일 밤 11시")
-        logger.info("  - 분석: 매일 밤 11시 45분 (기술적+감정+AI 통합 분석)")
-        logger.info("  - 매수: 매일 밤 12시 (통합 분석 결과 기반)")
+        logger.info("  - Vertex AI 예측: 매일 23:00")
+        logger.info("  - 분석: 매일 23:45 (기술적+감정+AI 통합)")
+        logger.info("  - 매수: 매일 00:00")
         return True
     
     def stop(self):
         """매수 스케줄러 중지 (분석 스케줄러도 함께 중지)"""
         if not self.running:
-            logger.warning("매수 스케줄러가 실행 중이 아닙니다.")
             return False
         
+        if self.stopping:
+            return False  # 이미 중지 중이면 중복 로그 방지
+        
+        self.stopping = True
         self.running = False
         self.analysis_running = False
         if self.scheduler_thread:
             self.scheduler_thread.join(timeout=5)
         
         # 매수 및 분석 관련 작업 취소 (sell 스케줄러는 유지)
-        vertex_ai_jobs = [job for job in schedule.jobs if job.job_func.__name__ == '_run_colab_trigger']
-        for job in buy_jobs + analysis_jobs + vertex_ai_jobs:
+        buy_jobs = [job for job in schedule.jobs if job.job_func.__name__ == '_run_auto_buy']
+        analysis_jobs = [job for job in schedule.jobs if job.job_func.__name__ == '_run_analysis']
+        prediction_jobs = [job for job in schedule.jobs if job.job_func.__name__ == '_run_vertex_ai_prediction']
+        for job in buy_jobs + analysis_jobs + prediction_jobs:
             schedule.cancel_job(job)
         
         logger.info("매수 및 분석 스케줄러가 중지되었습니다.")
+        self.stopping = False
         return True
 
-    def _run_colab_trigger(self, send_slack_notification: bool = True):
-        """Vertex AI Job 실행 (run_predict_vertex_ai.py)"""
-        function_name = "_run_colab_trigger"
+    def _run_vertex_ai_prediction(self, send_slack_notification: bool = True):
+        """Vertex AI를 사용한 주가 예측 작업 실행 (run_predict_vertex_ai.py)"""
+        function_name = "_run_vertex_ai_prediction"
         logger.info("=" * 60)
-        logger.info(f"[{function_name}] 함수 실행 시작")
+        logger.info(f"[{function_name}] Vertex AI 주가 예측 작업 시작")
         logger.info("=" * 60)
         
-        if self.colab_trigger_executing:
+        if self.prediction_executing:
             logger.warning(f"[{function_name}] 이미 실행 중입니다. 중복 실행을 방지합니다.")
             return False
         
-        self.colab_trigger_executing = True
+        self.prediction_executing = True
         
         try:
             if send_slack_notification:
-                send_scheduler_slack_notification(f"🚀 *Vertex AI Job 시작*\nrun_predict_vertex_ai.py 실행을 시작합니다.")
+                send_scheduler_slack_notification(f"🚀 *Vertex AI 주가 예측 시작*\nrun_predict_vertex_ai.py 실행을 시작합니다.")
             
             import subprocess
             import sys
@@ -154,10 +159,10 @@ class StockScheduler:
             if not script_path.exists():
                 logger.error(f"[{function_name}] ❌ run_predict_vertex_ai.py 파일을 찾을 수 없습니다: {script_path}")
                 if send_slack_notification:
-                    send_scheduler_slack_notification(f"❌ *Vertex AI Job 실패*\nrun_predict_vertex_ai.py 파일을 찾을 수 없습니다.")
+                    send_scheduler_slack_notification(f"❌ *Vertex AI 주가 예측 실패*\nrun_predict_vertex_ai.py 파일을 찾을 수 없습니다.")
                 return False
             
-            logger.info(f"[{function_name}] 스크립트 경로: {script_path}")
+            logger.info(f"[{function_name}] 예측 스크립트 경로: {script_path}")
             
             # 환경변수 설정
             env = os.environ.copy()
@@ -184,7 +189,7 @@ class StockScheduler:
             
             try:
                 # run_predict_vertex_ai.py 실행
-                logger.info(f"[{function_name}] Vertex AI Job 실행 시작...")
+                logger.info(f"[{function_name}] Vertex AI 주가 예측 작업 실행 중...")
                 result = subprocess.run(
                     [sys.executable, str(script_path)],
                     capture_output=True,
@@ -195,42 +200,42 @@ class StockScheduler:
                 )
                 
                 if result.returncode == 0:
-                    logger.info(f"[{function_name}] ✅ Vertex AI Job 실행 성공")
+                    logger.info(f"[{function_name}] ✅ Vertex AI 주가 예측 작업 완료")
                     logger.info(result.stdout)
                     if send_slack_notification:
                         # 출력의 마지막 부분만 전송 (너무 길면 잘림)
                         output_preview = result.stdout[-1000:] if len(result.stdout) > 1000 else result.stdout
                         send_scheduler_slack_notification(
-                            f"✅ *Vertex AI Job 완료*\n"
+                            f"✅ *Vertex AI 주가 예측 완료*\n"
                             f"run_predict_vertex_ai.py 실행이 성공적으로 완료되었습니다.\n\n"
                             f"출력:\n```\n{output_preview}\n```"
                         )
                     return True
                 else:
-                    logger.error(f"[{function_name}] ❌ Vertex AI Job 실행 실패 (Exit Code: {result.returncode})")
+                    logger.error(f"[{function_name}] ❌ Vertex AI 주가 예측 작업 실패 (Exit Code: {result.returncode})")
                     logger.error(result.stderr)
                     if send_slack_notification:
                         error_preview = result.stderr[-1000:] if len(result.stderr) > 1000 else result.stderr
                         send_scheduler_slack_notification(
-                            f"❌ *Vertex AI Job 실패*\n"
+                            f"❌ *Vertex AI 주가 예측 실패*\n"
                             f"Exit Code: {result.returncode}\n\n"
                             f"오류:\n```\n{error_preview}\n```"
                         )
                     return False
                     
             except subprocess.TimeoutExpired:
-                logger.error(f"[{function_name}] ❌ Vertex AI Job 타임아웃 (2시간 초과)")
+                logger.error(f"[{function_name}] ❌ Vertex AI 주가 예측 작업 타임아웃 (2시간 초과)")
                 if send_slack_notification:
-                    send_scheduler_slack_notification(f"❌ *Vertex AI Job 타임아웃*\n실행 시간이 2시간을 초과했습니다.")
+                    send_scheduler_slack_notification(f"❌ *Vertex AI 주가 예측 타임아웃*\n실행 시간이 2시간을 초과했습니다.")
                 return False
             except Exception as e:
                 logger.error(f"[{function_name}] 실행 중 오류 발생: {str(e)}", exc_info=True)
                 if send_slack_notification:
-                    send_scheduler_slack_notification(f"❌ *Vertex AI Job 오류*\n오류 발생: {str(e)}")
+                    send_scheduler_slack_notification(f"❌ *Vertex AI 주가 예측 오류*\n오류 발생: {str(e)}")
                 return False
                 
         finally:
-            self.colab_trigger_executing = False
+            self.prediction_executing = False
             logger.info(f"[{function_name}] 함수 실행 완료")
             logger.info("=" * 60)
 
@@ -343,15 +348,19 @@ class StockScheduler:
             self.scheduler_thread.start()
         
         self.sell_running = True
-        logger.info("매도 스케줄러가 시작되었습니다. 1분마다 매도 대상을 확인합니다.")
+        logger.info("매도 스케줄러가 시작되었습니다.")
+        logger.info("  - 실행 주기: 1분마다 매도 대상 확인")
         return True
     
     def stop_sell_scheduler(self):
         """매도 스케줄러 중지"""
         if not self.sell_running:
-            logger.warning("매도 스케줄러가 실행 중이 아닙니다.")
             return False
         
+        if self.stopping:
+            return False  # 이미 중지 중이면 중복 로그 방지
+        
+        self.stopping = True
         # 매도 관련 작업만 취소
         sell_jobs = [job for job in schedule.jobs if job.job_func.__name__ == '_run_auto_sell']
         for job in sell_jobs:
@@ -365,6 +374,7 @@ class StockScheduler:
             self.scheduler_thread = None
             
         logger.info("매도 스케줄러가 중지되었습니다.")
+        self.stopping = False
         return True
     
     def _run_scheduler(self):
@@ -392,8 +402,23 @@ class StockScheduler:
         try:
             # 1단계: 기술적 지표 생성 및 저장
             logger.info(f"[{function_name}] 1단계: 기술적 지표 분석 시작...")
-            tech_result = self.recommendation_service.generate_technical_recommendations()
+            # 스케줄러에서 슬랙 알림을 관리하므로 서비스 레이어에서는 슬랙 알림 비활성화
+            tech_result = self.recommendation_service.generate_technical_recommendations(send_slack_notification=False)
             logger.info(f"[{function_name}] ✅ 기술적 지표 분석 완료: {tech_result.get('message', '')}")
+            
+            # 기술적 지표 분석 완료 슬랙 알림 (스케줄러에서 관리)
+            if send_slack_notification:
+                tech_data = tech_result.get('data', [])
+                recommended_count = len([r for r in tech_data if r.get('추천_여부', False)])
+                total_count = len(tech_data)
+                # 날짜 정보는 recommendations의 첫 번째 항목에서 가져오거나, 없으면 현재 날짜 사용
+                date_str = tech_data[0].get('날짜', datetime.now().strftime("%Y-%m-%d")) if tech_data else datetime.now().strftime("%Y-%m-%d")
+                send_scheduler_slack_notification(
+                    f"📊 *기술적 지표 분석 완료*\n"
+                    f"날짜: {date_str}\n"
+                    f"분석 종목: {total_count}개\n"
+                    f"추천 종목: {recommended_count}개"
+                )
             
             # 2단계: 뉴스 감정 분석 수행
             logger.info(f"[{function_name}] 2단계: 뉴스 감정 분석 시작...")
@@ -402,20 +427,19 @@ class StockScheduler:
             
             # 3단계: 통합 분석 결과 조회 (슬랙 알림 포함)
             logger.info(f"[{function_name}] 3단계: 통합 분석 결과 조회 및 슬랙 알림...")
-            combined_result = self.recommendation_service.get_combined_recommendations_with_technical_and_sentiment()
+            # send_slack_notification이 True인 경우에만 Slack 알림 전송 (get_combined_recommendations_with_technical_and_sentiment 내부에서 처리)
+            combined_result = self.recommendation_service.get_combined_recommendations_with_technical_and_sentiment(
+                send_slack_notification=send_slack_notification
+            )
             
             final_count = len(combined_result.get('results', []))
             logger.info(f"[{function_name}] ✅ 통합 분석 완료: {final_count}개 종목 추천")
             logger.info(f"[{function_name}]    매수 대상: {combined_result.get('message', '')}")
             
             logger.info("=" * 50)
-            if send_slack_notification:
-                logger.info(f"[{function_name}] 함수 실행 완료 - 슬랙 알림 전송됨")
-            else:
-                logger.info(f"[{function_name}] 함수 실행 완료")
+            logger.info(f"[{function_name}] 함수 실행 완료")
             logger.info("=" * 50)
-            if send_slack_notification:
-                send_scheduler_slack_notification(f"✅ *통합 분석 작업 완료*\n{final_count}개 종목 추천 완료")
+            # get_combined_recommendations_with_technical_and_sentiment 내부에서 이미 Slack 알림을 전송하므로 중복 전송 제거
             
         except Exception as e:
             logger.error(f"[{function_name}] ❌ 통합 분석 중 오류 발생: {str(e)}", exc_info=True)
@@ -635,6 +659,11 @@ class StockScheduler:
         # 주말 체크
         if ny_weekday >= 5:  # 토요일(5) 또는 일요일(6)
             logger.info(f"[{function_name}] 현재 시간 (한국: {now_in_korea.strftime('%Y-%m-%d %H:%M:%S')}, 뉴욕: {now_in_ny.strftime('%Y-%m-%d %H:%M:%S')})은 주말입니다. 매수 작업을 건너뜁니다.")
+            if send_slack_notification:
+                slack_notifier.send_no_buy_notification(
+                    reason="주말",
+                    details=f"현재 시간 (한국: {now_in_korea.strftime('%Y-%m-%d %H:%M:%S')}, 뉴욕: {now_in_ny.strftime('%Y-%m-%d %H:%M:%S')})은 주말입니다."
+                )
             logger.info(f"[{function_name}] 함수 실행 완료 (주말로 인한 건너뜀)")
             return
         
@@ -651,6 +680,11 @@ class StockScheduler:
         if not is_market_hours:
             # 주말이거나 장 시간이 아닌 경우
             logger.info(f"[{function_name}] 현재 시간 (한국: {now_in_korea.strftime('%Y-%m-%d %H:%M:%S')}, 뉴욕: {now_in_ny.strftime('%Y-%m-%d %H:%M:%S')})은 미국 장 시간이 아닙니다. 매수 작업을 건너뜁니다.")
+            if send_slack_notification:
+                slack_notifier.send_no_buy_notification(
+                    reason="장 시간 아님",
+                    details=f"현재 시간 (한국: {now_in_korea.strftime('%Y-%m-%d %H:%M:%S')}, 뉴욕: {now_in_ny.strftime('%Y-%m-%d %H:%M:%S')})은 미국 장 시간이 아닙니다.\n미국 주식 시장은 평일 9:30 AM - 4:00 PM ET입니다."
+                )
             logger.info(f"[{function_name}] 함수 실행 완료 (장 시간 아님)")
             return
         
@@ -662,6 +696,11 @@ class StockScheduler:
             balance_result = get_all_overseas_balances()
             if balance_result.get("rt_cd") != "0":
                 logger.error(f"[{function_name}] 보유 종목 조회 실패: {balance_result.get('msg1', '알 수 없는 오류')}")
+                if send_slack_notification:
+                    slack_notifier.send_no_buy_notification(
+                        reason="보유 종목 조회 실패",
+                        details=balance_result.get('msg1', '알 수 없는 오류')
+                    )
                 logger.info(f"[{function_name}] 함수 실행 완료 (보유 종목 조회 실패)")
                 return
             
@@ -691,23 +730,46 @@ class StockScheduler:
                     logger.info(f"[{function_name}] 💰 구매 가능 금액: ${available_cash:,.2f}")
                 else:
                     logger.warning(f"[{function_name}] ⚠️ 주문가능금액 조회 실패: output이 비어있습니다.")
+                    if send_slack_notification:
+                        slack_notifier.send_no_buy_notification(
+                            reason="주문가능금액 조회 실패",
+                            details="주문가능금액 조회 결과가 비어있습니다."
+                        )
                     logger.info(f"[{function_name}] 함수 실행 완료 (주문가능금액 조회 실패)")
                     return
             else:
                 logger.error(f"[{function_name}] 주문가능금액 조회 실패: {order_psbl_result.get('msg1', '알 수 없는 오류')}")
+                if send_slack_notification:
+                    slack_notifier.send_no_buy_notification(
+                        reason="주문가능금액 조회 실패",
+                        details=order_psbl_result.get('msg1', '알 수 없는 오류')
+                    )
                 logger.info(f"[{function_name}] 함수 실행 완료 (주문가능금액 조회 실패)")
                 return
                 
         except Exception as e:
             logger.error(f"[{function_name}] 보유 종목 및 잔고 조회 중 오류 발생: {str(e)}", exc_info=True)
+            if send_slack_notification:
+                slack_notifier.send_no_buy_notification(
+                    reason="보유 종목 및 잔고 조회 오류",
+                    details=str(e)
+                )
             logger.info(f"[{function_name}] 함수 실행 완료 (오류)")
             return
             
         # StockRecommendationService에서 이미 필터링된 매수 대상 종목 가져오기
-        recommendations = self.recommendation_service.get_combined_recommendations_with_technical_and_sentiment()
+        # 매수 작업에서는 분석 완료 Slack 알림이 불필요하므로 send_slack_notification=False로 설정
+        recommendations = self.recommendation_service.get_combined_recommendations_with_technical_and_sentiment(
+            send_slack_notification=False
+        )
         
         if not recommendations or not recommendations.get("results"):
             logger.info(f"[{function_name}] 매수 대상 종목이 없습니다.")
+            if send_slack_notification:
+                slack_notifier.send_no_buy_notification(
+                    reason="매수 대상 종목 없음",
+                    details="통합 분석 결과 매수 조건을 만족하는 종목이 없습니다."
+                )
             logger.info(f"[{function_name}] 함수 실행 완료")
             return
         
@@ -715,6 +777,11 @@ class StockScheduler:
         
         if not buy_candidates:
             logger.info(f"[{function_name}] 매수 조건을 만족하는 종목이 없습니다.")
+            if send_slack_notification:
+                slack_notifier.send_no_buy_notification(
+                    reason="매수 조건 불만족",
+                    details="매수 조건을 만족하는 종목이 없습니다."
+                )
             logger.info(f"[{function_name}] 함수 실행 완료")
             return
         
@@ -836,14 +903,28 @@ class StockScheduler:
         
         # 매수 결과 요약 Slack 알림 (스케줄된 시간에만 전송)
         if send_slack_notification:
-            summary_message = (
-                f"✅ *자동 매수 작업 완료*\n"
-                f"총 매수 대상: {len(buy_candidates)}개\n"
-                f"매수 성공: {successful_purchases}개\n"
-                f"잔고 부족으로 건너뜀: {skipped_no_cash}개\n"
-                f"남은 잔고: ${available_cash:,.2f}"
-            )
-            send_scheduler_slack_notification(summary_message)
+            if successful_purchases == 0:
+                # 매수를 하나도 하지 않은 경우
+                if skipped_no_cash > 0:
+                    slack_notifier.send_no_buy_notification(
+                        reason="잔고 부족",
+                        details=f"총 매수 대상: {len(buy_candidates)}개\n잔고 부족으로 건너뜀: {skipped_no_cash}개\n현재 잔고: ${available_cash:,.2f}"
+                    )
+                else:
+                    slack_notifier.send_no_buy_notification(
+                        reason="매수 성공 없음",
+                        details=f"총 매수 대상: {len(buy_candidates)}개\n매수 성공: 0개\n남은 잔고: ${available_cash:,.2f}"
+                    )
+            else:
+                # 매수 성공한 경우 요약 알림
+                summary_message = (
+                    f"✅ *자동 매수 작업 완료*\n"
+                    f"총 매수 대상: {len(buy_candidates)}개\n"
+                    f"매수 성공: {successful_purchases}개\n"
+                    f"잔고 부족으로 건너뜀: {skipped_no_cash}개\n"
+                    f"남은 잔고: ${available_cash:,.2f}"
+                )
+                send_scheduler_slack_notification(summary_message)
 
 # 싱글톤 인스턴스 생성
 stock_scheduler = StockScheduler()
@@ -909,9 +990,9 @@ def run_auto_sell_now():
     """즉시 매도 실행 함수 (테스트용)"""
     stock_scheduler._run_auto_sell()
 
-def run_colab_trigger_now(send_slack_notification: bool = False):
-    """즉시 Vertex AI Job 실행 함수 (API 호출용)"""
-    return stock_scheduler._run_colab_trigger(send_slack_notification=send_slack_notification)
+def run_vertex_ai_prediction_now(send_slack_notification: bool = False):
+    """즉시 Vertex AI 주가 예측 작업 실행 함수 (API 호출용)"""
+    return stock_scheduler._run_vertex_ai_prediction(send_slack_notification=send_slack_notification)
 
 def run_analysis_now(send_slack_notification: bool = False):
     """즉시 분석 실행 함수 (API 호출용)"""
@@ -920,6 +1001,7 @@ def run_analysis_now(send_slack_notification: bool = False):
 # 경제 데이터 스케줄러 관련 변수 및 함수
 economic_data_scheduler_running = False
 economic_data_scheduler_thread = None
+economic_data_scheduler_stopping = False  # 중지 중 플래그 (중복 중지 방지)
 
 def _run_economic_data_update(send_slack_notification: bool = True):
     """경제 데이터 업데이트 실행 함수"""
@@ -975,17 +1057,21 @@ def start_economic_data_scheduler():
     economic_data_scheduler_thread.start()
     
     logger = logging.getLogger('economic_scheduler')
-    logger.info("경제 데이터 업데이트 스케줄러가 시작되었습니다. 한국 시간 새벽 6시 5분에 실행됩니다.")
+    logger.info("경제 데이터 업데이트 스케줄러가 시작되었습니다.")
+    logger.info("  - 실행 시간: 한국 시간 새벽 6시 5분")
     return True
 
 def stop_economic_data_scheduler():
     """경제 데이터 업데이트 스케줄러 중지 함수"""
-    global economic_data_scheduler_running, economic_data_scheduler_thread
+    global economic_data_scheduler_running, economic_data_scheduler_thread, economic_data_scheduler_stopping
     
     if not economic_data_scheduler_running:
-        logger = logging.getLogger('economic_scheduler')
-        logger.warning("경제 데이터 스케줄러가 실행 중이 아닙니다.")
         return False
+    
+    if economic_data_scheduler_stopping:
+        return False  # 이미 중지 중이면 중복 로그 방지
+    
+    economic_data_scheduler_stopping = True
     
     # 경제 데이터 관련 작업 취소
     economic_jobs = [job for job in schedule.jobs if job.job_func.__name__ == '_run_economic_data_update']
@@ -999,6 +1085,7 @@ def stop_economic_data_scheduler():
     
     logger = logging.getLogger('economic_scheduler')
     logger.info("경제 데이터 업데이트 스케줄러가 중지되었습니다.")
+    economic_data_scheduler_stopping = False
     return True
 
 def run_economic_data_update_now():

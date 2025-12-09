@@ -362,5 +362,3 @@ async def update_economic_data_in_background():
             "total_records": 0,
             "updated_records": 0
         }
-
-print(f"Supabase URL: {settings.SUPABASE_URL}")

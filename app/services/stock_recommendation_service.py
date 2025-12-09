@@ -7,6 +7,12 @@ import numpy as np
 from app.core.config import settings
 from app.services.balance_service import get_overseas_balance
 from app.utils.slack_notifier import slack_notifier
+import logging
+
+logger = logging.getLogger('stock_recommendation_service')
+
+# 모듈 레벨에서 중복 로드 방지
+_mapping_loaded = False
 
 def load_stock_ticker_mapping():
     """
@@ -17,11 +23,16 @@ def load_stock_ticker_mapping():
             - dict: {stock_name: ticker} 형태의 딕셔너리
             - set: ETF 주식명들의 집합
     """
+    global _mapping_loaded
+    if _mapping_loaded:
+        # 이미 로드된 경우 캐시된 값 반환 (중복 로드 방지)
+        return getattr(load_stock_ticker_mapping, '_cached_mapping', ({}, set()))
+    
     try:
         response = supabase.table("stock_ticker_mapping").select("stock_name, ticker, is_etf").eq("is_active", True).execute()
         
         if not response.data:
-            print("경고: stock_ticker_mapping 테이블에서 데이터를 찾을 수 없습니다. 빈 딕셔너리를 반환합니다.")
+            logger.warning("stock_ticker_mapping 테이블에서 데이터를 찾을 수 없습니다. 빈 딕셔너리를 반환합니다.")
             return {}, set()
         
         # 딕셔너리로 변환
@@ -29,13 +40,17 @@ def load_stock_ticker_mapping():
         # ETF 목록 추출
         etf_stocks = {item["stock_name"] for item in response.data if item.get("is_etf", False)}
         
-        print(f"stock_ticker_mapping에서 {len(mapping)}개의 매핑을 로드했습니다. (ETF: {len(etf_stocks)}개)")
+        # 캐시 저장
+        load_stock_ticker_mapping._cached_mapping = (mapping, etf_stocks)
+        _mapping_loaded = True
+        
+        logger.info(f"stock_ticker_mapping에서 {len(mapping)}개의 매핑을 로드했습니다. (ETF: {len(etf_stocks)}개)")
         return mapping, etf_stocks
     
     except Exception as e:
-        print(f"stock_ticker_mapping 로드 중 오류 발생: {str(e)}")
+        logger.error(f"stock_ticker_mapping 로드 중 오류 발생: {str(e)}")
         import traceback
-        print(traceback.format_exc())
+        logger.error(traceback.format_exc())
         return {}, set()
 
 # 한국어 주식명과 티커 심볼 매핑 (stock_ticker_mapping 테이블에서 동적으로 로드)
@@ -72,8 +87,12 @@ class StockRecommendationService:
         signal = self.calculate_ema(macd, signal_period)
         return macd, signal
 
-    def generate_technical_recommendations(self):
-        """기술적 지표를 기반으로 추천 데이터를 생성하고 Supabase에 저장"""
+    def generate_technical_recommendations(self, send_slack_notification: bool = False):
+        """기술적 지표를 기반으로 추천 데이터를 생성하고 Supabase에 저장
+        
+        Args:
+            send_slack_notification: Slack 알림 전송 여부 (기본값: False, 스케줄러에서 관리)
+        """
         # 최근 6개월 데이터만 가져오기
         end_date = datetime.now()
         start_date = end_date - timedelta(days=self.lookback_days)
@@ -132,45 +151,49 @@ class StockRecommendationService:
             # 오늘 날짜의 데이터만 삭제 (중복 방지)
             today_str = latest_date.strftime("%Y-%m-%d")
             supabase.table("stock_recommendations").delete().eq("날짜", today_str).execute()
-            print(f"기존 데이터 삭제 완료: {today_str}")
             
             # 새 데이터 삽입 (UPSERT 사용하여 중복 시 업데이트)
             # upsert는 기본 키("날짜", "종목")가 중복되면 업데이트, 없으면 삽입
             supabase.table("stock_recommendations").upsert(recommendations).execute()
-            print(f"새 데이터 삽입 완료: {len(recommendations)}개 레코드")
+            
+            # 하나의 상세한 로그로 통합
+            recommended_count = len([r for r in recommendations if r.get('추천_여부', False)])
+            logger.info(f"기술적 지표 분석 완료: {today_str} 기준 {len(recommendations)}개 종목 분석, 추천 종목 {recommended_count}개")
         
         except Exception as e:
             print(f"오류 발생: {str(e)}")
             import traceback
             print(traceback.format_exc())  # 상세 스택 트레이스 출력
             
-            # 슬랙 알림 - 실패
-            slack_notifier.send_analysis_notification(
-                analysis_type='technical',
-                total_stocks=len(self.stock_columns),
-                success=False,
-                error_message=str(e)
-            )
+            # 슬랙 알림 - 실패 (send_slack_notification이 True인 경우에만)
+            if send_slack_notification:
+                slack_notifier.send_analysis_notification(
+                    analysis_type='technical',
+                    total_stocks=len(self.stock_columns),
+                    success=False,
+                    error_message=str(e)
+                )
             
             raise Exception(f"추천 주식 분석 중 오류: {str(e)}")
         
-        # 슬랙 알림 - 성공
-        recommended_stocks = [rec for rec in recommendations if rec.get('추천_여부', False)]
-        formatted_recommendations = [
-            {
-                'stock_name': rec['종목'],
-                'ticker': STOCK_TO_TICKER.get(rec['종목'], 'N/A'),
-                'recommendation_score': rec.get('RSI', 0)
-            }
-            for rec in recommended_stocks
-        ]
-        
-        slack_notifier.send_analysis_notification(
-            analysis_type='technical',
-            total_stocks=len(self.stock_columns),
-            recommendations=formatted_recommendations,
-            success=True
-        )
+        # 슬랙 알림 - 성공 (send_slack_notification이 True인 경우에만)
+        if send_slack_notification:
+            recommended_stocks = [rec for rec in recommendations if rec.get('추천_여부', False)]
+            formatted_recommendations = [
+                {
+                    'stock_name': rec['종목'],
+                    'ticker': STOCK_TO_TICKER.get(rec['종목'], 'N/A'),
+                    'recommendation_score': rec.get('RSI', 0)
+                }
+                for rec in recommended_stocks
+            ]
+            
+            slack_notifier.send_analysis_notification(
+                analysis_type='technical',
+                total_stocks=len(self.stock_columns),
+                recommendations=formatted_recommendations,
+                success=True
+            )
 
         return {"message": f"{len(recommendations)}개의 추천 데이터가 생성되었습니다", "data": recommendations}
 
@@ -380,7 +403,7 @@ class StockRecommendationService:
             "results": results
         }
 
-    def get_combined_recommendations_with_technical_and_sentiment(self):
+    def get_combined_recommendations_with_technical_and_sentiment(self, send_slack_notification: bool = True):
         """
         추천 주식 목록을 기술적 지표(stock_recommendations 테이블)와 감정 분석(ticker_sentiment_analysis 테이블)을
         결합하여 반환합니다.
@@ -388,11 +411,33 @@ class StockRecommendationService:
         - ticker_sentiment_analysis에서 average_sentiment_score >= 0.15인 데이터와 결합
         - get_stock_recommendations의 결과와 통합하여 반환
         - 추가 조건: sentiment_score와 기술적 지표를 기반으로 매수 추천 필터링
+        
+        Args:
+            send_slack_notification: Slack 알림 전송 여부 (기본값: True)
         """
         try:
             # 1. 기술적 지표 데이터 조회
             tech_response = supabase.table("stock_recommendations").select("*").order("날짜", desc=True).execute()
             if not tech_response.data:
+                # 데이터가 없어도 슬랙 알림 전송
+                if send_slack_notification:
+                    try:
+                        slack_notifier.send_combined_analysis_notification(
+                            total_stocks=0,
+                            recommendations=[],
+                            analysis_stats={
+                                'total_analyzed': 0,
+                                'final_recommendations': 0,
+                                'avg_composite_score': 0,
+                                'technical_signals': 0,
+                                'positive_sentiment': 0,
+                                'ai_predictions': 0,
+                                'avg_rise_probability': 0
+                            },
+                            success=True
+                        )
+                    except Exception as slack_error:
+                        logger.error(f"슬랙 알림 전송 실패: {str(slack_error)}")
                 return {"message": "기술적 지표 데이터가 없습니다", "results": []}
             
             tech_df = pd.DataFrame(tech_response.data)
@@ -409,128 +454,129 @@ class StockRecommendationService:
             combined_mask = np.logical_or.reduce([mask_golden, mask_macd, mask_rsi])
             filtered_tech_df = tech_df[combined_mask]
             
-            if filtered_tech_df.empty:
-                return {"message": "조건을 만족하는 기술적 지표가 없습니다", "results": []}
-            
             # 2. 주가 예측 데이터 조회
             stock_recs = self.get_stock_recommendations()
             recommendations = stock_recs.get("recommendations", [])
-            if not recommendations:
-                return {"message": "추천 주식이 없습니다", "results": []}
             
-            # 3. 감정 분석 데이터 조회
-            sentiment_response = supabase.table("ticker_sentiment_analysis").select("*").gte("average_sentiment_score", 0.15).execute()
-            
-            # 4. 데이터 매핑 준비
-            tech_map = {row["종목"]: row.to_dict() for _, row in filtered_tech_df.iterrows()}
-            sentiment_map = {item["ticker"]: item for item in sentiment_response.data} if sentiment_response.data else {}
-            
-            # 5. 결과 통합
+            # 초기값 설정 (슬랙 알림을 위해)
             results = []
-            for rec in recommendations:
-                stock_name = rec["Stock"]
-                if stock_name not in STOCK_TO_TICKER:
-                    continue
-                
-                ticker = STOCK_TO_TICKER[stock_name]
-                tech_data = tech_map.get(stock_name)
-                if tech_data is None:
-                    continue  # 기술적 지표가 없으면 제외
-                
-                sentiment = sentiment_map.get(ticker)
-                
-                # 통합 데이터 생성
-                combined_data = {
-                    "ticker": ticker,
-                    "stock_name": stock_name,
-                    "accuracy": rec["Accuracy (%)"],
-                    "rise_probability": rec["Rise Probability (%)"],
-                    "last_price": rec["Last Actual Price"],
-                    "predicted_price": rec["Predicted Future Price"],
-                    "recommendation": rec["Recommendation"],
-                    "analysis": rec["Analysis"],
-                    "sentiment_score": sentiment["average_sentiment_score"] if sentiment else None,
-                    "article_count": sentiment["article_count"] if sentiment else None,
-                    "sentiment_date": sentiment["calculation_date"] if sentiment else None,
-                    "technical_date": tech_data["날짜"],
-                    "sma20": float(tech_data["SMA20"]),
-                    "sma50": float(tech_data["SMA50"]),
-                    "golden_cross": bool(tech_data["골든_크로스"]),
-                    "rsi": float(tech_data["RSI"]),
-                    "macd": float(tech_data["MACD"]),
-                    "signal": float(tech_data["Signal"]),
-                    "macd_buy_signal": bool(tech_data["MACD_매수_신호"]),
-                    "technical_recommended": bool(tech_data["추천_여부"])
-                }
-                results.append(combined_data)
-            
-            # 6. 매수 추천 조건에 따른 추가 필터링 후 순위 계산
             final_results = []
-            for item in results:
-                sentiment_score = item["sentiment_score"]
-                tech_conditions = [item["golden_cross"], item["rsi"] < 50, item["macd_buy_signal"]]
+            
+            # 데이터가 있는 경우에만 처리
+            if not filtered_tech_df.empty and recommendations:
+            
+                # 3. 감정 분석 데이터 조회
+                sentiment_response = supabase.table("ticker_sentiment_analysis").select("*").gte("average_sentiment_score", 0.15).execute()
                 
-                if sentiment_score is not None and sentiment_score >= 0.15:
-                    if sum(tech_conditions) >= 2:
-                        final_results.append(item)
-                else:
-                    if sum(tech_conditions) >= 3:
-                        final_results.append(item)
+                # 4. 데이터 매핑 준비
+                tech_map = {row["종목"]: row.to_dict() for _, row in filtered_tech_df.iterrows()}
+                sentiment_map = {item["ticker"]: item for item in sentiment_response.data} if sentiment_response.data else {}
+                
+                # 5. 결과 통합
+                for rec in recommendations:
+                    stock_name = rec["Stock"]
+                    if stock_name not in STOCK_TO_TICKER:
+                        continue
+                    
+                    ticker = STOCK_TO_TICKER[stock_name]
+                    tech_data = tech_map.get(stock_name)
+                    if tech_data is None:
+                        continue  # 기술적 지표가 없으면 제외
+                    
+                    sentiment = sentiment_map.get(ticker)
+                    
+                    # 통합 데이터 생성
+                    combined_data = {
+                        "ticker": ticker,
+                        "stock_name": stock_name,
+                        "accuracy": rec["Accuracy (%)"],
+                        "rise_probability": rec["Rise Probability (%)"],
+                        "last_price": rec["Last Actual Price"],
+                        "predicted_price": rec["Predicted Future Price"],
+                        "recommendation": rec["Recommendation"],
+                        "analysis": rec["Analysis"],
+                        "sentiment_score": sentiment["average_sentiment_score"] if sentiment else None,
+                        "article_count": sentiment["article_count"] if sentiment else None,
+                        "sentiment_date": sentiment["calculation_date"] if sentiment else None,
+                        "technical_date": tech_data["날짜"],
+                        "sma20": float(tech_data["SMA20"]),
+                        "sma50": float(tech_data["SMA50"]),
+                        "golden_cross": bool(tech_data["골든_크로스"]),
+                        "rsi": float(tech_data["RSI"]),
+                        "macd": float(tech_data["MACD"]),
+                        "signal": float(tech_data["Signal"]),
+                        "macd_buy_signal": bool(tech_data["MACD_매수_신호"]),
+                        "technical_recommended": bool(tech_data["추천_여부"])
+                    }
+                    results.append(combined_data)
+                
+                # 6. 매수 추천 조건에 따른 추가 필터링 후 순위 계산
+                for item in results:
+                    sentiment_score = item["sentiment_score"]
+                    tech_conditions = [item["golden_cross"], item["rsi"] < 50, item["macd_buy_signal"]]
+                    
+                    if sentiment_score is not None and sentiment_score >= 0.15:
+                        if sum(tech_conditions) >= 2:
+                            final_results.append(item)
+                    else:
+                        if sum(tech_conditions) >= 3:
+                            final_results.append(item)
 
-            # 7. 종합 점수 계산 및 정렬
-            for item in final_results:
-                sentiment_score = item["sentiment_score"] if item["sentiment_score"] is not None else 0.0
-                tech_conditions_count = (
-                    1.5 * item["golden_cross"] +
-                    1.0 * (item["rsi"] < 50) +
-                    1.0 * item["macd_buy_signal"]
-                )
-                item["composite_score"] = (
-                    0.3 * item["rise_probability"] +
-                    0.4 * tech_conditions_count +
-                    0.3 * sentiment_score
-                )
+                # 7. 종합 점수 계산 및 정렬
+                for item in final_results:
+                    sentiment_score = item["sentiment_score"] if item["sentiment_score"] is not None else 0.0
+                    tech_conditions_count = (
+                        1.5 * item["golden_cross"] +
+                        1.0 * (item["rsi"] < 50) +
+                        1.0 * item["macd_buy_signal"]
+                    )
+                    item["composite_score"] = (
+                        0.3 * item["rise_probability"] +
+                        0.4 * tech_conditions_count +
+                        0.3 * sentiment_score
+                    )
 
-            final_results.sort(key=lambda x: x["composite_score"], reverse=True)
+                final_results.sort(key=lambda x: x["composite_score"], reverse=True)
 
             # 8. 슬랙 알림 - 통합 분석 완료 (4가지 분석 결과 포함)
-            try:
-                # 상위 5개 추천 종목 정보 준비
-                top_recommendations = [
-                    {
-                        'stock_name': item['stock_name'],
-                        'ticker': item['ticker'],
-                        'recommendation_score': item['composite_score'],
-                        'rise_probability': item['rise_probability'],
-                        'sentiment_score': item['sentiment_score'] if item['sentiment_score'] else 0,
-                        'golden_cross': item['golden_cross'],
-                        'rsi': item['rsi'],
-                        'macd_buy_signal': item['macd_buy_signal']
-                    }
-                    for item in final_results[:5]
-                ]
-                
-                # 각 분석 통계 계산
-                technical_count = sum(1 for item in final_results if item['technical_recommended'])
-                sentiment_count = sum(1 for item in final_results if item['sentiment_score'] and item['sentiment_score'] >= 0.15)
-                ai_predictions = [item for item in final_results if item['rise_probability'] >= 3]
-                
-                slack_notifier.send_combined_analysis_notification(
-                    total_stocks=len(results),
-                    recommendations=top_recommendations,
-                    analysis_stats={
-                        'total_analyzed': len(results),
-                        'final_recommendations': len(final_results),
-                        'avg_composite_score': sum(item['composite_score'] for item in final_results) / len(final_results) if final_results else 0,
-                        'technical_signals': technical_count,
-                        'positive_sentiment': sentiment_count,
-                        'ai_predictions': len(ai_predictions),
-                        'avg_rise_probability': sum(item['rise_probability'] for item in final_results) / len(final_results) if final_results else 0
-                    },
-                    success=True
-                )
-            except Exception as slack_error:
-                print(f"슬랙 알림 전송 실패: {str(slack_error)}")
+            if send_slack_notification:
+                try:
+                    # 상위 5개 추천 종목 정보 준비
+                    top_recommendations = [
+                        {
+                            'stock_name': item['stock_name'],
+                            'ticker': item['ticker'],
+                            'recommendation_score': item['composite_score'],
+                            'rise_probability': item['rise_probability'],
+                            'sentiment_score': item['sentiment_score'] if item['sentiment_score'] else 0,
+                            'golden_cross': item['golden_cross'],
+                            'rsi': item['rsi'],
+                            'macd_buy_signal': item['macd_buy_signal']
+                        }
+                        for item in final_results[:5]
+                    ]
+                    
+                    # 각 분석 통계 계산
+                    technical_count = sum(1 for item in final_results if item['technical_recommended'])
+                    sentiment_count = sum(1 for item in final_results if item['sentiment_score'] and item['sentiment_score'] >= 0.15)
+                    ai_predictions = [item for item in final_results if item['rise_probability'] >= 3]
+                    
+                    slack_notifier.send_combined_analysis_notification(
+                        total_stocks=len(results),
+                        recommendations=top_recommendations,
+                        analysis_stats={
+                            'total_analyzed': len(results),
+                            'final_recommendations': len(final_results),
+                            'avg_composite_score': sum(item['composite_score'] for item in final_results) / len(final_results) if final_results else 0,
+                            'technical_signals': technical_count,
+                            'positive_sentiment': sentiment_count,
+                            'ai_predictions': len(ai_predictions),
+                            'avg_rise_probability': sum(item['rise_probability'] for item in final_results) / len(final_results) if final_results else 0
+                        },
+                        success=True
+                    )
+                except Exception as slack_error:
+                    logger.error(f"슬랙 알림 전송 실패: {str(slack_error)}")
 
             # 9. 결과 반환
             return {
@@ -543,14 +589,18 @@ class StockRecommendationService:
             import traceback
             print(traceback.format_exc())  # 상세 스택 트레이스 출력
             
-            # 슬랙 알림 - 실패
-            slack_notifier.send_combined_analysis_notification(
-                total_stocks=0,
-                recommendations=[],
-                analysis_stats={},
-                success=False,
-                error_message=str(e)
-            )
+            # 슬랙 알림 - 실패 (send_slack_notification이 True인 경우에만)
+            if send_slack_notification:
+                try:
+                    slack_notifier.send_combined_analysis_notification(
+                        total_stocks=0,
+                        recommendations=[],
+                        analysis_stats={},
+                        success=False,
+                        error_message=str(e)
+                    )
+                except Exception as slack_error:
+                    print(f"슬랙 알림 전송 실패: {str(slack_error)}")
             
             raise Exception(f"추천 주식 분석 중 오류: {str(e)}")
 
