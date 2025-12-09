@@ -849,6 +849,9 @@ class StockScheduler:
                 # 매수 수량 계산: 기본 1주
                 quantity = 1
                 
+                # 가격을 소수점 2자리로 반올림 (API 요구사항)
+                rounded_price = round(current_price, 2)
+                
                 # 매수 주문 실행
                 order_data = {
                     "CANO": settings.KIS_CANO,
@@ -857,7 +860,7 @@ class StockScheduler:
                     "PDNO": pure_ticker,
                     "ORD_DVSN": "00",  # 지정가
                     "ORD_QTY": str(quantity),
-                    "OVRS_ORD_UNPR": str(current_price),
+                    "OVRS_ORD_UNPR": str(rounded_price),
                     "is_buy": True
                 }
                 
@@ -872,15 +875,7 @@ class StockScheduler:
                     successful_purchases += 1
                     logger.info(f"[{function_name}] 매수 후 잔고: ${available_cash:,.2f}")
                     
-                    # Slack 알림 전송 (성공 시에만)
-                    slack_notifier.send_buy_notification(
-                        stock_name=stock_name,
-                        ticker=ticker,
-                        quantity=quantity,
-                        price=current_price,
-                        exchange_code=exchange_code,
-                        success=True
-                    )
+                    # 개별 알림은 제거하고 요약 알림만 사용 (중복 방지)
                 else:
                     error_msg = order_result.get('msg1', '알 수 없는 오류')
                     logger.error(f"[{function_name}] {stock_name}({ticker}) 매수 주문 실패: {error_msg}")

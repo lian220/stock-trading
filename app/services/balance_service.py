@@ -831,7 +831,7 @@ def order_overseas_stock(order_data):
             if result.get("rt_cd") == "0":
                 logger.info(f"해외주식 {order_type} 주문 성공: {result.get('msg1', '주문이 접수되었습니다.')}")
                 
-                # 슬랙 알림 전송 (매수만)
+                # 슬랙 알림 전송 (매수/매도 모두)
                 if is_buy:
                     slack_notifier.send_buy_notification(
                         stock_name=ticker,  # 종목명이 없으면 티커 사용
