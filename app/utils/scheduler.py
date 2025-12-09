@@ -809,9 +809,9 @@ class StockScheduler:
                     pure_ticker = ticker
                 
                 # 이미 보유 중인 종목인지 확인
-                if pure_ticker in holding_tickers:
-                    logger.info(f"[{function_name}] {stock_name}({ticker}) - 이미 보유 중인 종목이므로 매수하지 않습니다.")
-                    continue
+                # if pure_ticker in holding_tickers:
+                #     logger.info(f"[{function_name}] {stock_name}({ticker}) - 이미 보유 중인 종목이므로 매수하지 않습니다.")
+                #     continue
                 
                 # 거래소 코드 변환 (API 요청에 맞게 변환)
                 api_exchange_code = "NAS"
