@@ -24,10 +24,8 @@ from datetime import datetime
 from app.api.api import api_router
 from app.core.config import settings
 from app.services.economic_service import update_economic_data_in_background
-from app.utils.scheduler import (
     start_scheduler, stop_scheduler, 
-    start_sell_scheduler, stop_sell_scheduler,
-    start_economic_data_scheduler, stop_economic_data_scheduler
+    start_sell_scheduler, stop_sell_scheduler
 )
 from contextlib import asynccontextmanager
 import logging
@@ -59,7 +57,6 @@ async def lifespan(app: FastAPI):
         pass
     stop_scheduler()  # 매수 스케줄러 종료
     stop_sell_scheduler()  # 매도 스케줄러 종료
-    stop_economic_data_scheduler()  # 경제 데이터 스케줄러 종료
 
 app = FastAPI(title="주식 분석 및 추천 API", lifespan=lifespan)
 
@@ -94,11 +91,6 @@ async def startup():
     else:
         logger.info("서버 시작 시 경제 데이터 수집이 비활성화되어 있습니다. (RUN_ECONOMIC_DATA_ON_STARTUP=false)")
     
-    # 경제 데이터 업데이트 스케줄러 시작 (매일 한국시간 새벽 6시 5분에 실행)
-    try:
-        start_economic_data_scheduler()
-    except Exception as e:
-        logger.error(f"경제 데이터 스케줄러 시작 중 오류 발생: {str(e)}")
     
     # 주식 자동매매 스케줄러 시작
     try:

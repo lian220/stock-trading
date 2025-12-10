@@ -79,8 +79,12 @@ class StockScheduler:
         buy_jobs = [job for job in schedule.jobs if job.job_func.__name__ == '_run_auto_buy']
         analysis_jobs = [job for job in schedule.jobs if job.job_func.__name__ == '_run_analysis']
         prediction_jobs = [job for job in schedule.jobs if job.job_func.__name__ == '_run_vertex_ai_prediction']
-        for job in buy_jobs + analysis_jobs + prediction_jobs:
+        economic_jobs = [job for job in schedule.jobs if job.job_func.__name__ == '_run_economic_data_update']
+        for job in buy_jobs + analysis_jobs + prediction_jobs + economic_jobs:
             schedule.cancel_job(job)
+        
+        # 한국 시간 기준 새벽 6시 5분에 경제 데이터 업데이트 작업 실행
+        schedule.every().day.at("06:05").do(self._run_economic_data_update)
         
         # 한국 시간 기준 밤 11시에 Vertex AI 예측 작업 실행
         schedule.every().day.at("23:00").do(self._run_vertex_ai_prediction)
@@ -100,6 +104,7 @@ class StockScheduler:
         
         # 하나의 상세한 로그로 통합
         logger.info("주식 자동매매 스케줄러가 시작되었습니다.")
+        logger.info("  - 경제 데이터: 매일 06:05")
         logger.info("  - Vertex AI 예측: 매일 23:00")
         logger.info("  - 분석: 매일 23:45 (기술적+감정+AI 통합)")
         logger.info("  - 매수: 매일 00:00")
@@ -123,12 +128,33 @@ class StockScheduler:
         buy_jobs = [job for job in schedule.jobs if job.job_func.__name__ == '_run_auto_buy']
         analysis_jobs = [job for job in schedule.jobs if job.job_func.__name__ == '_run_analysis']
         prediction_jobs = [job for job in schedule.jobs if job.job_func.__name__ == '_run_vertex_ai_prediction']
-        for job in buy_jobs + analysis_jobs + prediction_jobs:
+        economic_jobs = [job for job in schedule.jobs if job.job_func.__name__ == '_run_economic_data_update']
+        for job in buy_jobs + analysis_jobs + prediction_jobs + economic_jobs:
             schedule.cancel_job(job)
         
         logger.info("매수 및 분석 스케줄러가 중지되었습니다.")
         self.stopping = False
         return True
+
+    def _run_economic_data_update(self, send_slack_notification: bool = True):
+        """경제 데이터 업데이트 실행 함수"""
+        function_name = "_run_economic_data_update"
+        logger.info(f"[{function_name}] 함수 실행 시작")
+        if send_slack_notification:
+            send_scheduler_slack_notification(f"📈 *경제 데이터 업데이트 시작*\n경제 데이터 수집을 시작합니다.")
+        
+        try:
+            asyncio.run(update_economic_data_in_background())
+            logger.info(f"[{function_name}] 함수 실행 완료")
+            if send_slack_notification:
+                send_scheduler_slack_notification(f"✅ *경제 데이터 업데이트 완료*\n경제 데이터 수집이 완료되었습니다.")
+            return True
+        except Exception as e:
+            logger.error(f"[{function_name}] 함수 실행 중 오류 발생: {str(e)}", exc_info=True)
+            logger.info(f"[{function_name}] 함수 실행 완료 (오류)")
+            if send_slack_notification:
+                send_scheduler_slack_notification(f"❌ *경제 데이터 업데이트 오류*\n오류 발생: {str(e)}")
+            return False
 
     def _run_vertex_ai_prediction(self, send_slack_notification: bool = True):
         """Vertex AI를 사용한 주가 예측 작업 실행 (run_predict_vertex_ai.py)"""
@@ -993,96 +1019,8 @@ def run_analysis_now(send_slack_notification: bool = False):
     """즉시 분석 실행 함수 (API 호출용)"""
     return stock_scheduler._run_analysis(send_slack_notification=send_slack_notification)
 
-# 경제 데이터 스케줄러 관련 변수 및 함수
-economic_data_scheduler_running = False
-economic_data_scheduler_thread = None
-economic_data_scheduler_stopping = False  # 중지 중 플래그 (중복 중지 방지)
-
-def _run_economic_data_update(send_slack_notification: bool = True):
-    """경제 데이터 업데이트 실행 함수"""
-    function_name = "_run_economic_data_update"
-    logger_econ = logging.getLogger('economic_scheduler')
-    logger_econ.info(f"[{function_name}] 함수 실행 시작")
-    if send_slack_notification:
-        send_scheduler_slack_notification(f"📈 *경제 데이터 업데이트 시작*\n경제 데이터 수집을 시작합니다.")
-    
-    try:
-        asyncio.run(update_economic_data_in_background())
-        logger_econ.info(f"[{function_name}] 함수 실행 완료")
-        if send_slack_notification:
-            send_scheduler_slack_notification(f"✅ *경제 데이터 업데이트 완료*\n경제 데이터 수집이 완료되었습니다.")
-        return True
-    except Exception as e:
-        logger_econ.error(f"[{function_name}] 함수 실행 중 오류 발생: {str(e)}", exc_info=True)
-        logger_econ.info(f"[{function_name}] 함수 실행 완료 (오류)")
-        if send_slack_notification:
-            send_scheduler_slack_notification(f"❌ *경제 데이터 업데이트 오류*\n오류 발생: {str(e)}")
-        return False
-
-def _run_economic_scheduler():
-    """경제 데이터 스케줄러 백그라운드 실행 함수"""
-    global economic_data_scheduler_running
-    while economic_data_scheduler_running:
-        schedule.run_pending()
-        time.sleep(1)
-
-def start_economic_data_scheduler():
-    """경제 데이터 업데이트 스케줄러 시작 함수"""
-    global economic_data_scheduler_running, economic_data_scheduler_thread
-    
-    if economic_data_scheduler_running:
-        logger = logging.getLogger('economic_scheduler')
-        logger.warning("경제 데이터 스케줄러가 이미 실행 중입니다.")
-        return False
-    
-    # 기존 경제 데이터 작업이 있다면 먼저 취소 (중복 등록 방지)
-    economic_jobs = [job for job in schedule.jobs if job.job_func.__name__ == '_run_economic_data_update']
-    for job in economic_jobs:
-        schedule.cancel_job(job)
-        logger = logging.getLogger('economic_scheduler')
-        logger.debug(f"기존 경제 데이터 작업 취소: {job.job_func.__name__}")
-    
-    # 한국 시간 기준 새벽 6시 5분에 경제 데이터 업데이트 작업 실행
-    schedule.every().day.at("06:05").do(_run_economic_data_update)
-    
-    # 별도 스레드에서 스케줄러 실행
-    economic_data_scheduler_running = True
-    economic_data_scheduler_thread = threading.Thread(target=_run_economic_scheduler)
-    economic_data_scheduler_thread.daemon = True
-    economic_data_scheduler_thread.start()
-    
-    logger = logging.getLogger('economic_scheduler')
-    logger.info("경제 데이터 업데이트 스케줄러가 시작되었습니다.")
-    logger.info("  - 실행 시간: 한국 시간 새벽 6시 5분")
-    return True
-
-def stop_economic_data_scheduler():
-    """경제 데이터 업데이트 스케줄러 중지 함수"""
-    global economic_data_scheduler_running, economic_data_scheduler_thread, economic_data_scheduler_stopping
-    
-    if not economic_data_scheduler_running:
-        return False
-    
-    if economic_data_scheduler_stopping:
-        return False  # 이미 중지 중이면 중복 로그 방지
-    
-    economic_data_scheduler_stopping = True
-    
-    # 경제 데이터 관련 작업 취소
-    economic_jobs = [job for job in schedule.jobs if job.job_func.__name__ == '_run_economic_data_update']
-    for job in economic_jobs:
-        schedule.cancel_job(job)
-    
-    economic_data_scheduler_running = False
-    if economic_data_scheduler_thread:
-        economic_data_scheduler_thread.join(timeout=5)
-        economic_data_scheduler_thread = None
-    
-    logger = logging.getLogger('economic_scheduler')
-    logger.info("경제 데이터 업데이트 스케줄러가 중지되었습니다.")
-    economic_data_scheduler_stopping = False
-    return True
 
 def run_economic_data_update_now():
     """즉시 경제 데이터 업데이트 실행 함수 (테스트용) - 슬랙 알림 없음"""
-    return _run_economic_data_update(send_slack_notification=False) 
+    return stock_scheduler._run_economic_data_update(send_slack_notification=False)
+ 
