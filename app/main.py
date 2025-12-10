@@ -24,6 +24,7 @@ from datetime import datetime
 from app.api.api import api_router
 from app.core.config import settings
 from app.services.economic_service import update_economic_data_in_background
+from app.utils.scheduler import (
     start_scheduler, stop_scheduler, 
     start_sell_scheduler, stop_sell_scheduler
 )

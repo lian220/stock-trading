@@ -58,6 +58,10 @@ class Settings(BaseSettings):
         default="",
         description="Alpha Vantage API Key"
     )
+    FRED_API_KEY: Optional[str] = Field(
+        default=None,
+        description="FRED (Federal Reserve Economic Data) API Key"
+    )
     TR_ID: Optional[str] = Field(
         default=None,
         description="TR ID"
@@ -86,6 +90,38 @@ class Settings(BaseSettings):
         default=False,
         description="서버 시작 시 경제 데이터 수집 실행 여부 (.env에서 RUN_ECONOMIC_DATA_ON_STARTUP=true/false로 설정 가능)"
     )
+    
+    # MongoDB 설정 (통일된 환경변수 패턴 - 다양한 환경변수명 지원)
+    MONGODB_URL: Optional[str] = Field(
+        default=None,
+        description="MongoDB 연결 URL"
+    )
+    MONGODB_USER: Optional[str] = Field(
+        default=None,
+        description="MongoDB 사용자명"
+    )
+    MONGODB_PASSWORD: Optional[str] = Field(
+        default=None,
+        description="MongoDB 비밀번호"
+    )
+    MONGODB_DATABASE: str = Field(
+        default="stock_trading",
+        description="MongoDB 데이터베이스 이름"
+    )
+    USE_MONGODB: bool = Field(
+        default=False,
+        description="MongoDB 사용 여부 (.env에서 USE_MONGODB=true/false로 설정 가능)"
+    )
+    
+    @field_validator('USE_MONGODB', mode='before')
+    @classmethod
+    def parse_use_mongodb(cls, v):
+        """빈 문자열을 False로 변환"""
+        if v == '' or v is None:
+            return False
+        if isinstance(v, str):
+            return v.lower() in ('true', '1', 'yes', 'on')
+        return bool(v)
     
     @field_validator('KIS_USE_MOCK', mode='before')
     @classmethod
@@ -131,6 +167,51 @@ class Settings(BaseSettings):
     def kis_base_url(self) -> str:
         """사용할 한국투자증권 API URL 반환"""
         return self.KIS_BASE_URL if self.KIS_USE_MOCK else self.KIS_REAL_URL
+    
+    def get_mongodb_url(self) -> str:
+        """
+        MongoDB 연결 URL을 반환합니다.
+        다양한 환경변수명을 지원하며, config.py를 통해서만 접근합니다.
+        """
+        # 우선순위: MONGODB_URL > MONGO_URL > 환경변수 직접 확인 > 기본값
+        url = (
+            self.MONGODB_URL or
+            os.getenv("MONGO_URL") or
+            os.getenv("MONGODB_URL") or
+            "mongodb://localhost:27017"
+        )
+        return url
+    
+    def get_mongodb_user(self) -> Optional[str]:
+        """MongoDB 사용자명을 반환합니다."""
+        return (
+            self.MONGODB_USER or
+            os.getenv("MONGO_USER") or
+            os.getenv("MONGODB_USER")
+        )
+    
+    def get_mongodb_password(self) -> Optional[str]:
+        """MongoDB 비밀번호를 반환합니다."""
+        return (
+            self.MONGODB_PASSWORD or
+            os.getenv("MONGO_PASSWORD") or
+            os.getenv("MONGODB_PASSWORD")
+        )
+    
+    def get_mongodb_database(self) -> str:
+        """MongoDB 데이터베이스 이름을 반환합니다."""
+        return (
+            os.getenv("MONGODB_DATABASE") or
+            self.MONGODB_DATABASE or
+            "stock_trading"
+        )
+    
+    def is_mongodb_enabled(self) -> bool:
+        """MongoDB 사용 여부를 반환합니다."""
+        if self.USE_MONGODB:
+            return True
+        env_value = os.getenv('USE_MONGODB', 'false').lower()
+        return env_value in ('true', '1', 'yes', 'on')
 
     class Config:
         env_file = ".env"

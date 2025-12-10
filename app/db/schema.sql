@@ -283,6 +283,8 @@ CREATE TABLE IF NOT EXISTS stock_ticker_mapping (
     stock_name VARCHAR(100) NOT NULL UNIQUE,  -- 한글 주식명
     ticker VARCHAR(10) NOT NULL UNIQUE,       -- 티커 심볼
     is_etf BOOLEAN DEFAULT FALSE,             -- ETF 여부
+    leverage_ticker VARCHAR(10),              -- 레버리지 티커 심볼
+    use_leverage BOOLEAN DEFAULT FALSE,       -- 레버리지 사용 여부
     is_active BOOLEAN DEFAULT TRUE,            -- 활성 여부
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
@@ -298,45 +300,55 @@ COMMENT ON TABLE stock_ticker_mapping IS '한글 주식명과 티커 심볼 매�
 COMMENT ON COLUMN stock_ticker_mapping.stock_name IS '한글 주식명';
 COMMENT ON COLUMN stock_ticker_mapping.ticker IS '티커 심볼';
 COMMENT ON COLUMN stock_ticker_mapping.is_etf IS 'ETF 여부';
+COMMENT ON COLUMN stock_ticker_mapping.leverage_ticker IS '레버리지 티커 심볼';
+COMMENT ON COLUMN stock_ticker_mapping.use_leverage IS '레버리지 사용 여부';
 COMMENT ON COLUMN stock_ticker_mapping.is_active IS '활성 여부';
 
--- 초기 데이터 삽입 (DDL 기준: 제외 주식 제외, 추가 주식 포함)
-INSERT INTO stock_ticker_mapping (stock_name, ticker, is_etf, is_active) VALUES
-    ('애플', 'AAPL', FALSE, TRUE),
-    ('마이크로소프트', 'MSFT', FALSE, TRUE),
-    ('아마존', 'AMZN', FALSE, TRUE),
-    ('구글 A', 'GOOGL', FALSE, TRUE),
-    ('구글 C', 'GOOG', FALSE, TRUE),
-    ('메타', 'META', FALSE, TRUE),
-    ('테슬라', 'TSLA', FALSE, TRUE),
-    ('엔비디아', 'NVDA', FALSE, TRUE),
-    ('인텔', 'INTC', FALSE, TRUE),
-    ('마이크론', 'MU', FALSE, TRUE),
-    ('브로드컴', 'AVGO', FALSE, TRUE),
-    ('텍사스 인스트루먼트', 'TXN', FALSE, TRUE),
-    ('AMD', 'AMD', FALSE, TRUE),
-    ('어플라이드 머티리얼즈', 'AMAT', FALSE, TRUE),
-    ('셀레스티카', 'CELH', FALSE, TRUE),
-    ('버티브 홀딩스', 'VRT', FALSE, TRUE),
-    ('비스트라 에너지', 'VST', FALSE, TRUE),
-    ('블룸에너지', 'BE', FALSE, TRUE),
-    ('오클로', 'OKLO', FALSE, TRUE),
-    ('팔란티어', 'PLTR', FALSE, TRUE),
-    ('세일즈포스', 'CRM', FALSE, TRUE),
-    ('오라클', 'ORCL', FALSE, TRUE),
-    ('앱플로빈', 'APPV', FALSE, TRUE),
-    ('팔로알토 네트웍스', 'PANW', FALSE, TRUE),
-    ('크라우드 스트라이크', 'CRWD', FALSE, TRUE),
-    ('스노우플레이크', 'SNOW', FALSE, TRUE),
-    ('TSMC', 'TSM', FALSE, TRUE),
-    ('크리도 테크놀로지 그룹 홀딩', 'CRDO', FALSE, TRUE),
-    ('로빈후드', 'HOOD', FALSE, TRUE),
-    ('일라이릴리', 'LLY', FALSE, TRUE),
-    ('월마트', 'WMT', FALSE, TRUE),
-    ('존슨앤존슨', 'JNJ', FALSE, TRUE),
-    ('S&P 500 ETF', 'SPY', TRUE, TRUE),
-    ('QQQ ETF', 'QQQ', TRUE, TRUE)
+-- 초기 데이터 삽입 (최신 종목 정보 포함: 레버리지 티커 추가)
+INSERT INTO stock_ticker_mapping (stock_name, ticker, is_etf, leverage_ticker, use_leverage, is_active) VALUES
+    ('애플', 'AAPL', FALSE, 'AAPU', TRUE, TRUE),
+    ('마이크로소프트', 'MSFT', FALSE, 'MSFU', TRUE, TRUE),
+    ('아마존', 'AMZN', FALSE, 'AMZU', TRUE, TRUE),
+    ('구글 A', 'GOOGL', FALSE, 'GGLL', TRUE, TRUE),
+    ('메타', 'META', FALSE, 'FBL', TRUE, TRUE),
+    ('테슬라', 'TSLA', FALSE, 'TSLL', TRUE, TRUE),
+    ('엔비디아', 'NVDA', FALSE, 'NVDL', TRUE, TRUE),
+    ('인텔', 'INTC', FALSE, 'INTL', TRUE, TRUE),
+    ('마이크론', 'MU', FALSE, 'MULU', TRUE, TRUE),
+    ('브로드컴', 'AVGO', FALSE, 'AVGL', TRUE, TRUE),
+    ('텍사스 인스트루먼트', 'TXN', FALSE, 'TXNL', TRUE, TRUE),
+    ('AMD', 'AMD', FALSE, 'AMDL', TRUE, TRUE),
+    ('어플라이드 머티리얼즈', 'AMAT', FALSE, 'AMAL', TRUE, TRUE),
+    ('TSMC', 'TSM', FALSE, 'TSML', TRUE, TRUE),
+    ('크리도 테크놀로지 그룹 홀딩', 'CRDO', FALSE, 'CRDL', TRUE, TRUE),
+    ('셀레스티카', 'CELH', FALSE, 'CELU', TRUE, TRUE),
+    ('월마트', 'WMT', FALSE, 'WMTU', TRUE, TRUE),
+    ('버티브 홀딩스', 'VRT', FALSE, 'VRTL', TRUE, TRUE),
+    ('비스트라 에너지', 'VST', FALSE, 'VSTL', TRUE, TRUE),
+    ('블룸에너지', 'BE', FALSE, 'BEL', TRUE, TRUE),
+    ('오클로', 'OKLO', FALSE, 'OKLL', TRUE, TRUE),
+    ('팔란티어', 'PLTR', FALSE, 'PLTL', TRUE, TRUE),
+    ('세일즈포스', 'CRM', FALSE, 'CRML', TRUE, TRUE),
+    ('오라클', 'ORCL', FALSE, 'ORCL', TRUE, TRUE),
+    ('앱플로빈', 'APP', FALSE, 'APVL', TRUE, TRUE),
+    ('팔로알토 네트웍스', 'PANW', FALSE, 'PANL', TRUE, TRUE),
+    ('크라우드 스트라이크', 'CRWD', FALSE, 'CRWL', TRUE, TRUE),
+    ('스노우플레이크', 'SNOW', FALSE, 'SNOL', TRUE, TRUE),
+    ('로빈후드', 'HOOD', FALSE, 'HODL', TRUE, TRUE),
+    ('일라이릴리', 'LLY', FALSE, 'LLYL', TRUE, TRUE),
+    ('존슨앤존슨', 'JNJ', FALSE, 'JNJL', TRUE, TRUE),
+    ('S&P 500 ETF', 'SPY', TRUE, 'UPRO', TRUE, TRUE),
+    ('QQQ ETF', 'QQQ', TRUE, 'TQQQ', TRUE, TRUE),
+    ('SOXX ETF', 'SOXX', TRUE, 'SOXL', TRUE, TRUE)
 ON CONFLICT (stock_name) DO NOTHING;
+
+-- ============================================
+-- 마이그레이션: leverage_ticker, use_leverage 컬럼 추가
+-- ============================================
+
+-- stock_ticker_mapping 테이블에 레버리지 관련 컬럼 추가
+ALTER TABLE stock_ticker_mapping ADD COLUMN IF NOT EXISTS leverage_ticker VARCHAR(10);
+ALTER TABLE stock_ticker_mapping ADD COLUMN IF NOT EXISTS use_leverage BOOLEAN DEFAULT FALSE;
 
 -- ============================================
 -- 마이그레이션: 누락된 앱플로빈 컬럼 추가

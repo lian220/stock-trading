@@ -65,7 +65,7 @@ def update_auto_trading_config(config: AutoTradingConfigUpdate):
     ```json
     {
         "enabled": true,
-        "min_composite_score": 75.0,
+        "min_composite_score": 2.5,
         "max_stocks_to_buy": 3,
         "max_amount_per_stock": 5000.0,
         "stop_loss_percent": -7.0,

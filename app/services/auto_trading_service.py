@@ -30,7 +30,7 @@ class AutoTradingService:
         self.stock_service = StockRecommendationService()
         self.default_config = {
             "enabled": False,
-            "min_composite_score": 70.0,  # 최소 종합 점수
+            "min_composite_score": 2.0,  # 최소 종합 점수 (기존 70점에서 실제 점수 분포 2~3점에 맞춰 하향 조정)
             "max_stocks_to_buy": 5,  # 최대 매수 종목 수
             "max_amount_per_stock": 10000.0,  # 종목당 최대 매수 금액 (USD)
             "stop_loss_percent": -7.0,  # 손절 기준 (%)
@@ -99,33 +99,73 @@ class AutoTradingService:
             config = self.get_auto_trading_config()
         
         try:
-            # 통합 추천 데이터 가져오기 (서비스 호출 시에는 Slack 알림을 보내지 않음)
-            recommendations = self.stock_service.get_combined_recommendations_with_technical_and_sentiment(send_slack_notification=False)
+            # 2. 매수 추천 종목 조회 (통합 분석 결과 사용)
+            recommendations = self.stock_service.get_combined_recommendations_with_technical_and_sentiment(
+                send_slack_notification=False
+            )
             
-            if not recommendations.get("results"):
-                return []
-            
-            # 설정에 따라 필터링
             candidates = []
-            for stock in recommendations["results"]:
-                # 종합 점수 필터링
-                if stock.get("composite_score", 0) < config.get("min_composite_score", 70):
-                    continue
-                
-                # 감정 분석 필터링 (설정이 활성화된 경우)
-                if config.get("use_sentiment", True):
-                    sentiment_score = stock.get("sentiment_score")
-                    if sentiment_score is None or sentiment_score < config.get("min_sentiment_score", 0.15):
+            if recommendations and recommendations.get("results"):
+                # MongoDB에서 사용자별 레버리지 설정 조회
+                user_leverage_map = {}
+                try:
+                    from app.infrastructure.database.mongodb_client import get_mongodb_database
+                    db = get_mongodb_database()
+                    if db is not None:
+                        # TODO: 실제 사용자 ID를 문맥에서 가져와야 함. 현재는 기본값 'lian' 사용
+                        user_id = 'lian'
+                        user = db.users.find_one({"user_id": user_id})
+                        if user and user.get("stocks"):
+                            for stock in user.get("stocks", []):
+                                ticker = stock.get("ticker")
+                                if ticker:
+                                    user_leverage_map[ticker] = {
+                                        "use_leverage": stock.get("use_leverage", False),
+                                        "leverage_ticker": stock.get("leverage_ticker")
+                                    }
+                except Exception as e:
+                    logger.error(f"레버리지 설정 조회 실패: {str(e)}")
+
+                for stock in recommendations["results"]:
+                    # 종합 점수 필터링
+                    if stock.get("composite_score", 0) < config.get("min_composite_score", 2.0):
                         continue
+                    
+                    # 레버리지 설정 적용
+                    original_ticker = stock.get("ticker")
+                    actual_ticker = original_ticker
+                    is_leverage = False
+                    
+                    if original_ticker in user_leverage_map:
+                        leverage_info = user_leverage_map[original_ticker]
+                        if leverage_info["use_leverage"] and leverage_info["leverage_ticker"]:
+                            actual_ticker = leverage_info["leverage_ticker"]
+                            is_leverage = True
+                            stock["original_ticker"] = original_ticker
+                            stock["note"] = "사용자 설정에 의해 레버리지 티커 적용됨"
+                    
+                    stock["ticker"] = actual_ticker
+                    stock["is_leverage"] = is_leverage
+                    
+                    # 감정 분석 필터링 (설정이 활성화된 경우)
+                    if config.get("use_sentiment", False):
+                        sentiment_score = stock.get("sentiment_score")
+                        min_sentiment = config.get("min_sentiment_score", -0.2)
+                        
+                        # 감정 점수가 없거나 기준 미달이면 제외
+                        if sentiment_score is None or sentiment_score < min_sentiment:
+                            continue
+                    
+                    candidates.append(stock)
                 
-                candidates.append(stock)
+                # 종합 점수 기준 정렬 (높은 순)
+                candidates.sort(key=lambda x: x.get("composite_score", 0), reverse=True)
+
+                # 최대 매수 종목 수 제한
+                max_stocks = config.get("max_stocks_to_buy", 5)
+                candidates = candidates[:max_stocks]
             
-            # 종합 점수 기준 정렬 (높은 순)
-            candidates.sort(key=lambda x: x.get("composite_score", 0), reverse=True)
-            
-            # 최대 매수 종목 수 제한
-            max_stocks = config.get("max_stocks_to_buy", 5)
-            return candidates[:max_stocks]
+            return candidates
         
         except Exception as e:
             logger.error(f"매수 후보 조회 중 오류: {str(e)}")
@@ -151,7 +191,10 @@ class AutoTradingService:
             
             # 매수 가능 금액 확인
             output = result.get("output", {})
-            max_buy_amount = float(output.get("max_ord_psbl_amt", 0))
+            try:
+                max_buy_amount = float(output.get("max_ord_psbl_amt") or 0)
+            except ValueError:
+                max_buy_amount = 0.0
             
             # 설정된 최대 금액과 비교하여 더 작은 값 사용
             actual_max_amount = min(max_buy_amount, max_amount)
@@ -198,25 +241,69 @@ class AutoTradingService:
                 ticker = candidate.get("ticker")
                 
                 # 이미 보유 중인 종목은 스킵
-                if ticker in holding_tickers:
-                    logger.info(f"{ticker} - 이미 보유 중, 스킵")
-                    continue
+                # if ticker in holding_tickers:
+                #     logger.info(f"{ticker} - 이미 보유 중, 스킵")
+                #     continue
                 
-                # 현재가 조회
-                exchange_code = self._get_exchange_code(ticker)
-                price_result = get_current_price({
-                    "EXCD": exchange_code.replace("D", "S"),  # NASD -> NAS
-                    "SYMB": ticker
-                })
+                # 현재가 조회 (여러 거래소 시도)
+                exchanges = ["NAS", "AMS", "NYS"]
+                price_result = None
                 
-                if price_result.get("rt_cd") != "0":
+                # 기본 거래소를 맨 앞으로
+                default_exchange = self._get_exchange_code(ticker).replace("D", "S")
+                if default_exchange in exchanges:
+                    exchanges.remove(default_exchange)
+                    exchanges.insert(0, default_exchange)
+                
+                for exchange in exchanges:
+                    temp_result = get_current_price({
+                        "EXCD": exchange,
+                        "SYMB": ticker
+                    })
+                    
+                    # 데이터가 있는지 확인 (last나 base가 있어야 함)
+                    output = temp_result.get("output", {})
+                    if temp_result.get("rt_cd") == "0" and (output.get("last") or output.get("base")):
+                        price_result = temp_result
+                        if exchange != default_exchange:
+                            logger.info(f"{ticker} - 거래소 변경 발견: {default_exchange} -> {exchange}")
+                        break
+                    
+                    # 마지막 시도였으면 결과 저장
+                    if exchange == exchanges[-1]:
+                        price_result = temp_result
+
+                if not price_result or price_result.get("rt_cd") != "0":
                     logger.error(f"{ticker} - 현재가 조회 실패")
-                    continue
+                    # 실시간 조회 실패 시 추천 당시 가격 사용 시도
                 
-                current_price = float(price_result.get("output", {}).get("last", 0))
+                # 데이터가 없는 경우 (rt_cd는 0이지만 output이 비어있는 경우 포함)
                 if current_price <= 0:
-                    logger.error(f"{ticker} - 유효하지 않은 가격")
-                    continue
+                    # 현재가가 0이거나 비어있는 경우 전일 종가(base) 확인
+                    try:
+                        base_price = float(price_result.get("output", {}).get("base") or 0)
+                        if base_price > 0:
+                            current_price = base_price
+                            logger.warning(f"{ticker} - 현재가 조회 불가(0.0), 전일 종가({base_price})로 대체합니다.")
+                        else:
+                            # 전일 종가도 없는 경우 추천 데이터의 last_price 또는 predicted_price 사용
+                            logger.warning(f"{ticker} - API 가격 정보 없음. 추천 데이터의 대체 가격 확인 중...")
+                            
+                            cached_last_price = float(candidate.get("last_price") or 0)
+                            predicted_price = float(candidate.get("predicted_price") or 0)
+                            
+                            if cached_last_price > 0:
+                                current_price = cached_last_price
+                                logger.warning(f"{ticker} - 추천 당시 가격({current_price})을 사용하여 주문 진행")
+                            elif predicted_price > 0:
+                                current_price = predicted_price
+                                logger.warning(f"{ticker} - AI 예측 가격({current_price})을 사용하여 주문 진행")
+                            else:
+                                logger.error(f"{ticker} - 유효하지 않은 가격: {current_price}, 대체 가격도 없음 (API 응답: {price_result})")
+                                continue
+                    except ValueError:
+                         logger.error(f"{ticker} - 유효하지 않은 가격: {current_price} (API 응답: {price_result})")
+                         continue
                 
                 # 매수 수량 계산
                 quantity_result = self.calculate_buy_quantity(
@@ -385,8 +472,11 @@ class AutoTradingService:
                 holdings = balance_result["output1"]
                 for item in holdings:
                     # 평가 금액 계산
-                    quantity = float(item.get("ovrs_cblc_qty", 0))
-                    current_price = float(item.get("now_pric2", 0))
+                    try:
+                        quantity = float(item.get("ovrs_cblc_qty") or 0)
+                        current_price = float(item.get("now_pric2") or 0)
+                    except ValueError:
+                        continue
                     total_value += quantity * current_price
             
             # 최근 주문 내역

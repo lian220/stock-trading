@@ -14,47 +14,6 @@ from app.services.economic_service import update_economic_data_in_background
 from app.utils.slack_notifier import slack_notifier
 import httpx
 
-# 타임아웃 방지를 위한 커스텀 StreamHandler
-class SafeStreamHandler(logging.StreamHandler):
-    """flush 실패 시 타임아웃 에러를 무시하는 안전한 StreamHandler"""
-    def flush(self):
-        try:
-            super().flush()
-        except (TimeoutError, OSError) as e:
-            # 로깅 실패를 무시 (무한 루프 방지)
-            pass
-
-# 로깅 설정
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        SafeStreamHandler(),  # 타임아웃 방지 핸들러 사용
-        logging.FileHandler('stock_scheduler.log')
-    ]
-)
-logger = logging.getLogger('stock_scheduler')
-
-def send_scheduler_slack_notification(message: str):
-    """스케줄러 실행 알림을 Slack으로 전송"""
-    webhook_url = settings.SLACK_WEBHOOK_URL_SCHEDULER
-    if not webhook_url:
-        return
-    
-    try:
-        now_korea = datetime.now(pytz.timezone('Asia/Seoul'))
-        formatted_message = f"📅 *스케줄러 알림*\n{message}\n\n🕒 {now_korea.strftime('%Y-%m-%d %H:%M:%S')} (KST)"
-        
-        payload = {"text": formatted_message}
-        with httpx.Client(timeout=10.0) as client:
-            response = client.post(webhook_url, json=payload)
-            if response.status_code == 200:
-                logger.debug(f"스케줄러 Slack 알림 전송 성공: {message}")
-            else:
-                logger.warning(f"스케줄러 Slack 알림 전송 실패: {response.status_code}")
-    except Exception as e:
-        logger.warning(f"스케줄러 Slack 알림 전송 중 오류: {str(e)}")
-
 class StockScheduler:
     """주식 자동매매 스케줄러 클래스"""
     
@@ -76,21 +35,30 @@ class StockScheduler:
             return False
         
         # 기존 작업이 있다면 먼저 취소 (중복 등록 방지)
-        buy_jobs = [job for job in schedule.jobs if job.job_func.__name__ == '_run_auto_buy']
-        analysis_jobs = [job for job in schedule.jobs if job.job_func.__name__ == '_run_analysis']
-        prediction_jobs = [job for job in schedule.jobs if job.job_func.__name__ == '_run_vertex_ai_prediction']
-        economic_jobs = [job for job in schedule.jobs if job.job_func.__name__ == '_run_economic_data_update']
-        for job in buy_jobs + analysis_jobs + prediction_jobs + economic_jobs:
-            schedule.cancel_job(job)
+        job_names = [
+            '_run_auto_buy',
+            '_run_analysis',
+            '_run_parallel_analysis',
+            '_run_combined_analysis',
+            '_run_vertex_ai_prediction',
+            '_run_economic_data_update'
+        ]
+        
+        for job in schedule.jobs:
+            if job.job_func.__name__ in job_names:
+                schedule.cancel_job(job)
         
         # 한국 시간 기준 새벽 6시 5분에 경제 데이터 업데이트 작업 실행
         schedule.every().day.at("06:05").do(self._run_economic_data_update)
         
-        # 한국 시간 기준 밤 11시에 Vertex AI 예측 작업 실행
-        schedule.every().day.at("23:00").do(self._run_vertex_ai_prediction)
+        # 한국 시간 기준 밤 11시에 경제 데이터 재수집 (최신 지표 반영)
+        schedule.every().day.at("23:00").do(self._run_economic_data_update)
+        
+        # 한국 시간 기준 밤 11시 15분에 병렬 분석 작업 실행
+        schedule.every().day.at("23:15").do(self._run_parallel_analysis)
 
-        # 한국 시간 기준 밤 11시 45분에 분석 작업 실행
-        schedule.every().day.at("23:45").do(self._run_analysis)
+        # 한국 시간 기준 밤 11시 45분에 통합 분석 작업 실행
+        schedule.every().day.at("23:45").do(self._run_combined_analysis)
         
         # 한국 시간 기준 밤 12시(00:00)에 매수 작업 실행
         schedule.every().day.at("00:00").do(self._run_auto_buy)
@@ -104,9 +72,9 @@ class StockScheduler:
         
         # 하나의 상세한 로그로 통합
         logger.info("주식 자동매매 스케줄러가 시작되었습니다.")
-        logger.info("  - 경제 데이터: 매일 06:05")
-        logger.info("  - Vertex AI 예측: 매일 23:00")
-        logger.info("  - 분석: 매일 23:45 (기술적+감정+AI 통합)")
+        logger.info("  - 경제 데이터: 매일 06:05, 23:00 (재수집)")
+        logger.info("  - 병렬 분석: 매일 23:15 (Vertex AI + 기술적 지표 + 감정 분석)")
+        logger.info("  - 통합 분석: 매일 23:45 (3가지 결과 통합)")
         logger.info("  - 매수: 매일 00:00")
         return True
     
@@ -125,12 +93,18 @@ class StockScheduler:
             self.scheduler_thread.join(timeout=5)
         
         # 매수 및 분석 관련 작업 취소 (sell 스케줄러는 유지)
-        buy_jobs = [job for job in schedule.jobs if job.job_func.__name__ == '_run_auto_buy']
-        analysis_jobs = [job for job in schedule.jobs if job.job_func.__name__ == '_run_analysis']
-        prediction_jobs = [job for job in schedule.jobs if job.job_func.__name__ == '_run_vertex_ai_prediction']
-        economic_jobs = [job for job in schedule.jobs if job.job_func.__name__ == '_run_economic_data_update']
-        for job in buy_jobs + analysis_jobs + prediction_jobs + economic_jobs:
-            schedule.cancel_job(job)
+        job_names = [
+            '_run_auto_buy',
+            '_run_analysis',
+            '_run_parallel_analysis',
+            '_run_combined_analysis',
+            '_run_vertex_ai_prediction',
+            '_run_economic_data_update'
+        ]
+        
+        for job in schedule.jobs:
+            if job.job_func.__name__ in job_names:
+                schedule.cancel_job(job)
         
         logger.info("매수 및 분석 스케줄러가 중지되었습니다.")
         self.stopping = False
@@ -476,6 +450,131 @@ class StockScheduler:
             # 실행 완료 후 플래그 해제
             self.analysis_executing = False
     
+    def _run_parallel_analysis(self, send_slack_notification: bool = True):
+        """
+        세 가지 분석 작업을 병렬로 실행
+        - Vertex AI 예측 (백그라운드, ~2시간)
+        - 기술적 지표 분석 (~5분)
+        - 감정 분석 (독립적, ~20분)
+        """
+        function_name = "_run_parallel_analysis"
+        
+        # 중복 실행 방지
+        if self.analysis_executing:
+            logger.warning(f"[{function_name}] 분석 작업이 이미 실행 중입니다. 중복 실행을 건너뜁니다.")
+            return False
+        
+        self.analysis_executing = True
+        logger.info("=" * 60)
+        logger.info(f"[{function_name}] 병렬 분석 작업 시작")
+        logger.info("=" * 60)
+        if send_slack_notification:
+            send_scheduler_slack_notification(f"🚀 *병렬 분석 작업 시작*\nVertex AI 예측, 기술적 지표, 감정 분석을 병렬로 실행합니다.")
+        
+        try:
+            import concurrent.futures
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+                # 1. Vertex AI 예측 (백그라운드, 2시간 소요)
+                logger.info(f"[{function_name}] Vertex AI 예측 시작...")
+                vertex_future = executor.submit(
+                    self._run_vertex_ai_prediction,
+                    send_slack_notification=send_slack_notification
+                )
+                
+                # 2. 기술적 지표 분석
+                logger.info(f"[{function_name}] 기술적 지표 분석 시작...")
+                tech_future = executor.submit(
+                    self.recommendation_service.generate_technical_recommendations,
+                    send_slack_notification=False  # 개별 알림은 비활성화
+                )
+                
+                # 3. 감정 분석 (독립적)
+                logger.info(f"[{function_name}] 감정 분석 시작...")
+                sentiment_future = executor.submit(
+                    self.recommendation_service.fetch_and_store_sentiment_independent
+                )
+                
+                # 기술적 지표와 감정 분석 결과 대기 (Vertex AI는 백그라운드로 계속 실행)
+                tech_result = tech_future.result()
+                sentiment_result = sentiment_future.result()
+                
+                logger.info(f"[{function_name}] ✅ 기술적 지표 분석 완료: {tech_result.get('message', '')}")
+                logger.info(f"[{function_name}] ✅ 감정 분석 완료: {sentiment_result.get('message', '')}")
+                
+                # 기술적 지표 분석 완료 슬랙 알림
+                if send_slack_notification:
+                    tech_data = tech_result.get('data', [])
+                    recommended_count = len([r for r in tech_data if r.get('추천_여부', False)])
+                    total_count = len(tech_data)
+                    date_str = tech_data[0].get('날짜', datetime.now().strftime("%Y-%m-%d")) if tech_data else datetime.now().strftime("%Y-%m-%d")
+                    send_scheduler_slack_notification(
+                        f"📊 *기술적 지표 분석 완료*\n"
+                        f"날짜: {date_str}\n"
+                        f"분석 종목: {total_count}개\n"
+                        f"추천 종목: {recommended_count}개"
+                    )
+                    
+                    # 감정 분석 완료 슬랙 알림
+                    sentiment_results = sentiment_result.get('results', [])
+                    send_scheduler_slack_notification(
+                        f"💬 *감정 분석 완료*\n"
+                        f"{sentiment_result.get('message', '')}"
+                    )
+                
+                # Vertex AI 예측은 백그라운드로 계속 실행 중
+                logger.info(f"[{function_name}] ⏳ Vertex AI 예측은 백그라운드에서 계속 실행 중입니다...")
+                
+            logger.info("=" * 60)
+            logger.info(f"[{function_name}] 병렬 분석 작업 완료 (Vertex AI는 백그라운드 실행 중)")
+            logger.info("=" * 60)
+            return True
+            
+        except Exception as e:
+            logger.error(f"[{function_name}] ❌ 병렬 분석 중 오류 발생: {str(e)}", exc_info=True)
+            if send_slack_notification:
+                send_scheduler_slack_notification(f"❌ *병렬 분석 작업 오류*\n오류 발생: {str(e)}")
+            return False
+        finally:
+            # 실행 완료 후 플래그 해제
+            self.analysis_executing = False
+    
+    def _run_combined_analysis(self, send_slack_notification: bool = True):
+        """
+        세 가지 분석 결과를 통합하여 최종 추천 생성
+        - AI 예측 결과 (stock_analysis_results)
+        - 기술적 지표 분석 결과 (stock_recommendations)
+        - 감정 분석 결과 (ticker_sentiment_analysis)
+        """
+        function_name = "_run_combined_analysis"
+        
+        logger.info("=" * 60)
+        logger.info(f"[{function_name}] 통합 분석 시작")
+        logger.info("=" * 60)
+        if send_slack_notification:
+            send_scheduler_slack_notification(f"🔗 *통합 분석 시작*\n세 가지 분석 결과를 통합합니다.")
+        
+        try:
+            # 통합 분석 결과 조회 (슬랙 알림 포함)
+            combined_result = self.recommendation_service.get_combined_recommendations_with_technical_and_sentiment(
+                send_slack_notification=send_slack_notification
+            )
+            
+            final_count = len(combined_result.get('results', []))
+            logger.info(f"[{function_name}] ✅ 통합 분석 완료: {final_count}개 종목 추천")
+            logger.info(f"[{function_name}]    매수 대상: {combined_result.get('message', '')}")
+            
+            logger.info("=" * 60)
+            logger.info(f"[{function_name}] 통합 분석 완료")
+            logger.info("=" * 60)
+            return True
+            
+        except Exception as e:
+            logger.error(f"[{function_name}] ❌ 통합 분석 중 오류 발생: {str(e)}", exc_info=True)
+            if send_slack_notification:
+                send_scheduler_slack_notification(f"❌ *통합 분석 오류*\n오류 발생: {str(e)}")
+            return False
+
     def _run_auto_buy(self, send_slack_notification: bool = True):
         """자동 매수 실행 함수 - 스케줄링된 시간에 실행됨"""
         function_name = "_run_auto_buy"
@@ -811,7 +910,39 @@ class StockScheduler:
             logger.info(f"[{function_name}] 함수 실행 완료")
             return
         
+        
         logger.info(f"[{function_name}] 매수 대상 종목 {len(buy_candidates)}개를 찾았습니다. (종합 점수 높은 순)")
+        
+        # MongoDB에서 사용자 정보 조회 (레버리지 설정 확인용)
+        user_leverage_map = {}  # ticker -> (use_leverage, leverage_ticker)
+        try:
+            from app.infrastructure.database.mongodb_client import get_mongodb_database
+            db = get_mongodb_database()
+            
+            if db is not None:
+                # 사용자 정보 조회 (user_id는 설정에서 가져오거나 기본값 사용)
+                user_id = getattr(settings, 'USER_ID', 'lian')  # 기본값 'lian'
+                user = db.users.find_one({"user_id": user_id})
+                
+                if user and user.get("stocks"):
+                    for stock in user.get("stocks", []):
+                        ticker = stock.get("ticker")
+                        use_leverage = stock.get("use_leverage", False)
+                        leverage_ticker = stock.get("leverage_ticker")
+                        
+                        if ticker:
+                            user_leverage_map[ticker] = {
+                                "use_leverage": use_leverage,
+                                "leverage_ticker": leverage_ticker
+                            }
+                    
+                    logger.info(f"[{function_name}] 사용자 '{user_id}'의 레버리지 설정 로드 완료: {len(user_leverage_map)}개 종목")
+                else:
+                    logger.warning(f"[{function_name}] 사용자 '{user_id}' 정보를 찾을 수 없거나 종목 정보가 없습니다.")
+            else:
+                logger.warning(f"[{function_name}] MongoDB 연결 실패 - 레버리지 설정을 사용할 수 없습니다.")
+        except Exception as e:
+            logger.error(f"[{function_name}] 사용자 레버리지 설정 조회 중 오류: {str(e)}", exc_info=True)
         
         # 성공한 매수 건수 추적
         successful_purchases = 0
@@ -824,15 +955,26 @@ class StockScheduler:
                 ticker = candidate["ticker"]
                 stock_name = candidate["stock_name"]
                 
+                # 사용자의 레버리지 설정 확인
+                actual_ticker = ticker  # 기본값은 원래 티커
+                if ticker in user_leverage_map:
+                    leverage_info = user_leverage_map[ticker]
+                    if leverage_info["use_leverage"] and leverage_info["leverage_ticker"]:
+                        actual_ticker = leverage_info["leverage_ticker"]
+                        logger.info(f"[{function_name}] {stock_name}({ticker}) - 레버리지 활성화, {actual_ticker}로 매수")
+                    else:
+                        logger.info(f"[{function_name}] {stock_name}({ticker}) - 일반 티커로 매수")
+                else:
+                    logger.info(f"[{function_name}] {stock_name}({ticker}) - 사용자 설정 없음, 일반 티커로 매수")                
                 # 거래소 코드 결정 (미국 주식 기준)
-                if ticker.endswith(".X") or ticker.endswith(".N"):
+                if actual_ticker.endswith(".X") or actual_ticker.endswith(".N"):
                     # 거래소 구분이 티커에 포함된 경우
-                    exchange_code = "NYSE" if ticker.endswith(".N") else "NASD"
-                    pure_ticker = ticker.split(".")[0]
+                    exchange_code = "NYSE" if actual_ticker.endswith(".N") else "NASD"
+                    pure_ticker = actual_ticker.split(".")[0]
                 else:
                     # 기본값 NASDAQ으로 설정
                     exchange_code = "NASD"
-                    pure_ticker = ticker
+                    pure_ticker = actual_ticker
                 
                 # 이미 보유 중인 종목인지 확인
                 # if pure_ticker in holding_tickers:
@@ -858,7 +1000,12 @@ class StockScheduler:
                     continue
                 
                 # 현재가 추출
-                current_price = float(price_result.get("output", {}).get("last", 0))
+                last_price = price_result.get("output", {}).get("last", 0) or 0
+                try:
+                    current_price = float(last_price)
+                except (ValueError, TypeError) as e:
+                    logger.error(f"[{function_name}] {stock_name}({ticker}) 현재가 변환 실패: {last_price}, 오류: {str(e)}")
+                    continue
                 
                 if current_price <= 0:
                     logger.error(f"[{function_name}] {stock_name}({ticker}) 현재가가 유효하지 않습니다: {current_price}")
@@ -890,7 +1037,7 @@ class StockScheduler:
                     "is_buy": True
                 }
                 
-                logger.info(f"[{function_name}] {stock_name}({ticker}) 매수 주문 실행: 수량 {quantity}주, 가격 ${current_price}")
+                logger.info(f"[{function_name}] {stock_name}({actual_ticker}) 매수 주문 실행: 수량 {quantity}주, 가격 ${current_price}")
                 order_result = order_overseas_stock(order_data)
                 
                 if order_result.get("rt_cd") == "0":
@@ -1023,4 +1170,45 @@ def run_analysis_now(send_slack_notification: bool = False):
 def run_economic_data_update_now():
     """즉시 경제 데이터 업데이트 실행 함수 (테스트용) - 슬랙 알림 없음"""
     return stock_scheduler._run_economic_data_update(send_slack_notification=False)
+
+# 타임아웃 방지를 위한 커스텀 StreamHandler
+class SafeStreamHandler(logging.StreamHandler):
+    """flush 실패 시 타임아웃 에러를 무시하는 안전한 StreamHandler"""
+    def flush(self):
+        try:
+            super().flush()
+        except (TimeoutError, OSError) as e:
+            # 로깅 실패를 무시 (무한 루프 방지)
+            pass
+
+# 로깅 설정
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        SafeStreamHandler(),  # 타임아웃 방지 핸들러 사용
+        logging.FileHandler('stock_scheduler.log')
+    ]
+)
+logger = logging.getLogger('stock_scheduler')
+
+def send_scheduler_slack_notification(message: str):
+    """스케줄러 실행 알림을 Slack으로 전송"""
+    webhook_url = settings.SLACK_WEBHOOK_URL_SCHEDULER
+    if not webhook_url:
+        return
+    
+    try:
+        now_korea = datetime.now(pytz.timezone('Asia/Seoul'))
+        formatted_message = f"📅 *스케줄러 알림*\n{message}\n\n🕒 {now_korea.strftime('%Y-%m-%d %H:%M:%S')} (KST)"
+        
+        payload = {"text": formatted_message}
+        with httpx.Client(timeout=10.0) as client:
+            response = client.post(webhook_url, json=payload)
+            if response.status_code == 200:
+                logger.debug(f"스케줄러 Slack 알림 전송 성공: {message}")
+            else:
+                logger.warning(f"스케줄러 Slack 알림 전송 실패: {response.status_code}")
+    except Exception as e:
+        logger.warning(f"스케줄러 Slack 알림 전송 중 오류: {str(e)}")
  

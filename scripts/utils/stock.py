@@ -4,144 +4,175 @@ import yfinance as yf
 from datetime import datetime, timedelta
 import numpy as np
 import time
+import logging
+import sys
+from pathlib import Path
 
-# FRED API Key 설정
-api_key = 'aedfbcd8ba091c740281c0bd8ca93b46'
+# app 모듈 import를 위한 경로 추가
+project_root = Path(__file__).parent.parent.parent.parent
+sys.path.insert(0, str(project_root))
 
-# FRED에서 제공하는 지표 코드와 명칭
-fred_indicators = {
-    'T10YIE': '10년 기대 인플레이션율',  # 10년 만기 기대 인플레이션율 (일간)
-    'T10Y2Y': '장단기 금리차',  # 10년-2년 국채 수익률 스프레드 (일간)
-    'FEDFUNDS': '기준금리',  # 연방기금 금리 (월간)
-    'UMCSENT': '미시간대 소비자 심리지수',  # 소비자 신뢰 지수 (월간)
-    'UNRATE': '실업률',  # 실업률 (월간)
-    # 'USREC': '경기침체',  # 경기침체 지수 (월간) --> 장단기 금리차를 통해 확인 가능.
-    'DGS2': '2년 만기 미국 국채 수익률',  # 2년 만기 국채 수익률 (일간)
-    'DGS10': '10년 만기 미국 국채 수익률',  # 10년 만기 국채 수익률 (일간)
+from app.core.config import settings
 
-    # 추가 지표
-    'STLFSI4': '금융스트레스지수',  # 금융 스트레스 지수 (주간)
-    'PCE': '개인 소비 지출',  # 개인 소비 지출 (월간) -> 소비자물가지수(CPI)나 GDP, 실업률, 인플레이션 기대 등 다른 핵심 지표가 이미 전반적 경기 상황을 반영.
-    # 'INDPRO': '산업생산',  # 산업 생산 지수 (월간)
-    # 'HOUST': '주택 착공',  # 신규 주택 착공 건수 (월간)
-    # 'UNEMPLOY': '실업자수',  # 실업자의 총 수 (월간)
-    # 'RSAFS': '소매판매',  # 소매판매 지수 (월간)
-    # 'CPIENGSL': '에너지 가격 지수',  # 소비자 물가지수 중 에너지 부문 (월간) -> 소비자물가지수(CPI)나 GDP, 실업률, 인플레이션 기대 등 다른 핵심 지표가 이미 전반적 경기 상황을 반영.
-    # 'AHETPI': '임금 성장률',  # 시간당 평균 임금 성장률 (월간)
-    # 'PPIACO': '농산물 가격 지수',  # 생산자 물가지수 중 농산물 부문 (월간)
-    'CPIAUCSL': '소비자 물가지수',  # 전체 소비자 물가지수 (월간)
-    # 'CSUSHPINSA': '주택가격지수',  # 케이스-실러 주택 가격 지수 (월간) -> 5년 변동금리 모기지 (MORTGAGE5US): 부동산 시장이 대상 종목(빅테크) 주가 변동에 단기적으로 큰 영향 미치는지 불분명. 단기간(1주일 후) 예측에서는 영향력 제한적.
-    # 'MORTGAGE30US': '30년 고정금리 모기지',  # 30년 만기 고정금리 모기지 금리 (주간)
-    # 'MORTGAGE15US': '15년 고정금리 모기지',  # 15년 만기 고정금리 모기지 금리 (주간)
-    'MORTGAGE5US': '5년 변동금리 모기지',  # 5년 변동금리 모기지 금리 (주간)
-    'DTWEXM': '미국 달러 환율',  # 미국 무역가중 환율 (월간)
-    'M2': '통화 공급량 M2',  # M2 통화 공급량 (주간) -> FEDFUNDS나 금리 동향, 달러 인덱스, 금융스트레스지수가 이미 유동성 상황을 대략 파악 가능.
-    # 'TEDRATE': 'TED 스프레드',  # 3개월 만기 미국 국채와 유로달러 금리 스프레드 (일간) -> FEDFUNDS나 금리 동향, 달러 인덱스, 금융스트레스지수가 이미 유동성 상황을 대략 파악 가능.
-    # 'BAMLH0A0HYM2': '미국 하이일드 채권 스프레드',  # 미국 하이일드 채권과 국채 스프레드 (일간) -> 금융시장 신용위험을 반영하지만, 이미 금융스트레스지수(STLFSI4), 장단기금리차, VIX 등의 지표로 대략적인 위험 선호도나 스트레스 상황 파악 가능.
-    # 'BAMLC0A0CM': '미국 회사채 스프레드',  # 미국 회사채와 국채 스프레드 (일간)
-    # 'BAMLCC0A0CMTRIV': '미국 회사채 수익률',  # 미국 회사채 수익률 (일간)
-    # 'BAMLCC0A1AAATRIV': '미국 회사채 AAA등급 수익률',  # AAA등급 회사채 수익률 (일간)
-    # 'BAMLCC0A4BBBTRIV': '미국 회사채 BBB등급 수익률',  # BBB등급 회사채 수익률 (일간)
-    # 'BAMLHYH0A0HYM2TRIV': '미국 하이일드 채권 수익률',  # 하이일드 채권 수익률 (일간)
-    # 'BAMLHYH0A3CMTRIV': '미국 하이일드 채권 CCC등급 수익률',  # CCC등급 하이일드 채권 수익률 (일간)
-    # 'BAMLHE00EHYIEY': '미국 하이일드 채권 기대수익률',  # 하이일드 채권 기대수익률 (일간)
+# 로거 설정 (중복 핸들러 방지)
+logger = logging.getLogger(__name__)
+logger.propagate = False  # 부모 로거로 전파하지 않음 (중복 방지)
+if not logger.handlers:  # 핸들러가 없을 때만 추가
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter('%(message)s'))
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
 
-    'TDSP': '가계 부채 비율',  # 가계의 부채 상환 비율을 나타냄 (분기)
-    # 'A939RX0Q048SBEA': '실질 GDP 성장률',  # 계절 조정된 연간 실질 GDP 성장률 (분기)
-    'GDPC1': 'GDP 성장률',  # 실질 국내총생산 성장률, 물가 조정을 반영 (분기)
-    # 'W019RCQ027SBEA': '정부 지출',  # 정부의 총 지출 금액 (분기)
-    # 'DRBLACBS': '대출 연체율',  # 기업 대출의 연체율 (분기)
+# FRED API Key 설정 (환경변수에서 가져오기)
+api_key = settings.FRED_API_KEY or 'aedfbcd8ba091c740281c0bd8ca93b46'  # 기본값 유지 (레거시 호환)
 
-    # 주식시장 관련 추가 지표
-    # 'DJIA': '다우존스 산업평균지수',  # 미국 대형 30개 기업의 주가 평균 (일간)
-    'NASDAQCOM': '나스닥 종합지수'  # 나스닥 시장 전체 종합 주가 지수 (일간)
-}
-
-
-# Yahoo Finance에서 제공하는 지표와 티커
-yfinance_indicators = {
-    'S&P 500 지수': '^GSPC',    # S&P 500 지수
-    '금 가격': 'GC=F',           # 금 가격 (선물)
-    '달러 인덱스': 'DX-Y.NYB',    # 달러 인덱스
-
-    # 추가 지표
-    '나스닥 100': '^NDX',           # 나스닥 100 지수
-    'S&P 500 ETF': 'SPY',           # S&P 500 추종 ETF
-    'QQQ ETF': 'QQQ',               # 나스닥 100 추종 ETF
-    '러셀 2000 ETF': 'IWM',         # 러셀 2000 추종 ETF
-    '다우 존스 ETF': 'DIA',          # 다우 존스 추종 ETF
-    # 'NYSE FANG+ 지수': '^NYFANG'   # NYSE FANG+ 지수
-    'VIX 지수': '^VIX',          # ^VIX (변동성 지수, 공포 지수): S&P 500 옵션 가격을 기반으로 앞으로의 시장 변동성 기대치를 반영해 시장 심리를 나타내는 지표.
-
-    # 글로벌 지수
-    '닛케이 225': '^N225',          # 일본 닛케이 225 지수
-    '상해종합': '000001.SS',        # 중국 상해종합지수
-    '항셍': '^HSI',                # 홍콩 항셍지수
-    # '유로스톡스 50': '^STOXX50E',   # 유럽 유로스톡스 50 지수
-    '영국 FTSE': '^FTSE',          # 영국 FTSE 100 지수
-    '독일 DAX': '^GDAXI',          # 독일 DAX 지수
-    '프랑스 CAC 40': '^FCHI',       # 프랑스 CAC 40 지수
-
-    '미국 전체 채권시장 ETF': 'AGG',  # iShares 핵심 미국 전체 채권 ETF
-    'TIPS ETF': 'TIP',             # iShares TIPS ETF (물가연동국채)
-    # '하이일드 채권 ETF': 'HYG',      # iShares iBoxx $ 하이일드 회사채 ETF
-    '투자등급 회사채 ETF': 'LQD',     # iShares iBoxx $ 투자등급 회사채 ETF
-    # '신흥국 채권 ETF': 'EMB',        # iShares JP모건 USD 신흥시장 채권 ETF
-
-    # 환율
-    '달러/엔': 'JPY=X',          # 달러/엔 환율
-    '달러/위안': 'CNY=X',         # 달러/위안 환율
-
-    # 리츠(부동산) 관련
-    '미국 리츠 ETF': 'VNQ',       # Vanguard Real Estate ETF
-    # '모기지 리츠 ETF': 'REM',      # iShares Mortgage Real Estate ETF
+# MongoDB에서 지표 정보를 동적으로 로드하는 함수
+def load_indicators_from_mongodb():
+    """
+    MongoDB의 fred_indicators와 yfinance_indicators 컬렉션에서 활성화된 지표 정보를 로드합니다.
     
-    # 반도체 ETF
-    'SOXX ETF': 'SOXX',           # iShares Semiconductor ETF
-}
+    Returns:
+        tuple: (fred_indicators dict, yfinance_indicators dict)
+            - fred_indicators: {code: name} 형태
+            - yfinance_indicators: {name: ticker} 형태
+    """
+    try:
+        from app.db.mongodb import get_db
+        
+        db = get_db()
+        if db is None:
+            logger.warning("MongoDB 연결 실패. 기본 지표 딕셔너리를 사용합니다.")
+            return _get_default_fred_indicators(), _get_default_yfinance_indicators()
+        
+        # FRED 지표 조회
+        fred_indicators = {}
+        try:
+            active_fred = db.fred_indicators.find({"is_active": True})
+            for indicator in active_fred:
+                code = indicator.get("code")
+                name = indicator.get("name")
+                if code and name:
+                    fred_indicators[code] = name
+        except Exception as e:
+            logger.warning(f"fred_indicators 조회 실패: {e}")
+        
+        # Yahoo Finance 지표 조회
+        yfinance_indicators = {}
+        try:
+            active_yfinance = db.yfinance_indicators.find({"is_active": True})
+            for indicator in active_yfinance:
+                ticker = indicator.get("ticker")
+                name = indicator.get("name")
+                if ticker and name:
+                    yfinance_indicators[name] = ticker
+        except Exception as e:
+            logger.warning(f"yfinance_indicators 조회 실패: {e}")
+        
+        logger.info(f"MongoDB에서 지표 로드 완료: FRED {len(fred_indicators)}개, Yahoo Finance {len(yfinance_indicators)}개")
+        return fred_indicators, yfinance_indicators
+        
+    except Exception as e:
+        logger.warning(f"MongoDB에서 지표 로드 실패: {e}. 기본 지표 딕셔너리를 사용합니다.")
+        return _get_default_fred_indicators(), _get_default_yfinance_indicators()
 
-# 주의: 이 리스트는 더 이상 사용되지 않습니다.
-# stock_ticker_mapping 테이블에서 is_active=true인 주식만 수집합니다.
-# 폴백용으로만 남겨둠 (DB 조회 실패 시 사용)
-# nasdaq_top_100 = [
-#     ("AAPL", "애플"),
-#     ("MSFT", "마이크로소프트"),
-#     ("AMZN", "아마존"),
-#     ("GOOGL", "구글 A"),
-#     ("GOOG", "구글 C"),
-#     ("META", "메타"),
-#     ("TSLA", "테슬라"),
-#     ("NVDA", "엔비디아"),
-#     ("INTC", "인텔"),
-#     ("MU", "마이크론"),
-#     ("AVGO", "브로드컴"),
-#     ("TXN", "텍사스 인스트루먼트"),
-#     ("AMD", "AMD"),
-#     ("AMAT", "어플라이드 머티리얼즈"),
-#     ("CELH", "셀레스티카"),
-#     ("VRT", "버티브 홀딩스"),
-#     ("VST", "비스트라 에너지"),
-#     ("BE", "블룸에너지"),
-#     ("OKLO", "오클로"),
-#     ("PLTR", "팔란티어"),
-#     ("CRM", "세일즈포스"),
-#     ("ORCL", "오라클"),
-#     ("APPV", "앱플로빈"),
-#     ("PANW", "팔로알토 네트웍스"),
-#     ("CRWD", "크라우드 스트라이크"),
-#     ("SNOW", "스노우플레이크"),
-#     ("TSM", "TSMC"),
-#     ("CRDO", "크리도 테크놀로지 그룹 홀딩"),
-#     ("HOOD", "로빈후드"),
-#     ("LLY", "일라이릴리"),
-#     ("WMT", "월마트"),
-#     ("JNJ", "존슨앤존슨")
-# ]
+
+def _get_default_fred_indicators():
+    """
+    기본 FRED 지표 딕셔너리 (MongoDB 조회 실패 시 fallback용)
+    ⚠️ 경고: 이 함수는 MongoDB 조회 실패 시에만 사용됩니다.
+    정상 동작 시에는 load_indicators_from_mongodb()를 사용해야 합니다.
+    """
+    logger.warning("⚠️ 경고: 하드코딩된 기본 FRED 지표 딕셔너리를 사용합니다. MongoDB 조회를 확인하세요.")
+    return {
+        'T10YIE': '10년 기대 인플레이션율',
+        'T10Y2Y': '장단기 금리차',
+        'FEDFUNDS': '기준금리',
+        'UMCSENT': '미시간대 소비자 심리지수',
+        'UNRATE': '실업률',
+        'DGS2': '2년 만기 미국 국채 수익률',
+        'DGS10': '10년 만기 미국 국채 수익률',
+        'STLFSI4': '금융스트레스지수',
+        'PCE': '개인 소비 지출',
+        'CPIAUCSL': '소비자 물가지수',
+        'MORTGAGE5US': '5년 변동금리 모기지',
+        'DTWEXM': '미국 달러 환율',
+        'M2': '통화 공급량 M2',
+        'TDSP': '가계 부채 비율',
+        'GDPC1': 'GDP 성장률',
+        'NASDAQCOM': '나스닥 종합지수'
+    }
+
+
+def _get_default_yfinance_indicators():
+    """
+    기본 Yahoo Finance 지표 딕셔너리 (MongoDB 조회 실패 시 fallback용)
+    ⚠️ 경고: 이 함수는 MongoDB 조회 실패 시에만 사용됩니다.
+    정상 동작 시에는 load_indicators_from_mongodb()를 사용해야 합니다.
+    """
+    logger.warning("⚠️ 경고: 하드코딩된 기본 Yahoo Finance 지표 딕셔너리를 사용합니다. MongoDB 조회를 확인하세요.")
+    return {
+        'S&P 500 지수': '^GSPC',
+        '금 가격': 'GC=F',
+        '달러 인덱스': 'DX-Y.NYB',
+        '나스닥 100': '^NDX',
+        'S&P 500 ETF': 'SPY',
+        'QQQ ETF': 'QQQ',
+        '러셀 2000 ETF': 'IWM',
+        '다우 존스 ETF': 'DIA',
+        'VIX 지수': '^VIX',
+        '닛케이 225': '^N225',
+        '상해종합': '000001.SS',
+        '항셍': '^HSI',
+        '영국 FTSE': '^FTSE',
+        '독일 DAX': '^GDAXI',
+        '프랑스 CAC 40': '^FCHI',
+        '미국 전체 채권시장 ETF': 'AGG',
+        'TIPS ETF': 'TIP',
+        '투자등급 회사채 ETF': 'LQD',
+        '달러/엔': 'JPY=X',
+        '달러/위안': 'CNY=X',
+        '미국 리츠 ETF': 'VNQ',
+        'SOXX ETF': 'SOXX',
+    }
+
+
+# MongoDB에서 지표 로드 (모듈 레벨에서 실행)
+fred_indicators, yfinance_indicators = load_indicators_from_mongodb()
 
 # 결과 데이터프레임을 전역 변수로 정의 (초기에는 None)
 result_df = None
 
 # yfinance.py에서 가져온 함수
+def get_short_interest_data(ticker_symbol: str) -> dict:
+    """
+    yfinance를 사용하여 공매도 관련 데이터를 가져옵니다.
+    
+    Args:
+        ticker_symbol: 주식 티커 (예: "AAPL", "TSLA")
+    
+    Returns:
+        dict: 공매도 관련 데이터 딕셔너리 (필요한 필드만)
+    """
+    try:
+        ticker = yf.Ticker(ticker_symbol)
+        info = ticker.info
+        
+        # 필요한 공매도 필드만 추출
+        short_interest = {
+            'sharesShort': info.get('sharesShort'),
+            'sharesShortPriorMonth': info.get('sharesShortPriorMonth'),
+            'shortRatio': info.get('shortRatio'),
+            'shortPercentOfFloat': info.get('shortPercentOfFloat')
+        }
+        
+        # None 값 제거
+        short_interest = {k: v for k, v in short_interest.items() if v is not None}
+        
+        return short_interest if short_interest else None
+    except Exception as e:
+        logger.warning(f"공매도 데이터 조회 실패 ({ticker_symbol}): {str(e)}")
+        return None
+
 def download_yahoo_chart(symbol, start_date, end_date, interval="1d"):
     """
     Yahoo Finance Chart API를 통해 주어진 symbol의 종가(Close) 시계열을 가져옵니다.
@@ -229,10 +260,14 @@ def collect_economic_data(start_date='2006-01-01', end_date=None):
     if end_date is None:
         end_date = datetime.today().strftime('%Y-%m-%d')
     
-    print(f"경제 데이터 수집 시작: {start_date} ~ {end_date}")
+    logger.info(f"경제 데이터 수집 시작: {start_date} ~ {end_date}")
+    
+    # 지표 정보를 다시 로드 (동적으로 변경 가능)
+    global fred_indicators, yfinance_indicators
+    fred_indicators, yfinance_indicators = load_indicators_from_mongodb()
     
     # FRED API를 통한 데이터 수집
-    print("FRED 경제 지표 수집 중...")
+    logger.info(f"FRED 경제 지표 수집 중... (총 {len(fred_indicators)}개)")
     fred_data_frames = []
     for code, name in fred_indicators.items():
         # 지표별 제공 주기에 따른 요청 주기 설정
@@ -266,14 +301,14 @@ def collect_economic_data(start_date='2006-01-01', end_date=None):
                 df['date'] = pd.to_datetime(df['date']).dt.tz_localize(None)
                 fred_data_frames.append(df.set_index('date'))
             else:
-                print(f"No data found for indicator {name} ({code}).")
+                logger.warning(f"No data found for indicator {name} ({code}).")
         else:
-            print(f"Failed to fetch data for indicator {name} ({code}): {response.status_code}")
+            logger.warning(f"Failed to fetch data for indicator {name} ({code}): {response.status_code}")
     
     # 데이터 빈도에 따른 리샘플링 처리
     for i, df in enumerate(fred_data_frames):
         if df.empty:
-            print(f"DataFrame {i} is empty, skipping resampling.")
+            logger.warning(f"DataFrame {i} is empty, skipping resampling.")
             continue
         try:
             inferred_freq = df.index.inferred_freq
@@ -289,10 +324,10 @@ def collect_economic_data(start_date='2006-01-01', end_date=None):
             else:
                 fred_data_frames[i] = df.resample('D').ffill()
         except Exception as e:
-            print(f"Error processing DataFrame {i}: {e}")
+            logger.error(f"Error processing DataFrame {i}: {e}")
     
     # yfinance를 통한 데이터 수집 (yfinance.py의 방식으로 대체)
-    print("\nYahoo Finance 지표 데이터 수집 중...")
+    logger.info(f"\nYahoo Finance 지표 데이터 수집 중... (총 {len(yfinance_indicators)}개)")
     yfinance_data_frames = []
     for name, ticker in yfinance_indicators.items():
         try:
@@ -302,36 +337,51 @@ def collect_economic_data(start_date='2006-01-01', end_date=None):
                 df.columns = [name]  # 'Close' 컬럼명을 지표 이름으로 변경
                 df.index = df.index.tz_localize(None)  # 시간대 정보 제거
                 yfinance_data_frames.append(df)
-                print(f"{name}({ticker}) 수집 완료, {len(df)}개")
+                logger.info(f"{name}({ticker}) 수집 완료, {len(df)}개")
             else:
-                print(f"No data found for indicator {name} ({ticker}).")
+                logger.warning(f"No data found for indicator {name} ({ticker}).")
         except Exception as e:
-            print(f"Error downloading data for {ticker} ({name}): {e}")
+            logger.error(f"Error downloading data for {ticker} ({name}): {e}")
         # 요청 간 간격을 두어 rate limit 방지
         time.sleep(1)
     
-    # stock_ticker_mapping 테이블에서 활성화된 주식 목록 가져오기
-    print("\nstock_ticker_mapping 테이블에서 활성화된 주식 목록 조회 중...")
+    # MongoDB에서 활성화된 주식 목록 가져오기
+    logger.info("\nMongoDB에서 활성화된 주식 목록 조회 중...")
     try:
-        # app.db.supabase를 동적으로 import (모듈이 없을 수 있으므로)
+        # app.db.mongodb를 동적으로 import (모듈이 없을 수 있으므로)
         try:
-            from app.db.supabase import supabase
-            mapping_response = supabase.table("stock_ticker_mapping").select("ticker, stock_name").eq("is_active", True).execute()
-            active_stocks = [(item["ticker"], item["stock_name"]) for item in mapping_response.data]
-            print(f"✅ 활성화된 주식 {len(active_stocks)}개를 stock_ticker_mapping에서 찾았습니다.")
+            from app.db.mongodb import get_db
+            db = get_db()
+            if db is None:
+                raise ValueError("MongoDB 연결 실패. MongoDB 연결을 확인하세요.")
+            
+            # stocks 컬렉션에서 활성화된 주식 조회 (공용 함수 사용 시도)
+            try:
+                from app.services.stock_service import get_active_stocks
+                stocks_list = get_active_stocks(exclude_etf=False)
+                active_stocks = [(stock.get("ticker"), stock.get("stock_name")) for stock in stocks_list if stock.get("ticker") and stock.get("stock_name")]
+            except (ImportError, Exception) as import_error:
+                # app 모듈을 import할 수 없는 경우 직접 조회
+                logger.warning(f"app.services.stock_service를 사용할 수 없어 직접 조회합니다: {import_error}")
+                active_stocks_cursor = db.stocks.find({"is_active": True})
+                active_stocks = [(stock["ticker"], stock["stock_name"]) for stock in active_stocks_cursor]
+            logger.info(f"✅ 활성화된 주식 {len(active_stocks)}개를 MongoDB stocks 컬렉션에서 찾았습니다.")
             if len(active_stocks) == 0:
-                raise ValueError("활성화된 주식이 없습니다. stock_ticker_mapping 테이블에서 is_active=true인 주식을 확인하세요.")
+                raise ValueError("활성화된 주식이 없습니다. MongoDB stocks 컬렉션에서 is_active=true인 주식을 확인하세요.")
         except ImportError:
-            raise ImportError("app.db.supabase 모듈을 import할 수 없습니다. 데이터베이스 연결을 확인하세요.")
+            raise ImportError("app.db.mongodb 모듈을 import할 수 없습니다. MongoDB 연결을 확인하세요.")
     except Exception as e:
-        print(f"❌ 오류: stock_ticker_mapping 테이블 조회 실패: {str(e)}")
+        logger.error(f"❌ 오류: MongoDB stocks 컬렉션 조회 실패: {str(e)}")
         import traceback
         traceback.print_exc()
-        raise Exception(f"주식 목록을 가져올 수 없습니다. stock_ticker_mapping 테이블과 데이터베이스 연결을 확인하세요: {str(e)}")
+        raise Exception(f"주식 목록을 가져올 수 없습니다. MongoDB stocks 컬렉션과 데이터베이스 연결을 확인하세요: {str(e)}")
     
     # 활성화된 주식 데이터 수집
-    print(f"\n활성화된 주식 {len(active_stocks)}개 데이터 수집 중...")
+    logger.info(f"\n활성화된 주식 {len(active_stocks)}개 데이터 수집 중...")
     nasdaq_data_frames = []
+    # 공매도 데이터를 저장할 딕셔너리 (날짜별로 관리)
+    short_interest_data = {}  # {날짜: {주식명: {short_interest: {...}}}}
+    
     for ticker, name in active_stocks:
         try:
             # download_yahoo_chart 함수를 사용하여 데이터 수집
@@ -340,11 +390,26 @@ def collect_economic_data(start_date='2006-01-01', end_date=None):
                 df.columns = [name]  # 'Close' 컬럼명을 종목 한글 이름으로 변경
                 df.index = df.index.tz_localize(None)  # 시간대 정보 제거
                 nasdaq_data_frames.append(df)
-                print(f"{name}({ticker}) 수집 완료, {len(df)}개")
+                logger.info(f"{name}({ticker}) 수집 완료, {len(df)}개")
+                
+                # 공매도 데이터 수집 (최신 데이터만, 날짜별로는 동일하게 적용)
+                try:
+                    short_info = get_short_interest_data(ticker)
+                    if short_info:
+                        # 모든 날짜에 동일한 공매도 데이터 적용 (공매도 데이터는 월 1-2회 업데이트되므로)
+                        # 티커를 키로 사용 (주식명이 아님)
+                        for date_idx in df.index:
+                            date_str = date_idx.strftime('%Y-%m-%d') if hasattr(date_idx, 'strftime') else str(date_idx)
+                            if date_str not in short_interest_data:
+                                short_interest_data[date_str] = {}
+                            short_interest_data[date_str][ticker] = {'short_interest': short_info}
+                        logger.info(f"{name}({ticker}) 공매도 데이터 수집 완료")
+                except Exception as short_e:
+                    logger.warning(f"{name}({ticker}) 공매도 데이터 수집 실패: {str(short_e)}")
             else:
-                print(f"No data found for stock {name} ({ticker}).")
+                logger.warning(f"No data found for stock {name} ({ticker}).")
         except Exception as e:
-            print(f"Error downloading data for {ticker} ({name}): {e}")
+            logger.error(f"Error downloading data for {ticker} ({name}): {e}")
         # 요청 간 간격을 두어 rate limit 방지
         time.sleep(1)
     
@@ -357,7 +422,7 @@ def collect_economic_data(start_date='2006-01-01', end_date=None):
                 all_data_frames[i] = df[~df.index.duplicated(keep='first')]
         
         # 결합
-        print("데이터프레임 병합 중...")
+        logger.info("데이터프레임 병합 중...")
         result_df = pd.concat(all_data_frames, axis=1, join='outer')
     
         # 결측치 및 비정상적인 값 처리
@@ -369,7 +434,7 @@ def collect_economic_data(start_date='2006-01-01', end_date=None):
         
         # 주요 수정: 날짜 인덱스의 시간 부분을 제거하고 일자만 남김
         # 동일 날짜의 데이터가 여러 개 있는 경우, 마지막 데이터만 사용
-        print("날짜 인덱스 표준화 중...")
+        logger.info("날짜 인덱스 표준화 중...")
         result_df.index = pd.to_datetime(result_df.index.date)  # 날짜만 남김
         result_df = result_df[~result_df.index.duplicated(keep='last')]  # 중복 날짜 제거, 마지막 값 유지
         
@@ -378,30 +443,29 @@ def collect_economic_data(start_date='2006-01-01', end_date=None):
         for stock in excluded_stocks:
             if stock in result_df.columns:
                 result_df = result_df.drop(columns=[stock])
-                print(f"제외된 주식 컬럼 제거: {stock}")
+                logger.info(f"제외된 주식 컬럼 제거: {stock}")
         
         # 결과 데이터프레임 로그 출력
-        print("\n=== 결과 데이터프레임 정보 ===")
-        print(f"행 수: {len(result_df)}")
-        print(f"열 수: {len(result_df.columns)}")
-        print("컬럼 목록:")
+        logger.info("\n=== 결과 데이터프레임 정보 ===")
+        logger.info(f"행 수: {len(result_df)}")
+        logger.info(f"열 수: {len(result_df.columns)}")
+        logger.info("컬럼 목록:")
         for col in result_df.columns:
-            print(f"  - {col}")
+            logger.info(f"  - {col}")
         
-        print("\n=== 결과 데이터프레임 처음 5행 ===")
-        print(result_df.head())
+        logger.info("\n=== 결과 데이터프레임 처음 5행 ===")
+        logger.info(result_df.head())
         
-        print("\n=== 결과 데이터프레임 마지막 5행 ===")
-        print(result_df.tail())
+        logger.info("\n=== 결과 데이터프레임 마지막 5행 ===")
+        logger.info(result_df.tail())
         
-        print(f"\n데이터 수집 완료")
-        return result_df
+        logger.info(f"\n데이터 수집 완료")
+        # 공매도 데이터도 함께 반환 (딕셔너리 형태)
+        return result_df, short_interest_data
     else:
-        print("No data collected for any indicators.")
-        return None
+        logger.warning("No data collected for any indicators.")
+        return None, {}
 
 # 스크립트가 직접 실행될 때만 데이터 수집 진행
 if __name__ == "__main__":
     result_df = collect_economic_data()
-    # 필요한 경우 CSV로 저장
-    # result_df.to_csv('total.csv', index_label="날짜", encoding='utf-8-sig')

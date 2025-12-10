@@ -271,6 +271,31 @@ def create_custom_job_with_dws(
         if supabase_key:
             env_vars["SUPABASE_KEY"] = supabase_key
     
+    # MongoDB 환경 변수 추가
+    if "MONGO_URL" not in env_vars and "MONGODB_URL" not in env_vars:
+        mongo_url = os.getenv("MONGO_URL") or os.getenv("MONGODB_URL")
+        if mongo_url:
+            env_vars["MONGODB_URL"] = mongo_url
+            logger.info("MongoDB URL 환경변수 추가됨")
+    
+    if "MONGO_USER" not in env_vars and "MONGODB_USER" not in env_vars:
+        mongo_user = os.getenv("MONGO_USER") or os.getenv("MONGODB_USER")
+        if mongo_user:
+            env_vars["MONGODB_USER"] = mongo_user
+            logger.info("MongoDB User 환경변수 추가됨")
+    
+    if "MONGO_PASSWORD" not in env_vars and "MONGODB_PASSWORD" not in env_vars:
+        mongo_password = os.getenv("MONGO_PASSWORD") or os.getenv("MONGODB_PASSWORD")
+        if mongo_password:
+            env_vars["MONGODB_PASSWORD"] = mongo_password
+            logger.info("MongoDB Password 환경변수 추가됨")
+    
+    if "MONGODB_DATABASE" not in env_vars:
+        mongo_database = os.getenv("MONGODB_DATABASE")
+        if mongo_database:
+            env_vars["MONGODB_DATABASE"] = mongo_database
+            logger.info(f"MongoDB Database 환경변수 추가됨: {mongo_database}")
+    
     logger.info(f"환경 변수 개수: {len(env_vars)}")
     if env_vars:
         logger.info(f"환경 변수 키: {list(env_vars.keys())}")
@@ -292,6 +317,7 @@ def create_custom_job_with_dws(
             "scikit-learn>=1.3.0",
             "tensorflow>=2.11.0",
             "matplotlib>=3.7.0",
+            "pymongo>=4.6.0",  # MongoDB 연결용
         ]
         
         if use_existing_package:

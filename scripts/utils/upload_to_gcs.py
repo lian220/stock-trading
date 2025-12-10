@@ -281,6 +281,7 @@ def build_package_from_script(
             "scikit-learn>=1.3.0",
             "tensorflow>=2.11.0",
             "matplotlib>=3.7.0",
+            "pymongo>=4.6.0",  # MongoDB 연결용
         ]
         
         setup_py_content = f"""from setuptools import setup, find_packages

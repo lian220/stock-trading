@@ -8,357 +8,688 @@ import pytz
 from app.core.config import settings
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends
 from app.services.stock_recommendation_service import StockRecommendationService
+from app.services.stock_service import get_stock_to_ticker_mapping
 import httpx
 import time
+import os
+from app.db.mongodb import get_db
+import logging
 
-def get_last_updated_date():
+logger = logging.getLogger(__name__)
+
+
+# ============================================================
+# 비즈니스 로직 함수
+# ============================================================
+
+def fetch_economic_data(start_date: str = None, end_date: str = None):
     """
-    데이터베이스에서 마지막으로 수집된 날짜를 조회합니다.
+    경제 데이터를 조회하고 반환합니다.
+    
+    Args:
+        start_date: 수집 시작 날짜 (YYYY-MM-DD 형식, None이면 자동 계산)
+        end_date: 수집 종료 날짜 (YYYY-MM-DD 형식, None이면 오늘)
+    
+    Returns:
+        dict: {
+            'new_data': DataFrame,  # 수집된 데이터
+            'start_date': str,      # 수집 시작 날짜
+            'storage_end_date': str,  # 저장 종료 날짜
+            'stock_columns': list,   # 활성화된 주식 컬럼
+            'previous_data': dict,   # 이전 데이터
+            'today': str,           # 오늘 날짜
+            'should_skip': bool     # 수집을 건너뛸지 여부
+        }
     """
-    try:
-        # 날짜 컬럼명을 올바르게 수정
-        response = supabase.table("economic_and_stock_data").select("날짜").order("날짜", desc=True).limit(1).execute()
+    # 미국 장 마감 여부 확인 (뉴욕 시간 기준으로 정확히 체크)
+    now_korea = datetime.now(pytz.timezone('Asia/Seoul'))
+    now_ny = datetime.now(pytz.timezone('America/New_York'))
+    
+    korea_time = now_korea.strftime('%H:%M')
+    ny_hour = now_ny.hour
+    ny_minute = now_ny.minute
+    ny_weekday = now_ny.weekday()  # 0=월요일, 6=일요일
+    
+    # 미국 주식 시장은 평일(월-금) 9:30 AM - 4:00 PM ET
+    is_weekday = 0 <= ny_weekday <= 4  # 월요일에서 금요일까지
+    is_market_open_time = (
+        (ny_hour == 9 and ny_minute >= 30) or
+        (10 <= ny_hour < 16) or
+        (ny_hour == 16 and ny_minute == 0)
+    )
+    
+    is_market_hours = is_weekday and is_market_open_time
+    
+    # 미국 주식 시장이 열려 있는 경우에만 데이터 수집 연기
+    if is_market_hours:
+        print(f"현재 시간 (한국: {korea_time}, 뉴욕: {now_ny.strftime('%Y-%m-%d %H:%M')})은 미국 주식 시장 운영 시간입니다.")
+        print(f"장 마감 후(뉴욕 시간 16:00 이후)에 데이터를 수집합니다.")
+        return {'should_skip': True}
+    
+    print(f"현재 시간 (한국: {korea_time}, 뉴욕: {now_ny.strftime('%Y-%m-%d %H:%M')}) - 미국 장 마감 시간이므로 데이터 수집을 진행합니다.")
+
+    # 한국 시간대 기준으로 현재 날짜 계산 (컨테이너 시간대 문제 방지)
+    korea_tz = pytz.timezone('Asia/Seoul')
+    now_korea_dt = datetime.now(korea_tz)
+    today = now_korea_dt.strftime('%Y-%m-%d')
+    yesterday = (now_korea_dt - timedelta(days=1)).strftime('%Y-%m-%d')
+    
+    # 날짜 범위가 지정된 경우 사용, 아니면 자동 계산
+    if start_date and end_date:
+        # 사용자가 지정한 날짜 범위 사용
+        print(f"지정된 날짜 범위로 수집: {start_date} ~ {end_date}")
+        collection_start_date = start_date
+        collection_end_date = end_date
+        storage_end_date = end_date  # 지정된 범위는 모두 저장
+    else:
+        # 기본 동작: 마지막 수집 날짜 조회 (다음 수집 시작일을 반환)
+        next_collection_date = get_last_updated_date()
         
-        if response.data and len(response.data) > 0:
-            last_date = datetime.fromisoformat(response.data[0]["날짜"].replace('Z', '+00:00'))
-            # 다음 날짜 반환
-            next_date = (last_date + timedelta(days=1)).strftime('%Y-%m-%d')
-            print(f"마지막 수집 날짜: {last_date.strftime('%Y-%m-%d')}, 다음 수집 시작일: {next_date}")
-            return next_date
+        # 오늘까지 수집해야 하므로, 수집 시작일을 조정
+        # next_collection_date가 오늘보다 크거나 같으면, 오늘부터 수집
+        if next_collection_date >= today:
+            collection_start_date = today
+            print(f"다음 수집 시작일({next_collection_date})이 오늘({today})보다 크거나 같으므로, 오늘 데이터부터 수집합니다.")
         else:
-            # 데이터가 없으면 기본 시작 날짜 반환 (2006-01-01)
-            print("기존 데이터가 없습니다. 기본 시작 날짜(2006-01-01)로 설정합니다.")
-            return "2006-01-01"
-    except Exception as e:
-        print(f"마지막 수집 날짜 조회 중 오류 발생: {str(e)}")
-        # 오류 발생 시 기본 시작 날짜 반환
-        return "2006-01-01"
-
-def get_existing_data_with_nulls():
-    """
-    NULL 값이 있는 기존 데이터를 조회합니다.
-    """
-    try:
-        # NULL 값이 있는 레코드만 조회 (PostgreSQL의 JSON 연산자 사용)
-        query = "SELECT * FROM economic_and_stock_data WHERE jsonb_object_keys(data::jsonb) @> '{null}'::jsonb"
-        response = supabase.table("economic_and_stock_data").select("*").execute(query)
+            collection_start_date = next_collection_date
         
-        if response.data and len(response.data) > 0:
-            # Pandas DataFrame으로 변환
-            df = pd.DataFrame(response.data)
-            print(f"NULL 값이 포함된 레코드 {len(df)}개를 찾았습니다.")
-            return df
-        else:
-            print("NULL 값이 포함된 레코드가 없습니다.")
-            return pd.DataFrame()
-    except Exception as e:
-        print(f"NULL 값 데이터 조회 중 오류 발생: {str(e)}")
-        return pd.DataFrame()
-
-# 주가 관련 컬럼 목록을 stock_ticker_mapping 테이블에서 동적으로 가져오기
-def get_active_stock_columns():
-    """
-    stock_ticker_mapping 테이블에서 is_active=true인 주식 목록을 가져옵니다.
-    ETF와 경제 지표는 별도로 포함합니다.
-    """
-    try:
-        # 활성화된 주식 목록 가져오기
-        mapping_response = supabase.table("stock_ticker_mapping").select("stock_name").eq("is_active", True).execute()
-        active_stock_names = [item["stock_name"] for item in mapping_response.data]
-        
-        # 경제 지표 및 ETF는 항상 포함
-        economic_and_etf_columns = [
-            "나스닥 종합지수", "S&P 500 지수", "금 가격", "달러 인덱스", "나스닥 100", 
-            "S&P 500 ETF", "QQQ ETF", "러셀 2000 ETF", "다우 존스 ETF", "VIX 지수", 
-            "닛케이 225", "상해종합", "항셍", "영국 FTSE", "독일 DAX", "프랑스 CAC 40", 
-            "미국 전체 채권시장 ETF", "TIPS ETF", "투자등급 회사채 ETF", "달러/엔", "달러/위안",
-            "미국 리츠 ETF", "SOXX ETF"
-        ]
-        
-        # 활성화된 주식 + 경제 지표/ETF 합치기
-        all_stock_columns = economic_and_etf_columns + active_stock_names
-        
-        return all_stock_columns
-    except Exception as e:
-        print(f"⚠️ 경고: stock_ticker_mapping 테이블 조회 실패: {str(e)}. 기본 목록을 사용합니다.")
-        # 기본 목록 (fallback)
-        return [
-            "나스닥 종합지수", "S&P 500 지수", "금 가격", "달러 인덱스", "나스닥 100", 
-            "S&P 500 ETF", "QQQ ETF", "러셀 2000 ETF", "다우 존스 ETF", "VIX 지수", 
-            "닛케이 225", "상해종합", "항셍", "영국 FTSE", "독일 DAX", "프랑스 CAC 40", 
-            "미국 전체 채권시장 ETF", "TIPS ETF", "투자등급 회사채 ETF", "달러/엔", "달러/위안",
-            "미국 리츠 ETF", "SOXX ETF", "애플", "마이크로소프트", "아마존", "구글 A", "구글 C", "메타", 
-            "테슬라", "엔비디아", "인텔", "마이크론", "브로드컴", 
-            "텍사스 인스트루먼트", "AMD", "어플라이드 머티리얼즈",
-            "셀레스티카", "버티브 홀딩스", "비스트라 에너지", "블룸에너지", "오클로", "팔란티어",
-            "세일즈포스", "오라클", "앱플로빈", "팔로알토 네트웍스", "크라우드 스트라이크",
-            "스노우플레이크", "TSMC", "크리도 테크놀로지 그룹 홀딩", "로빈후드", "일라이릴리",
-            "월마트", "존슨앤존슨"
-        ]
-
-# 주가 관련 컬럼 목록 (동적으로 가져옴)
-stock_columns = get_active_stock_columns()
-
-# 경제 지표 컬럼 목록 정의
-economic_columns = [
-    "10년 기대 인플레이션율", "장단기 금리차", "기준금리", "미시간대 소비자 심리지수", 
-    "실업률", "2년 만기 미국 국채 수익률", "10년 만기 미국 국채 수익률", "금융스트레스지수", 
-    "개인 소비 지출", "소비자 물가지수", "5년 변동금리 모기지", "미국 달러 환율", 
-    "통화 공급량 M2", "가계 부채 비율", "GDP 성장률"
-]
-
-async def update_economic_data_in_background():
-    """
-    백그라운드에서 경제 지표 데이터를 업데이트
-    """
-    try:
-        print("경제 지표 및 주가 데이터 업데이트 작업 시작...")
-        
-        # 미국 장 마감 여부 확인 (뉴욕 시간 기준으로 정확히 체크)
-        now_korea = datetime.now(pytz.timezone('Asia/Seoul'))
-        now_ny = datetime.now(pytz.timezone('America/New_York'))
-        
-        korea_time = now_korea.strftime('%H:%M')
-        ny_hour = now_ny.hour
-        ny_minute = now_ny.minute
-        ny_weekday = now_ny.weekday()  # 0=월요일, 6=일요일
-        
-        # 미국 주식 시장은 평일(월-금) 9:30 AM - 4:00 PM ET
-        is_weekday = 0 <= ny_weekday <= 4  # 월요일에서 금요일까지
-        is_market_open_time = (
-            (ny_hour == 9 and ny_minute >= 30) or
-            (10 <= ny_hour < 16) or
-            (ny_hour == 16 and ny_minute == 0)
-        )
-        
-        is_market_hours = is_weekday and is_market_open_time
-        
-        # 미국 주식 시장이 열려 있는 경우에만 데이터 수집 연기
-        # 장이 마감된 후(뉴욕 시간 16:00 이후) 또는 주말에는 데이터 수집 진행
-        if is_market_hours:
-            print(f"현재 시간 (한국: {korea_time}, 뉴욕: {now_ny.strftime('%Y-%m-%d %H:%M')})은 미국 주식 시장 운영 시간입니다.")
-            print(f"장 마감 후(뉴욕 시간 16:00 이후)에 데이터를 수집합니다.")
-            return
-        
-        print(f"현재 시간 (한국: {korea_time}, 뉴욕: {now_ny.strftime('%Y-%m-%d %H:%M')}) - 미국 장 마감 시간이므로 데이터 수집을 진행합니다.")
-
-        # 마지막 수집 날짜 조회
-        start_date = get_last_updated_date()
-        
-        # 한국 시간대 기준으로 현재 날짜 계산 (컨테이너 시간대 문제 방지)
-        korea_tz = pytz.timezone('Asia/Seoul')
-        now_korea_dt = datetime.now(korea_tz)
-        today = now_korea_dt.strftime('%Y-%m-%d')
-        yesterday = (now_korea_dt - timedelta(days=1)).strftime('%Y-%m-%d')
-        
-        print(f"한국 시간 기준 오늘: {today}, 어제: {yesterday}, 수집 시작일: {start_date}")
-        
-        # 수집 시작일이 오늘보다 크면 수집할 데이터가 없음
-        if start_date > today:
-            print(f"수집 시작일({start_date})이 오늘({today})보다 큽니다. 수집할 데이터가 없습니다.")
-            return {"success": True, "total_records": 0, "updated_records": 0}
-        
-        # 데이터 수집은 오늘까지 하되, 저장은 어제까지만
-        # start_date가 yesterday보다 크면, 어제 데이터는 이미 수집되었으므로 오늘 데이터만 수집
         collection_end_date = today
-        if start_date > yesterday:
-            # 어제 데이터는 이미 수집되었으므로 오늘 데이터만 수집 (저장은 내일)
-            storage_end_date = yesterday
-            print(f"수집 시작일({start_date})이 어제({yesterday})보다 크므로, 오늘({today}) 데이터만 수집합니다. (저장은 내일)")
-        else:
-            # 어제까지의 데이터를 수집하고 저장
-            storage_end_date = yesterday
-            print(f"수집 시작일({start_date})부터 어제({yesterday})까지의 데이터를 수집하고 저장합니다.")
-        
-        # 이전 데이터 가져오기 (마지막 수집 날짜의 데이터)
-        previous_date = (datetime.strptime(start_date, '%Y-%m-%d') - timedelta(days=1)).strftime('%Y-%m-%d')
-        prev_data_response = supabase.table("economic_and_stock_data").select("*").eq("날짜", previous_date).execute()
-        previous_data = prev_data_response.data[0] if prev_data_response.data else {}
-        
-        # stock_columns를 최신 상태로 업데이트 (매번 실행 시 최신 활성화 상태 반영)
-        stock_columns = get_active_stock_columns()
-        
-        # 데이터 수집 (오늘까지 수집)
-        new_data = collect_economic_data(start_date=start_date, end_date=collection_end_date)
-        
-        # 디버깅: 수집된 데이터 확인
-        print("\n=== 수집된 데이터 확인 ===")
-        print(f"활성화된 주식 컬럼 수: {len(stock_columns)}")
+        # 오늘 데이터도 저장 (API 호출 시 오늘 데이터 수집 및 저장)
+        storage_end_date = today
+    
+    start_date = collection_start_date
+    print(f"한국 시간 기준 오늘: {today}, 어제: {yesterday}, 수집 시작일: {start_date}, 수집 종료일: {collection_end_date}")
+    
+    # 수집 시작일이 종료일보다 크면 수집할 데이터가 없음
+    if start_date > collection_end_date:
+        print(f"수집 시작일({start_date})이 종료일({collection_end_date})보다 큽니다. 수집할 데이터가 없습니다.")
+        return {'should_skip': True}
+    
+    # 이전 데이터 가져오기 (마지막 수집 날짜의 데이터)
+    previous_date = (datetime.strptime(start_date, '%Y-%m-%d') - timedelta(days=1)).strftime('%Y-%m-%d')
+    prev_data_response = supabase.table("economic_and_stock_data").select("*").eq("날짜", previous_date).execute()
+    previous_data = prev_data_response.data[0] if prev_data_response.data else {}
+    
+    # stock_columns를 최신 상태로 업데이트 (매번 실행 시 최신 활성화 상태 반영)
+    stock_columns = get_active_stock_columns()
+    
+    # 데이터 수집 (오늘까지 수집)
+    result = collect_economic_data(start_date=start_date, end_date=collection_end_date)
+    
+    # 반환값이 튜플인 경우 (공매도 데이터 포함)와 DataFrame만 반환하는 경우 처리
+    if isinstance(result, tuple):
+        new_data, short_interest_data = result
+    else:
+        new_data = result
+        short_interest_data = {}
+    
+    # 디버깅: 수집된 데이터 확인
+    print("\n=== 수집된 데이터 확인 ===")
+    print(f"활성화된 주식 컬럼 수: {len(stock_columns)}")
+    if new_data is not None and not new_data.empty:
         for date_idx in new_data.index[:3]:  # 처음 3개 날짜만
             date_str = date_idx.strftime('%Y-%m-%d') if isinstance(date_idx, pd.Timestamp) else date_idx
             print(f"날짜: {date_str}")
             for stock in stock_columns[:5]:  # 몇 개의 주가만 출력
                 if stock in new_data.columns:
                     print(f"  {stock}: {new_data.loc[date_idx, stock]}")
+    
+    if new_data is None or new_data.empty:
+        print("수집할 새 데이터가 없습니다.")
+        return {'should_skip': True}
+    
+    return {
+        'should_skip': False,
+        'new_data': new_data,
+        'short_interest_data': short_interest_data,  # 공매도 데이터 추가
+        'start_date': start_date,
+        'storage_end_date': storage_end_date,
+        'stock_columns': stock_columns,
+        'previous_data': previous_data,
+        'today': today
+    }
+
+
+def categorize_data_for_mongodb(data_dict):
+    """
+    데이터를 FRED, Yahoo Finance, Stocks로 분류합니다.
+    
+    Args:
+        data_dict: 분류할 데이터 딕셔너리
+    
+    Returns:
+        dict: {
+            'fred_indicators': {...},
+            'yfinance_indicators': {...},
+            'stocks': {...}
+        }
+    """
+    try:
+        db = get_db()
+        if db is None:
+            logger.warning("MongoDB 연결 실패 - 데이터 분류 불가")
+            return {'fred_indicators': {}, 'yfinance_indicators': {}, 'stocks': {}}
         
-        if new_data is None or new_data.empty:
-            print("수집할 새 데이터가 없습니다.")
-            return {"success": True, "total_records": 0, "updated_records": 0}
+        # MongoDB에서 각 카테고리의 이름 목록 가져오기
+        fred_names = set()
+        yfinance_names = set()
+        stock_names = set()
         
-        # 날짜 범위 생성 (시작일부터 어제까지만)
-        all_dates = pd.date_range(start=start_date, end=storage_end_date)
-        saved_count = 0
+        # FRED 지표 이름
+        for doc in db.fred_indicators.find({"is_active": True}):
+            if doc.get("name"):
+                fred_names.add(doc["name"])
         
-        # 재시도 로직이 포함된 데이터 저장 함수 (루프 밖으로 이동)
-        def save_data_with_retry(date_str, data_dict, max_retries=3):
-            """데이터 저장을 재시도하며 처리"""
-            # 데이터 딕셔너리 검증
-            if not data_dict:
-                print(f"⚠️ {date_str}: 저장할 데이터가 없습니다 (data_dict가 비어있음)")
-                return False
-            
-            # 날짜는 필수
-            if not date_str:
-                print(f"⚠️ 날짜가 없어서 저장할 수 없습니다")
-                return False
-            
-            
-            for attempt in range(max_retries):
-                try:
-                    # 기존 데이터 확인
-                    check = supabase.table("economic_and_stock_data").select("*").eq("날짜", date_str).execute()
-                    
-                    # 중복 방지를 위해 기존 데이터가 있으면 업데이트, 없으면 삽입
-                    if check.data and len(check.data) > 0:
-                        # 기존 레코드가 있는 경우, null 값만 업데이트
-                        existing_data = check.data[0]
-                        update_dict = {}
-                        
-                        for col_name, value in data_dict.items():
-                            # 기존 값이 null이거나 누락된 경우에만 업데이트
-                            if col_name not in existing_data or existing_data[col_name] is None:
-                                update_dict[col_name] = value
-                        
-                        if update_dict:  # 업데이트할 값이 있는 경우에만
-                            supabase.table("economic_and_stock_data").update(update_dict).eq("날짜", date_str).execute()
-                            print(f"  ✅ {date_str}: 업데이트 성공")
-                        else:
-                            print(f"  ℹ️ {date_str}: 업데이트할 데이터가 없음 (모든 값이 이미 존재)")
-                    else:
-                        # 새 레코드 추가
-                        insert_dict = {"날짜": date_str}
-                        insert_dict.update(data_dict)
-                        supabase.table("economic_and_stock_data").insert(insert_dict).execute()
-                        print(f"  ✅ {date_str}: 삽입 성공")
-                    
-                    return True  # 성공
-                    
-                except (httpx.RemoteProtocolError, httpx.ConnectError, httpx.TimeoutException) as e:
-                    if attempt < max_retries - 1:
-                        print(f"  ⚠️ {date_str} 저장 실패 (시도 {attempt+1}/{max_retries}): {str(e)}. 재시도...")
-                        time.sleep(2)  # 재시도 전 대기
-                    else:
-                        print(f"  ❌ {date_str} 저장 최종 실패: {str(e)}")
-                        import traceback
-                        print(traceback.format_exc())
-                        return False  # 실패해도 예외를 발생시키지 않음
-                except Exception as e:
-                    # 다른 종류의 에러는 즉시 재시도
-                    if attempt < max_retries - 1:
-                        print(f"  ⚠️ {date_str} 저장 실패 (시도 {attempt+1}/{max_retries}): {str(e)}. 재시도...")
-                        time.sleep(2)  # 재시도 전 대기
-                    else:
-                        print(f"  ❌ {date_str} 저장 최종 실패: {str(e)}")
-                        import traceback
-                        print(traceback.format_exc())
-                        return False  # 실패해도 예외를 발생시키지 않음
+        # Yahoo Finance 지표 이름
+        for doc in db.yfinance_indicators.find({"is_active": True}):
+            if doc.get("name"):
+                yfinance_names.add(doc["name"])
+        
+        # 주식 이름
+        for doc in db.stocks.find({"is_active": True}):
+            if doc.get("stock_name"):
+                stock_names.add(doc["stock_name"])
+        
+        # 데이터 분류
+        categorized = {
+            'fred_indicators': {},
+            'yfinance_indicators': {},
+            'stocks': {}
+        }
+        
+        for key, value in data_dict.items():
+            if key in fred_names:
+                categorized['fred_indicators'][key] = value
+            elif key in yfinance_names:
+                categorized['yfinance_indicators'][key] = value
+            elif key in stock_names:
+                categorized['stocks'][key] = value
+            # 분류되지 않은 데이터는 무시 (로그만 남김)
+            else:
+                logger.debug(f"분류되지 않은 데이터: {key}")
+        
+        return categorized
+    except Exception as e:
+        logger.error(f"데이터 분류 중 오류 발생: {str(e)}")
+        return {'fred_indicators': {}, 'yfinance_indicators': {}, 'stocks': {}}
+
+
+def save_economic_data(new_data, start_date, storage_end_date, stock_columns, previous_data, today, short_interest_data=None):
+    """
+    조회한 경제 데이터를 데이터베이스에 저장합니다.
+    
+    Args:
+        new_data: 수집된 데이터 DataFrame
+        start_date: 수집 시작 날짜
+        storage_end_date: 저장 종료 날짜
+        stock_columns: 활성화된 주식 컬럼 리스트
+        previous_data: 이전 데이터 딕셔너리
+        today: 오늘 날짜
+    
+    Returns:
+        dict: {'saved_count': int, 'total_records': int}
+    """
+    # 날짜 범위 생성 (시작일부터 어제까지만)
+    all_dates = pd.date_range(start=start_date, end=storage_end_date)
+    saved_count = 0
+    
+    # 재시도 로직이 포함된 데이터 저장 함수
+    def save_data_with_retry(date_str, data_dict, max_retries=3, short_interest_data_for_date=None):
+        """데이터 저장을 재시도하며 처리"""
+        # 데이터 딕셔너리 검증
+        if not data_dict:
+            print(f"⚠️ {date_str}: 저장할 데이터가 없습니다 (data_dict가 비어있음)")
             return False
         
-        # 어제까지 날짜에 대해서만 처리
-        for date in all_dates:
+        # 날짜는 필수
+        if not date_str:
+            print(f"⚠️ 날짜가 없어서 저장할 수 없습니다")
+            return False
+        
+        for attempt in range(max_retries):
             try:
-                date_str = date.strftime('%Y-%m-%d')
+                # 기존 데이터 확인
+                check = supabase.table("economic_and_stock_data").select("*").eq("날짜", date_str).execute()
                 
-                # 해당 날짜의 데이터가 수집되었는지 확인
-                if date in new_data.index:
-                    row = new_data.loc[date]
-                    print(f"\n== {date_str} 데이터가 있음 (저장 대상) ==")
-                    # 주요 주가 데이터 몇 개 출력
-                    for stock in stock_columns[:5]:
-                        if stock in row.index:
-                            print(f"  원본 {stock}: {row[stock]}")
+                # 중복 방지를 위해 기존 데이터가 있으면 업데이트, 없으면 삽입
+                if check.data and len(check.data) > 0:
+                    # 기존 레코드가 있는 경우, null 값만 업데이트
+                    existing_data = check.data[0]
+                    update_dict = {}
+                    
+                    for col_name, value in data_dict.items():
+                        # 기존 값이 null이거나 누락된 경우에만 업데이트
+                        if col_name not in existing_data or existing_data[col_name] is None:
+                            update_dict[col_name] = value
+                    
+                    if update_dict:  # 업데이트할 값이 있는 경우에만
+                        supabase.table("economic_and_stock_data").update(update_dict).eq("날짜", date_str).execute()
+                        print(f"  ✅ {date_str}: 업데이트 성공")
+                        
+                        # Supabase 업데이트 성공 후 MongoDB에도 저장
+                        try:
+                            db = get_db()
+                            if db is not None:
+                                # 데이터 분류
+                                categorized = categorize_data_for_mongodb(update_dict)
+                                
+                                # stocks 필드에 공매도 데이터 통합 (MongoDB만)
+                                # 주식명(한글) -> 티커 변환 매핑 생성
+                                stock_to_ticker = get_stock_to_ticker_mapping(exclude_etf=False)
+                                
+                                # stocks 필드를 티커 기반으로 변환
+                                stocks_with_short_interest = {}
+                                for stock_name, price in categorized['stocks'].items():
+                                    ticker = stock_to_ticker.get(stock_name)
+                                    if ticker:
+                                        # 티커를 키로 사용
+                                        stocks_with_short_interest[ticker] = {
+                                            'close_price': price
+                                        }
+                                
+                                # 공매도 데이터 통합 (티커 기반)
+                                if short_interest_data_for_date:
+                                    for ticker, stock_data in short_interest_data_for_date.items():
+                                        if ticker in stocks_with_short_interest:
+                                            # 기존 close_price 가격과 공매도 데이터 통합
+                                            stocks_with_short_interest[ticker].update(stock_data)
+                                        else:
+                                            # 가격 데이터가 없어도 공매도 데이터만 저장
+                                            stocks_with_short_interest[ticker] = stock_data
+                                
+                                # MongoDB에 upsert (구조화된 형태로)
+                                mongo_doc = {
+                                    "date": date_str,
+                                    "fred_indicators": categorized['fred_indicators'],
+                                    "yfinance_indicators": categorized['yfinance_indicators'],
+                                    "stocks": stocks_with_short_interest,
+                                    "updated_at": datetime.utcnow()
+                                }
+                                
+                                db.daily_stock_data.update_one(
+                                    {"date": date_str},
+                                    {
+                                        "$set": mongo_doc,
+                                        "$setOnInsert": {
+                                            "created_at": datetime.utcnow()
+                                        }
+                                    },
+                                    upsert=True
+                                )
+                                print(f"  📊 MongoDB 업데이트 성공: {date_str}")
+                            else:
+                                logger.warning(f"  ⚠️ MongoDB 연결 실패 (Supabase는 성공): {date_str}")
+                        except Exception as mongo_e:
+                            logger.warning(f"  ⚠️ MongoDB 저장 실패 (Supabase는 성공): {str(mongo_e)}")
+                    else:
+                        print(f"  ℹ️ {date_str}: 업데이트할 데이터가 없음 (모든 값이 이미 존재)")
                 else:
-                    print(f"\n== {date_str} 데이터가 없음, 이전 데이터 사용 (저장 대상) ==")
-                    row = pd.Series(dtype='object')
+                    # 새 레코드 추가
+                    insert_dict = {"날짜": date_str}
+                    insert_dict.update(data_dict)
+                    supabase.table("economic_and_stock_data").insert(insert_dict).execute()
+                    print(f"  ✅ {date_str}: 삽입 성공")
                 
-                # 데이터 딕셔너리 생성
-                data_dict = {}
-                if date in new_data.index:
-                    for col_name, value in row.items():
-                        if not pd.isna(value):  # null이 아닌 값만 포함
-                            data_dict[col_name] = value
+                # Supabase 저장 성공 후 MongoDB에도 저장
+                try:
+                    db = get_db()
+                    if db is not None:
+                        # 데이터 분류
+                        categorized = categorize_data_for_mongodb(data_dict)
+                        
+                        # stocks 필드에 공매도 데이터 통합 (MongoDB만)
+                        # 주식명(한글) -> 티커 변환 매핑 생성
+                        stock_to_ticker = get_stock_to_ticker_mapping(exclude_etf=False)
+                        
+                        # stocks 필드를 티커 기반으로 변환
+                        stocks_with_short_interest = {}
+                        for stock_name, price in categorized['stocks'].items():
+                            ticker = stock_to_ticker.get(stock_name)
+                            if ticker:
+                                # 티커를 키로 사용
+                                stocks_with_short_interest[ticker] = {
+                                    'close_price': price
+                                }
+                        
+                        # 공매도 데이터 통합 (티커 기반)
+                        if short_interest_data_for_date:
+                            for ticker, stock_data in short_interest_data_for_date.items():
+                                if ticker in stocks_with_short_interest:
+                                    # 기존 close_price 가격과 공매도 데이터 통합
+                                    stocks_with_short_interest[ticker].update(stock_data)
+                                else:
+                                    # 가격 데이터가 없어도 공매도 데이터만 저장
+                                    stocks_with_short_interest[ticker] = stock_data
+                        
+                        # MongoDB에 upsert (구조화된 형태로)
+                        mongo_doc = {
+                            "date": date_str,
+                            "fred_indicators": categorized['fred_indicators'],
+                            "yfinance_indicators": categorized['yfinance_indicators'],
+                            "stocks": stocks_with_short_interest,
+                            "updated_at": datetime.utcnow()
+                        }
+                        
+                        db.daily_stock_data.update_one(
+                            {"date": date_str},
+                            {
+                                "$set": mongo_doc,
+                                "$setOnInsert": {
+                                    "created_at": datetime.utcnow()
+                                }
+                            },
+                            upsert=True
+                        )
+                        print(f"  📊 MongoDB 저장 성공: {date_str}")
+                    else:
+                        logger.warning(f"  ⚠️ MongoDB 연결 실패 (Supabase는 성공): {date_str}")
+                except Exception as mongo_e:
+                    # MongoDB 저장 실패해도 Supabase 저장은 성공으로 처리
+                    logger.warning(f"  ⚠️ MongoDB 저장 실패 (Supabase는 성공): {str(mongo_e)}")
                 
-                # 이전 데이터로 null 값 채우기 (모든 컬럼 대상)
-                for col_name, value in previous_data.items():
-                    if col_name != "날짜" and col_name not in data_dict and value is not None:
-                        data_dict[col_name] = value
+                return True  # 성공
                 
-                # 데이터 딕셔너리 검증
-                if not data_dict:
-                    print(f"⚠️ {date_str}: 저장할 데이터가 없어서 건너뜁니다.")
-                    continue
-                
-                print(f"\n📊 {date_str} 데이터 준비 완료:")
-                
-                # 재시도 로직이 포함된 저장 함수 호출
-                if save_data_with_retry(date_str, data_dict):
-                    # 현재 데이터를 다음 날짜 처리를 위한 이전 데이터로 설정
-                    if data_dict:  # 데이터가 있는 경우에만
-                        previous_data = {"날짜": date_str}
-                        previous_data.update(data_dict)
-                    
-                    # 주요 주가 데이터 출력
-                    for stock in stock_columns[:5]:
-                        if stock in data_dict:
-                            print(f"  저장 전 {stock}: {data_dict[stock]}")
-                    
-                    saved_count += 1
-                
+            except (httpx.RemoteProtocolError, httpx.ConnectError, httpx.TimeoutException) as e:
+                if attempt < max_retries - 1:
+                    print(f"  ⚠️ {date_str} 저장 실패 (시도 {attempt+1}/{max_retries}): {str(e)}. 재시도...")
+                    time.sleep(2)  # 재시도 전 대기
+                else:
+                    print(f"  ❌ {date_str} 저장 최종 실패: {str(e)}")
+                    import traceback
+                    print(traceback.format_exc())
+                    return False
             except Exception as e:
-                # 개별 날짜 처리 중 에러가 발생해도 계속 진행
-                print(f"{date_str} 처리 중 오류 발생 (다음 날짜로 계속 진행): {str(e)}")
-                continue
-        
-        # 오늘 날짜 데이터는 수집했지만 저장하지 않는다고 표시
-        if datetime.now().date() in new_data.index:
-            print(f"\n== {today} 데이터는 수집했지만 저장하지 않습니다 ==")
-            
-        total_records = len(all_dates)
-        print(f"총 {total_records}개 날짜 중 {saved_count}개가 처리되었습니다.")
-        
-        # ===== 추가: 데이터 업데이트 완료 후 기술적 지표 생성 및 뉴스 감정 분석 실행 =====
+                # 다른 종류의 에러는 즉시 재시도
+                if attempt < max_retries - 1:
+                    print(f"  ⚠️ {date_str} 저장 실패 (시도 {attempt+1}/{max_retries}): {str(e)}. 재시도...")
+                    time.sleep(2)  # 재시도 전 대기
+                else:
+                    print(f"  ❌ {date_str} 저장 최종 실패: {str(e)}")
+                    import traceback
+                    print(traceback.format_exc())
+                    return False
+        return False
+    
+    # 어제까지 날짜에 대해서만 처리
+    for date in all_dates:
         try:
-            from app.services.stock_recommendation_service import StockRecommendationService
+            date_str = date.strftime('%Y-%m-%d')
             
-            print("\n기술적 지표 생성 시작...")
-            stock_service = StockRecommendationService()
-            tech_result = stock_service.generate_technical_recommendations()
-            print(f"기술적 지표 생성 완료: {tech_result['message']}")
+            # 해당 날짜의 데이터가 수집되었는지 확인
+            if date in new_data.index:
+                row = new_data.loc[date]
+                print(f"\n== {date_str} 데이터가 있음 (저장 대상) ==")
+                # 주요 주가 데이터 몇 개 출력
+                for stock in stock_columns[:5]:
+                    if stock in row.index:
+                        print(f"  원본 {stock}: {row[stock]}")
+            else:
+                print(f"\n== {date_str} 데이터가 없음, 이전 데이터 사용 (저장 대상) ==")
+                row = pd.Series(dtype='object')
             
-            print("\n뉴스 감정 분석 시작...")
-            sentiment_result = stock_service.fetch_and_store_sentiment_for_recommendations()
-            print(f"뉴스 감정 분석 완료: {sentiment_result['message']}")
-        except Exception as sub_e:
-            # 추가 작업 실패 시에도 원래 작업은 성공으로 간주
-            print(f"추가 분석 작업 중 오류 발생: {str(sub_e)}")
-            import traceback
-            print(traceback.format_exc())
+            # 데이터 딕셔너리 생성
+            data_dict = {}
+            if date in new_data.index:
+                for col_name, value in row.items():
+                    if not pd.isna(value):  # null이 아닌 값만 포함
+                        data_dict[col_name] = value
+            
+            # 이전 데이터로 null 값 채우기 (모든 컬럼 대상)
+            for col_name, value in previous_data.items():
+                if col_name != "날짜" and col_name not in data_dict and value is not None:
+                    data_dict[col_name] = value
+            
+            # 데이터 딕셔너리 검증
+            if not data_dict:
+                print(f"⚠️ {date_str}: 저장할 데이터가 없어서 건너뜁니다.")
+                continue
+            
+            print(f"\n📊 {date_str} 데이터 준비 완료:")
+            
+            # 재시도 로직이 포함된 저장 함수 호출
+            date_short_interest = short_interest_data.get(date_str, {}) if short_interest_data else {}
+            if save_data_with_retry(date_str, data_dict, short_interest_data_for_date=date_short_interest):
+                # 현재 데이터를 다음 날짜 처리를 위한 이전 데이터로 설정
+                if data_dict:  # 데이터가 있는 경우에만
+                    previous_data = {"날짜": date_str}
+                    previous_data.update(data_dict)
+                
+                # 주요 주가 데이터 출력
+                for stock in stock_columns[:5]:
+                    if stock in data_dict:
+                        print(f"  저장 전 {stock}: {data_dict[stock]}")
+                
+                saved_count += 1
+            
+        except Exception as e:
+            # 개별 날짜 처리 중 에러가 발생해도 계속 진행
+            print(f"{date_str} 처리 중 오류 발생 (다음 날짜로 계속 진행): {str(e)}")
+            continue
+    
+    # 오늘 날짜 데이터는 수집했지만 저장하지 않는다고 표시
+    if datetime.now().date() in new_data.index:
+        print(f"\n== {today} 데이터는 수집했지만 저장하지 않습니다 ==")
+    
+    total_records = len(all_dates)
+    print(f"총 {total_records}개 날짜 중 {saved_count}개가 처리되었습니다.")
+    
+    return {
+        'saved_count': saved_count,
+        'total_records': total_records
+    }
+
+
+async def update_economic_data_in_background(start_date: str = None, end_date: str = None):
+    """
+    백그라운드에서 경제 지표 데이터를 업데이트
+    
+    Args:
+        start_date: 수집 시작 날짜 (YYYY-MM-DD 형식, None이면 자동 계산)
+        end_date: 수집 종료 날짜 (YYYY-MM-DD 형식, None이면 오늘)
+    """
+    try:
+        print("경제 지표 및 주가 데이터 업데이트 작업 시작...")
+        
+        # 1. 데이터 조회
+        fetch_result = fetch_economic_data(start_date=start_date, end_date=end_date)
+        
+        # 조회를 건너뛰어야 하는 경우 (시장 운영 시간, 데이터 없음 등)
+        if fetch_result.get('should_skip'):
+            return {"success": True, "total_records": 0, "updated_records": 0}
+        
+        # 2. 데이터 저장
+        save_result = save_economic_data(
+            new_data=fetch_result['new_data'],
+            start_date=fetch_result['start_date'],
+            storage_end_date=fetch_result['storage_end_date'],
+            stock_columns=fetch_result['stock_columns'],
+            previous_data=fetch_result['previous_data'],
+            today=fetch_result['today'],
+            short_interest_data=fetch_result.get('short_interest_data', {})
+        )
+        
+        # 참고: 기술적 지표 생성 및 뉴스 감정 분석은 별도 API로 분리됨
+        # - 기술적 지표: POST /recommended-stocks/generate-technical-recommendations
+        # - 감정 분석: POST /recommended-stocks/analyze-news-sentiment
+        # - 통합 분석: POST /recommended-stocks/generate-complete-analysis
         
         return {
             "success": True,
-            "message": "경제 데이터 업데이트 완료",
-            "total_records": total_records,
-            "updated_records": saved_count
+            "message": "경제 및 주식 데이터 업데이트 완료",
+            "total_records": save_result['total_records'],
+            "updated_records": save_result['saved_count']
         }
     except Exception as e:
         print(f"경제 데이터 업데이트 중 오류 발생: {str(e)}")
         import traceback
         print(traceback.format_exc())
         # 에러가 발생해도 앱이 계속 실행되도록 예외를 다시 발생시키지 않고 로그만 남김
-        # 필요시 에러 정보를 반환
         return {
             "success": False,
             "message": f"경제 데이터 업데이트 중 오류 발생: {str(e)}",
             "total_records": 0,
             "updated_records": 0
         }
+
+
+# ============================================================
+# 데이터 조회 및 헬퍼 함수
+# ============================================================
+
+def get_last_updated_date():
+    """
+    MongoDB의 daily_stock_data 컬렉션에서 마지막으로 수집된 날짜를 조회합니다.
+    """
+    try:
+        from app.core.config import settings
+        
+        # MongoDB 사용 여부 확인
+        use_mongodb = settings.is_mongodb_enabled()
+        
+        if not use_mongodb:
+            print("⚠️ 경고: USE_MONGODB가 False로 설정되어 있습니다. Supabase에서 조회합니다.")
+            # MongoDB가 비활성화된 경우 Supabase에서 조회 (fallback)
+            response = supabase.table("economic_and_stock_data").select("날짜").order("날짜", desc=True).limit(1).execute()
+            
+            if response.data and len(response.data) > 0:
+                last_date = datetime.fromisoformat(response.data[0]["날짜"].replace('Z', '+00:00'))
+                # 다음 날짜 반환
+                next_date = (last_date + timedelta(days=1)).strftime('%Y-%m-%d')
+                print(f"마지막 수집 날짜 (Supabase): {last_date.strftime('%Y-%m-%d')}, 다음 수집 시작일: {next_date}")
+                return next_date
+            else:
+                print("기존 데이터가 없습니다. 기본 시작 날짜(2006-01-01)로 설정합니다.")
+                return "2006-01-01"
+        
+        # MongoDB에서 조회
+        db = get_db()
+        if db is None:
+            print("⚠️ 경고: MongoDB 연결 실패. Supabase에서 조회합니다.")
+            # MongoDB 연결 실패 시 Supabase에서 조회 (fallback)
+            response = supabase.table("economic_and_stock_data").select("날짜").order("날짜", desc=True).limit(1).execute()
+            
+            if response.data and len(response.data) > 0:
+                last_date = datetime.fromisoformat(response.data[0]["날짜"].replace('Z', '+00:00'))
+                next_date = (last_date + timedelta(days=1)).strftime('%Y-%m-%d')
+                print(f"마지막 수집 날짜 (Supabase fallback): {last_date.strftime('%Y-%m-%d')}, 다음 수집 시작일: {next_date}")
+                return next_date
+            else:
+                print("기존 데이터가 없습니다. 기본 시작 날짜(2006-01-01)로 설정합니다.")
+                return "2006-01-01"
+        
+        # daily_stock_data 컬렉션에서 마지막 날짜 조회
+        last_doc = db.daily_stock_data.find_one(
+            sort=[("date", -1)]
+        )
+        
+        if last_doc and "date" in last_doc:
+            date = last_doc["date"]
+            
+            # date가 문자열인 경우 datetime으로 변환
+            if isinstance(date, str):
+                last_date = datetime.fromisoformat(date.replace('Z', '+00:00'))
+            elif isinstance(date, datetime):
+                last_date = date
+            else:
+                # 다른 타입인 경우 변환 시도
+                last_date = pd.to_datetime(date).to_pydatetime()
+            
+            # 다음 날짜 반환
+            next_date = (last_date + timedelta(days=1)).strftime('%Y-%m-%d')
+            print(f"마지막 수집 날짜 (MongoDB daily_stock_data): {last_date.strftime('%Y-%m-%d')}, 다음 수집 시작일: {next_date}")
+            return next_date
+        else:
+            # 데이터가 없으면 기본 시작 날짜 반환 (2006-01-01)
+            print("MongoDB daily_stock_data 컬렉션에 데이터가 없습니다. 기본 시작 날짜(2006-01-01)로 설정합니다.")
+            return "2006-01-01"
+            
+    except Exception as e:
+        print(f"마지막 수집 날짜 조회 중 오류 발생: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
+        # 오류 발생 시 기본 시작 날짜 반환
+        return "2006-01-01"
+
+
+
+def get_active_stock_columns():
+    """
+    MongoDB의 stocks, fred_indicators, yfinance_indicators 컬렉션에서 활성화된 주식 및 지표 목록을 가져옵니다.
+    """
+    try:
+        from app.core.config import settings
+        
+        # MongoDB 사용 여부 확인 (config.py를 통해서만 접근)
+        use_mongodb = settings.is_mongodb_enabled()
+        
+        if not use_mongodb:
+            print("⚠️ 경고: USE_MONGODB가 False로 설정되어 있습니다. 기본 목록을 사용합니다.")
+            return _get_default_stock_columns()
+        
+        db = get_db()
+        if db is None:
+            print("⚠️ 경고: MongoDB 연결 실패 (get_db()가 None 반환). 기본 목록을 사용합니다.")
+            print("   - USE_MONGODB 설정을 확인하세요.")
+            print("   - MongoDB 연결 정보를 확인하세요.")
+            return _get_default_stock_columns()
+        
+        # MongoDB에서 활성화된 주식 목록 가져오기 (stocks 컬렉션)
+        try:
+            from app.services.stock_service import get_active_stock_names
+            active_stock_names = get_active_stock_names(exclude_etf=False)
+        except Exception as e:
+            logger.warning(f"⚠️ 경고: stocks 컬렉션 조회 실패: {str(e)}. 기본 목록을 사용합니다.")
+            return _get_default_stock_columns()
+        
+        # MongoDB에서 활성화된 시장 지표 및 ETF 목록 가져오기
+        # fred_indicators와 yfinance_indicators 컬렉션에서 조회
+        try:
+            economic_and_etf_columns = []
+            # FRED 지표
+            active_fred = db.fred_indicators.find({"is_active": True})
+            for indicator in active_fred:
+                economic_and_etf_columns.append(indicator.get("name"))
+            # Yahoo Finance 지표
+            active_yfinance = db.yfinance_indicators.find({"is_active": True})
+            for indicator in active_yfinance:
+                economic_and_etf_columns.append(indicator.get("name"))
+        except Exception as e:
+            print(f"⚠️ 경고: 지표 컬렉션 조회 실패: {str(e)}. 기본 목록을 사용합니다.")
+            return _get_default_stock_columns()
+        
+        # 활성화된 주식 + 경제 지표/ETF 합치기
+        all_stock_columns = economic_and_etf_columns + active_stock_names
+        
+        if len(all_stock_columns) == 0:
+            print("⚠️ 경고: 활성화된 주식 및 지표가 없습니다. 기본 목록을 사용합니다.")
+            return _get_default_stock_columns()
+        
+        return all_stock_columns
+    except Exception as e:
+        print(f"⚠️ 경고: MongoDB 조회 실패: {str(e)}. 기본 목록을 사용합니다.")
+        import traceback
+        print(traceback.format_exc())
+        return _get_default_stock_columns()
+
+
+def _get_default_stock_columns():
+    """
+    기본 주식 컬럼 목록 반환 (fallback)
+    ⚠️ 경고: 이 함수는 MongoDB 조회 실패 시에만 사용됩니다. 
+    정상 동작 시에는 get_active_stock_columns()를 사용해야 합니다.
+    """
+    logger.warning("⚠️ 경고: 하드코딩된 기본 주식 컬럼 목록을 사용합니다. MongoDB 조회를 확인하세요.")
+    return [
+        "나스닥 종합지수", "S&P 500 지수", "금 가격", "달러 인덱스", "나스닥 100", 
+        "S&P 500 ETF", "QQQ ETF", "러셀 2000 ETF", "다우 존스 ETF", "VIX 지수", 
+        "닛케이 225", "상해종합", "항셍", "영국 FTSE", "독일 DAX", "프랑스 CAC 40", 
+        "미국 전체 채권시장 ETF", "TIPS ETF", "투자등급 회사채 ETF", "달러/엔", "달러/위안",
+        "미국 리츠 ETF", "SOXX ETF", "애플", "마이크로소프트", "아마존", "구글 A", "구글 C", "메타", 
+        "테슬라", "엔비디아", "인텔", "마이크론", "브로드컴", 
+        "텍사스 인스트루먼트", "AMD", "어플라이드 머티리얼즈",
+        "셀레스티카", "버티브 홀딩스", "비스트라 에너지", "블룸에너지", "오클로", "팔란티어",
+        "세일즈포스", "오라클", "앱플로빈", "팔로알토 네트웍스", "크라우드 스트라이크",
+        "스노우플레이크", "TSMC", "크리도 테크놀로지 그룹 홀딩", "로빈후드", "일라이릴리",
+        "월마트", "존슨앤존슨"
+    ]
+

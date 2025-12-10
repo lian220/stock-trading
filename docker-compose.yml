@@ -21,7 +21,8 @@ services:
       - TZ=Asia/Seoul
       - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/vertex-ai-key.json
     healthcheck:
-      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/', timeout=5).raise_for_status()"]
+      # python3 명령어 사용 (더 명시적이고 안전함)
+      test: ["CMD", "python3", "-c", "import requests; requests.get('http://localhost:8000/', timeout=5).raise_for_status()"]
       interval: 30s
       timeout: 10s
       retries: 3

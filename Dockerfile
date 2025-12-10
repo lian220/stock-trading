@@ -12,13 +12,18 @@ ENV PYTHONUNBUFFERED=1 \
     TZ=Asia/Seoul
 
 # 시스템 패키지 업데이트 및 필요한 패키지 설치
+# python3, bash, curl 등 필수 도구 확인 및 설치
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     g++ \
     curl \
+    bash \
     tzdata \
     && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && which python3 || (echo "ERROR: python3 not found" && exit 1) \
+    && which bash || (echo "ERROR: bash not found" && exit 1) \
+    && python3 --version
 
 # 비root 사용자 생성
 RUN groupadd -r appuser && useradd -r -g appuser appuser
@@ -45,8 +50,11 @@ USER appuser
 EXPOSE 8000
 
 # 헬스체크
+# python3 명령어 사용 (더 명시적이고 안전함)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -f http://localhost:8000/ || exit 1
 
 # 애플리케이션 실행
-CMD ["python", "scripts/run/run.py"]
+# python3 명령어 사용 (python:3.11-slim에서는 python과 python3 모두 사용 가능하지만, python3가 더 명시적)
+# 절대 경로 사용으로 더 안전함
+CMD ["python3", "scripts/run/run.py"]

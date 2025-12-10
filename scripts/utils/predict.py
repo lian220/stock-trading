@@ -14,12 +14,88 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 
 import json
+from datetime import datetime, timedelta
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 # Supabase 연결 설정
 url: str = os.getenv("SUPABASE_URL")
 key: str = os.getenv("SUPABASE_KEY")
 supabase: Client = create_client(url, key)
+
+# MongoDB 연결 설정
+from pymongo import MongoClient, UpdateOne
+from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
+from urllib.parse import quote_plus
+
+mongodb_url: str = os.getenv("MONGO_URL") or os.getenv("MONGODB_URL") or "mongodb://localhost:27017"
+mongo_user: str = os.getenv("MONGO_USER") or os.getenv("MONGODB_USER") or ""
+mongo_password: str = os.getenv("MONGO_PASSWORD") or os.getenv("MONGODB_PASSWORD") or ""
+mongodb_database: str = os.getenv("MONGODB_DATABASE") or "stock_trading"
+
+def get_mongodb_client(mongodb_url: str, mongo_user: str, mongo_password: str, mongodb_database: str):
+    """MongoDB 클라이언트 연결"""
+    print("\n=== MongoDB 연결 시도 ===")
+    print(f"MONGODB_URL 설정 여부: {'설정됨' if mongodb_url and mongodb_url != 'mongodb://localhost:27017' else '기본값 사용 (localhost)'}")
+    print(f"MONGODB_DATABASE: {mongodb_database}")
+    print(f"MONGODB_USER 설정 여부: {'설정됨' if mongo_user else '없음'}")
+    print(f"MONGODB_PASSWORD 설정 여부: {'설정됨' if mongo_password else '없음'}")
+    
+    final_url = mongodb_url
+    
+    # 인증 정보 처리
+    if mongo_user and mongo_password:
+        if "://" in mongodb_url:
+            if "@" not in mongodb_url:
+                schema, rest = mongodb_url.split("://", 1)
+                final_url = f"{schema}://{quote_plus(mongo_user)}:{quote_plus(mongo_password)}@{rest}"
+        else:
+            final_url = f"mongodb+srv://{quote_plus(mongo_user)}:{quote_plus(mongo_password)}@{mongodb_url}"
+    
+    # URL에서 비밀번호 부분은 마스킹
+    masked_url = final_url
+    if "@" in masked_url:
+        parts = masked_url.split("@")
+        if len(parts) == 2:
+            masked_url = f"{parts[0].split(':')[0]}:***@{parts[1]}"
+    print(f"연결 URL (마스킹): {masked_url}")
+    
+    try:
+        print("MongoDB 클라이언트 생성 중...")
+        client = MongoClient(
+            final_url,
+            serverSelectionTimeoutMS=10000,
+            connectTimeoutMS=10000,
+        )
+        print("연결 테스트 중...")
+        # 연결 테스트
+        client.admin.command('ping')
+        db = client[mongodb_database]
+        print(f"✅ MongoDB 연결 성공: {mongodb_database}")
+        return client, db
+    except (ConnectionFailure, ServerSelectionTimeoutError) as e:
+        print(f"❌ MongoDB 연결 실패 (ConnectionFailure/ServerSelectionTimeoutError): {e}")
+        print(f"   연결 URL을 확인해주세요: {masked_url}")
+        raise
+    except Exception as e:
+        print(f"❌ MongoDB 연결 오류: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
+
+# MongoDB 클라이언트 및 데이터베이스 연결
+try:
+    mongodb_client, db = get_mongodb_client(mongodb_url, mongo_user, mongo_password, mongodb_database)
+except Exception as e:
+    print(f"\n❌ 경고: MongoDB 연결 실패")
+    print(f"   에러 타입: {type(e).__name__}")
+    print(f"   에러 메시지: {str(e)}")
+    print(f"\n환경변수 확인:")
+    print(f"   MONGO_URL 또는 MONGODB_URL: {'설정됨' if os.getenv('MONGO_URL') or os.getenv('MONGODB_URL') else '❌ 없음'}")
+    print(f"   MONGO_USER 또는 MONGODB_USER: {'설정됨' if os.getenv('MONGO_USER') or os.getenv('MONGODB_USER') else '❌ 없음'}")
+    print(f"   MONGO_PASSWORD 또는 MONGODB_PASSWORD: {'설정됨' if os.getenv('MONGO_PASSWORD') or os.getenv('MONGODB_PASSWORD') else '❌ 없음'}")
+    print(f"   MONGODB_DATABASE: {'설정됨' if os.getenv('MONGODB_DATABASE') else '기본값 사용 (stock_trading)'}")
+    db = None
+    mongodb_client = None
 
 # Supabase에서 데이터 가져오기
 # def get_stock_data_from_db():
@@ -47,13 +123,30 @@ supabase: Client = create_client(url, key)
 
 def get_stock_data_from_db():
     try:
+        # MongoDB 연결 상태 확인
+        print("\n=== MongoDB 연결 상태 확인 ===")
+        if db is None:
+            print("❌ MongoDB 연결이 없습니다!")
+            print("MongoDB 연결 정보를 확인해주세요.")
+            print(f"  MONGODB_URL: {mongodb_url[:50] if mongodb_url else 'None'}...")
+            print(f"  MONGODB_DATABASE: {mongodb_database}")
+            return None
+        else:
+            print("✅ MongoDB 연결 성공")
+            print(f"  데이터베이스: {mongodb_database}")
+        
         # 전체 데이터 가져오기
+        print("\n=== 데이터 조회 시작 ===")
         all_data = get_all_data("economic_and_stock_data")
-        print(f"economic_and_stock_data 테이블에서 {len(all_data)}개 데이터를 성공적으로 가져왔습니다!")
+        print(f"economic_and_stock_data에서 {len(all_data)}개 데이터를 가져왔습니다!")
         
         if len(all_data) == 0:
-            print("경고: 데이터가 없습니다!")
-            return pd.DataFrame()
+            print("❌ 경고: 데이터가 없습니다!")
+            print("다음을 확인해주세요:")
+            print("  1. daily_stock_data 컬렉션에 데이터가 있는지 확인")
+            print("  2. stocks 컬렉션에 is_active=true인 종목이 있는지 확인")
+            print("  3. MongoDB 연결 정보가 올바른지 확인")
+            return None
         
         df = pd.DataFrame(all_data)
         print(f"DataFrame 생성 완료: {df.shape} (행, 열)")
@@ -62,8 +155,9 @@ def get_stock_data_from_db():
 
         # 날짜 열을 datetime으로 변환하고 정렬
         if '날짜' not in df.columns:
-            print("경고: '날짜' 컬럼이 없습니다!")
-            return pd.DataFrame()
+            print("❌ 경고: '날짜' 컬럼이 없습니다!")
+            print(f"사용 가능한 컬럼: {list(df.columns)[:20]}")
+            return None
         
         df['날짜'] = pd.to_datetime(df['날짜'])
         df.sort_values(by='날짜', inplace=True)
@@ -179,7 +273,13 @@ def get_stock_data_from_db():
         if len(valid_columns) > 0:
             df.dropna(subset=valid_columns, inplace=True)
         else:
-            print("경고: 유효한 컬럼이 없습니다!")
+            print("❌ 경고: 유효한 컬럼이 없습니다!")
+        
+        # 최종 데이터 유효성 검사
+        if len(df) == 0:
+            print("❌ 경고: 결측치 처리 후 모든 행이 제거되었습니다!")
+            print("데이터 품질을 확인해주세요.")
+            return None
 
         # 최종 NaN 확인
         final_nan_check = df[numeric_columns].isna().sum().sum()
@@ -201,18 +301,148 @@ def get_stock_data_from_db():
         traceback.print_exc()
         return None
 
-def get_all_data(table_name):
-    all_data = []
-    offset = 0
-    limit = 1000  # Supabase의 기본 제한
-    while True:
-        response = supabase.table(table_name).select("*").order("날짜", desc=False).limit(limit).offset(offset).execute()
-        data = response.data
-        if not data:  # 더 이상 데이터가 없으면 종료
-            break
-        all_data.extend(data)
-        offset += limit
-    return all_data
+def get_all_data(collection_name):
+    """
+    MongoDB에서 daily_stock_data 컬렉션의 데이터를 가져와서
+    Supabase의 economic_and_stock_data 테이블과 같은 형태로 변환합니다.
+    stocks 컬렉션에서 is_active가 true인 종목만 필터링합니다.
+    """
+    if collection_name != "economic_and_stock_data":
+        # 기존 Supabase 방식 (다른 테이블의 경우)
+        all_data = []
+        offset = 0
+        limit = 1000  # Supabase의 기본 제한
+        while True:
+            response = supabase.table(collection_name).select("*").order("날짜", desc=False).limit(limit).offset(offset).execute()
+            data = response.data
+            if not data:  # 더 이상 데이터가 없으면 종료
+                break
+            all_data.extend(data)
+            offset += limit
+        return all_data
+    
+    # MongoDB에서 데이터 가져오기
+    if db is None:
+        raise ValueError("MongoDB 연결이 없습니다. MongoDB 연결 정보를 확인해주세요.")
+    
+    try:
+        # 1. stocks 컬렉션에서 활성화된 종목 목록 가져오기
+        print("\n=== 활성화된 종목 조회 ===")
+        active_stocks = list(db.stocks.find({"is_active": True}))
+        active_stock_names = {stock["stock_name"] for stock in active_stocks if stock.get("stock_name")}
+        print(f"MongoDB에서 활성화된 종목 {len(active_stock_names)}개를 찾았습니다.")
+        
+        if len(active_stock_names) == 0:
+            print("⚠️ 경고: 활성화된 종목이 없습니다.")
+            print("stocks 컬렉션에 is_active=true인 종목이 있는지 확인해주세요.")
+        else:
+            print(f"활성화된 종목 샘플 (처음 10개): {list(active_stock_names)[:10]}")
+        
+        # 2. daily_stock_data 컬렉션에서 모든 데이터 가져오기 (날짜순 정렬)
+        print("\n=== daily_stock_data 컬렉션 조회 ===")
+        total_docs = db.daily_stock_data.count_documents({})
+        print(f"daily_stock_data 컬렉션의 총 문서 수: {total_docs}")
+        
+        if total_docs == 0:
+            print("❌ 경고: daily_stock_data 컬렉션이 비어있습니다!")
+            return []
+        
+        cursor = db.daily_stock_data.find().sort("date", 1)
+        
+        all_data = []
+        processed_count = 0
+        skipped_count = 0
+        
+        for doc in cursor:
+            try:
+                # 날짜 필드 처리
+                date_value = doc.get("date")
+                if date_value is None:
+                    skipped_count += 1
+                    continue
+                    
+                if isinstance(date_value, str):
+                    date_str = date_value
+                elif hasattr(date_value, 'strftime'):
+                    date_str = date_value.strftime('%Y-%m-%d')
+                else:
+                    date_str = str(date_value)
+                
+                # 결과 딕셔너리 생성
+                result_dict = {"날짜": date_str}
+                
+                # FRED 지표 추가
+                fred_indicators = doc.get("fred_indicators", {})
+                if isinstance(fred_indicators, dict):
+                    result_dict.update(fred_indicators)
+                
+                # Yahoo Finance 지표 추가
+                yfinance_indicators = doc.get("yfinance_indicators", {})
+                if isinstance(yfinance_indicators, dict):
+                    result_dict.update(yfinance_indicators)
+                
+                # 활성화된 종목의 주가 데이터만 추가
+                stocks_data = doc.get("stocks", {})
+                stocks_added = 0
+                if isinstance(stocks_data, dict):
+                    # 첫 번째 문서에서만 stocks 필드 구조 확인
+                    if processed_count == 0 and len(stocks_data) > 0:
+                        print(f"\n=== stocks 필드 구조 확인 (첫 번째 문서) ===")
+                        print(f"stocks 필드의 키 샘플 (처음 10개): {list(stocks_data.keys())[:10]}")
+                        print(f"활성화된 종목 샘플 (처음 10개): {list(active_stock_names)[:10]}")
+                        # 매칭되는 키 확인
+                        matching_keys = [k for k in stocks_data.keys() if k in active_stock_names]
+                        print(f"매칭되는 키 수: {len(matching_keys)}/{len(stocks_data)}")
+                        if len(matching_keys) > 0:
+                            print(f"매칭되는 키 샘플: {matching_keys[:10]}")
+                        else:
+                            print("⚠️ 경고: 매칭되는 키가 없습니다!")
+                            print("stocks 필드의 키와 active_stock_names가 일치하지 않을 수 있습니다.")
+                    
+                    for stock_name, stock_value in stocks_data.items():
+                        if stock_name in active_stock_names:
+                            # stocks 필드가 객체인 경우 close_price 가격을 사용
+                            if isinstance(stock_value, dict):
+                                close_price = stock_value.get("close_price")
+                                if close_price is not None:
+                                    result_dict[stock_name] = close_price
+                                    stocks_added += 1
+                            else:
+                                # 단순 숫자인 경우 그대로 사용
+                                result_dict[stock_name] = stock_value
+                                stocks_added += 1
+                
+                # 최소한 날짜와 일부 데이터가 있어야 함
+                if len(result_dict) > 1:  # 날짜 외에 최소 1개 이상의 컬럼
+                    all_data.append(result_dict)
+                    processed_count += 1
+                else:
+                    skipped_count += 1
+                    
+            except Exception as e:
+                print(f"⚠️ 문서 처리 중 오류 (건너뜀): {e}")
+                skipped_count += 1
+                continue
+        
+        print(f"\n=== 데이터 변환 완료 ===")
+        print(f"처리된 문서: {processed_count}개")
+        print(f"건너뛴 문서: {skipped_count}개")
+        print(f"최종 데이터: {len(all_data)}개")
+        
+        if len(all_data) == 0:
+            print("❌ 경고: 변환된 데이터가 없습니다!")
+            print("다음을 확인해주세요:")
+            print("  1. daily_stock_data 문서에 date 필드가 있는지")
+            print("  2. fred_indicators 또는 yfinance_indicators 필드가 있는지")
+            print("  3. stocks 필드에 활성화된 종목 데이터가 있는지")
+        
+        return all_data
+        
+    except Exception as e:
+        print(f"MongoDB에서 데이터 가져오기 오류: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
 
 # Transformer Encoder 정의
 def transformer_encoder(inputs, num_heads, ff_dim, dropout=0.1):
@@ -260,8 +490,10 @@ print("[1단계] 모델 학습 및 예측 시작")
 print("=" * 60)
 print("Loading data from database...")
 data = get_stock_data_from_db()
-if data is None or data.empty:
-    raise ValueError("DB에서 데이터를 가져오지 못했습니다. 테이블과 컬럼명을 확인하세요.")
+if data is None:
+    raise ValueError("DB에서 데이터를 가져오지 못했습니다. MongoDB 연결 및 데이터를 확인하세요.")
+if data.empty:
+    raise ValueError("DB에서 가져온 데이터가 비어있습니다. daily_stock_data 컬렉션에 데이터가 있는지 확인하세요.")
 
 # data.sort_values(by='날짜', inplace=True)
 
@@ -280,8 +512,8 @@ def get_target_columns_from_db():
         response = supabase.table("stock_ticker_mapping").select("stock_name, is_etf").eq("is_active", True).execute()
         
         if not response.data:
-            print("경고: stock_ticker_mapping 테이블에서 활성화된 주식을 찾을 수 없습니다.")
-            print("기본 주식 목록을 사용합니다.")
+            print("⚠️ 경고: stock_ticker_mapping 테이블에서 활성화된 주식을 찾을 수 없습니다.")
+            print("⚠️ 경고: 하드코딩된 기본 주식 목록을 사용합니다. DB 상태를 확인하세요.")
             # 기본값 반환 (fallback)
             return [
                 '애플', '마이크로소프트', '아마존', '구글 A', '구글 C', '메타',
@@ -301,10 +533,11 @@ def get_target_columns_from_db():
         
         return target_columns
     except Exception as e:
-        print(f"DB에서 주식 목록 조회 중 오류 발생: {str(e)}")
+        print(f"⚠️ 경고: DB에서 주식 목록 조회 중 오류 발생: {str(e)}")
+        print("⚠️ 경고: 하드코딩된 기본 주식 목록을 사용합니다. DB 연결을 확인하세요.")
         import traceback
         traceback.print_exc()
-        # 오류 발생 시 기본값 반환
+        # 오류 발생 시 기본값 반환 (fallback)
         return [
             '애플', '마이크로소프트', '아마존', '구글 A', '구글 C', '메타',
             '테슬라', '엔비디아', '인텔', '마이크론', '브로드컴',
@@ -317,21 +550,65 @@ def get_target_columns_from_db():
 
 target_columns = get_target_columns_from_db()
 
-economic_features = [
-    '10년 기대 인플레이션율', '장단기 금리차', '기준금리', '미시간대 소비자 심리지수',
-    '실업률', '2년 만기 미국 국채 수익률', '10년 만기 미국 국채 수익률', '금융스트레스지수',
-    '개인 소비 지출', '소비자 물가지수', '5년 변동금리 모기지', '미국 달러 환율',
-    '통화 공급량 M2', '가계 부채 비율', 'GDP 성장률', '나스닥 종합지수', 'S&P 500 지수', '금 가격', '달러 인덱스', '나스닥 100',
-    'S&P 500 ETF', 'QQQ ETF', '러셀 2000 ETF', '다우 존스 ETF', 'VIX 지수',
-    '닛케이 225', '상해종합', '항셍', '영국 FTSE', '독일 DAX', '프랑스 CAC 40',
-    '미국 전체 채권시장 ETF', 'TIPS ETF', '투자등급 회사채 ETF', '달러/엔', '달러/위안',
-    '미국 리츠 ETF'
-]
+def get_economic_features_from_mongodb():
+    """
+    MongoDB의 fred_indicators와 yfinance_indicators 컬렉션에서 
+    활성화된 모든 지표 목록을 가져옵니다.
+    
+    Returns:
+        list: 활성화된 모든 지표 이름 목록
+    """
+    if db is None:
+        print("⚠️ 경고: MongoDB 연결이 없습니다. 빈 목록을 반환합니다.")
+        return []
+    
+    try:
+        all_indicators = []
+        
+        # FRED 지표
+        try:
+            active_fred = db.fred_indicators.find({"is_active": True})
+            fred_list = [ind.get("name") for ind in active_fred if ind.get("name")]
+            all_indicators.extend(fred_list)
+            print(f"FRED 지표 {len(fred_list)}개 로드")
+        except Exception as e:
+            print(f"⚠️ 경고: fred_indicators 조회 실패: {e}")
+        
+        # Yahoo Finance 지표
+        try:
+            active_yfinance = db.yfinance_indicators.find({"is_active": True})
+            yfinance_list = [ind.get("name") for ind in active_yfinance if ind.get("name")]
+            all_indicators.extend(yfinance_list)
+            print(f"Yahoo Finance 지표 {len(yfinance_list)}개 로드")
+        except Exception as e:
+            print(f"⚠️ 경고: yfinance_indicators 조회 실패: {e}")
+        
+        print(f"MongoDB에서 경제 지표 총 {len(all_indicators)}개 로드 완료")
+        if len(all_indicators) > 0:
+            print(f"경제 지표 샘플 (처음 10개): {all_indicators[:10]}")
+        return all_indicators
+        
+    except Exception as e:
+        print(f"⚠️ 경고: MongoDB 지표 조회 중 오류 발생: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return []
+
+# MongoDB에서 지표 목록 조회
+economic_features = get_economic_features_from_mongodb()
+
+# MongoDB 조회 실패 시 빈 리스트 대신 경고 출력
+if not economic_features:
+    print("⚠️ 경고: MongoDB에서 지표를 가져오지 못했습니다. economic_features가 비어있습니다.")
+    print("   데이터가 없을 수 있으니 확인이 필요합니다.")
 
 print("Scaling data...")
 
 # 컬럼 존재 여부 및 데이터 유효성 검증
 print("\n=== 컬럼 존재 여부 검증 ===")
+print(f"데이터 컬럼 수: {len(data.columns)}")
+print(f"데이터 컬럼 샘플 (처음 20개): {list(data.columns[:20])}")
+
 available_target_columns = [col for col in target_columns if col in data.columns]
 missing_target_columns = [col for col in target_columns if col not in data.columns]
 
@@ -343,14 +620,29 @@ if missing_target_columns:
     print(f"경고: 다음 주식 컬럼이 데이터에 없습니다: {missing_target_columns[:10]}...")
     
 print(f"사용 가능한 경제 지표 컬럼: {len(available_econ_features)}/{len(economic_features)}")
-if missing_econ_features:
-    print(f"경고: 다음 경제 지표 컬럼이 데이터에 없습니다: {missing_econ_features[:10]}...")
+if missing_econ_features and len(missing_econ_features) <= 20:
+    print(f"경고: 다음 경제 지표 컬럼이 데이터에 없습니다: {missing_econ_features}")
+elif missing_econ_features:
+    print(f"경고: 다음 경제 지표 컬럼이 데이터에 없습니다 (처음 20개): {missing_econ_features[:20]}...")
+
+# 경제 지표가 없으면 실제 데이터에서 동적으로 추출 시도
+if len(available_econ_features) == 0:
+    print("\n⚠️ 경고: MongoDB에서 가져온 경제 지표가 데이터에 없습니다.")
+    print("데이터에서 '날짜'와 주식 컬럼을 제외한 나머지를 경제 지표로 사용합니다.")
+    
+    # 날짜와 주식 컬럼을 제외한 모든 컬럼을 경제 지표로 사용
+    exclude_cols = set(['날짜'] + available_target_columns)
+    available_econ_features = [col for col in data.columns if col not in exclude_cols]
+    
+    print(f"동적으로 추출한 경제 지표 컬럼 수: {len(available_econ_features)}")
+    if len(available_econ_features) > 0:
+        print(f"경제 지표 샘플 (처음 20개): {available_econ_features[:20]}")
+    else:
+        raise ValueError("사용 가능한 경제 지표 컬럼이 없습니다. 데이터베이스의 컬럼명을 확인하세요.")
 
 # 사용 가능한 컬럼만 사용
 if len(available_target_columns) == 0:
     raise ValueError("사용 가능한 주식 컬럼이 없습니다. 데이터베이스의 컬럼명을 확인하세요.")
-if len(available_econ_features) == 0:
-    raise ValueError("사용 가능한 경제 지표 컬럼이 없습니다. 데이터베이스의 컬럼명을 확인하세요.")
 
 # target_columns와 economic_features를 사용 가능한 컬럼만으로 업데이트
 target_columns = available_target_columns
@@ -469,11 +761,95 @@ print(f"최종 사용할 길이: {actual_pred_len}")
 # 예측 데이터를 실제 데이터 길이에 맞춤 (뒤에서 자름)
 predicted_prices_actual = predicted_prices_actual[:actual_pred_len]
 
-# 오늘 날짜들 (실제 데이터가 있는 범위만)
-today_dates = data['날짜'].iloc[lookback : lookback + actual_pred_len].values
+# 날짜 생성: 데이터베이스의 마지막 날짜를 기준으로 예측 날짜 생성
+# 예측을 실행하는 날짜를 기준으로 날짜를 생성해야 함
+
+# 데이터베이스의 마지막 날짜 확인
+last_data_date = pd.to_datetime(data['날짜'].iloc[-1])
+print(f"데이터베이스의 마지막 날짜: {last_data_date.strftime('%Y-%m-%d')}")
+
+# 예측을 실행하는 날짜 (오늘 날짜)
+prediction_date = datetime.now().date()
+print(f"예측 실행 날짜: {prediction_date.strftime('%Y-%m-%d')}")
+
+# 날짜 생성: 예측 실행 날짜를 기준으로 날짜 범위 생성
+# 예측 데이터는 lookback 이후부터 시작하므로, 
+# 데이터베이스의 lookback 인덱스 날짜부터 시작하여 예측 실행 날짜까지 포함
+start_date_idx = lookback
+end_date_idx = len(data) - 1  # 데이터베이스의 마지막 인덱스
+
+# 데이터베이스에 있는 날짜 범위
+db_dates = data['날짜'].iloc[start_date_idx : end_date_idx + 1].values
+db_dates = pd.to_datetime(db_dates)
+
+# 예측 실행 날짜가 데이터베이스의 마지막 날짜보다 이후인 경우
+# 예측 실행 날짜를 포함하여 날짜 생성
+if prediction_date > last_data_date.date():
+    # 예측 실행 날짜까지 포함하여 날짜 생성
+    # 데이터베이스 날짜 + 예측 실행 날짜
+    prediction_date_dt = pd.to_datetime(prediction_date)
+    # 데이터베이스 날짜와 예측 실행 날짜를 결합
+    if len(db_dates) < actual_pred_len:
+        # 예측 실행 날짜를 포함하여 날짜 범위 확장
+        additional_dates = pd.date_range(
+            start=last_data_date + timedelta(days=1),
+            end=prediction_date_dt,
+            freq='D'
+        )
+        # 주말 제외 (토요일=5, 일요일=6)
+        additional_dates = additional_dates[additional_dates.weekday < 5]
+        # 데이터베이스 날짜와 결합
+        today_dates = np.concatenate([db_dates.values, additional_dates.values])[:actual_pred_len]
+    else:
+        # 데이터베이스 날짜만 사용
+        today_dates = db_dates.values[:actual_pred_len]
+    print(f"예측 실행 날짜가 데이터베이스 마지막 날짜보다 이후입니다. 예측 실행 날짜까지 포함합니다.")
+else:
+    # 데이터베이스 날짜만 사용
+    today_dates = db_dates.values[:actual_pred_len]
+    print(f"데이터베이스 날짜만 사용합니다.")
+
+# 날짜 배열 길이를 actual_pred_len에 맞춤
+if len(today_dates) > actual_pred_len:
+    today_dates = today_dates[:actual_pred_len]
+elif len(today_dates) < actual_pred_len:
+    # 부족한 날짜는 마지막 날짜 이후로 채움
+    last_date = pd.to_datetime(today_dates[-1])
+    additional_dates = pd.date_range(
+        start=last_date + timedelta(days=1),
+        periods=actual_pred_len - len(today_dates),
+        freq='D'
+    )
+    # 주말 제외
+    additional_dates = additional_dates[additional_dates.weekday < 5]
+    if len(additional_dates) < (actual_pred_len - len(today_dates)):
+        # 주말 제외로 부족한 경우 더 생성
+        needed = actual_pred_len - len(today_dates) - len(additional_dates)
+        last_additional = additional_dates[-1] if len(additional_dates) > 0 else last_date
+        more_dates = pd.date_range(
+            start=last_additional + timedelta(days=1),
+            periods=needed * 2,  # 여유있게 생성
+            freq='D'
+        )
+        more_dates = more_dates[more_dates.weekday < 5][:needed]
+        additional_dates = pd.concat([pd.Series(additional_dates), pd.Series(more_dates)])
+    today_dates = np.concatenate([today_dates, additional_dates.values])[:actual_pred_len]
+
+print(f"생성된 날짜 범위: {pd.to_datetime(today_dates[0]).strftime('%Y-%m-%d')} ~ {pd.to_datetime(today_dates[-1]).strftime('%Y-%m-%d')}")
+print(f"생성된 날짜 개수: {len(today_dates)} (예상: {actual_pred_len})")
 
 # 오늘 실제 주가 (실제 데이터가 있는 범위만)
 actual_full = data[target_columns].iloc[lookback : lookback + actual_pred_len].values
+
+# 예측 실행 날짜가 데이터베이스의 마지막 날짜보다 이후인 경우
+# 실제 주가는 데이터베이스의 마지막 날짜까지만 있고, 이후 날짜는 NaN으로 채움
+if prediction_date > last_data_date.date():
+    # 실제 주가 데이터를 예측 날짜 개수에 맞춰 확장 (NaN으로 채움)
+    if len(actual_full) < len(today_dates):
+        # 부족한 부분을 NaN으로 채움
+        nan_padding = np.full((len(today_dates) - len(actual_full), len(target_columns)), np.nan)
+        actual_full = np.vstack([actual_full, nan_padding])
+        print(f"실제 주가 데이터를 예측 날짜 개수에 맞춰 확장했습니다. (NaN으로 채움)")
 
 print(f"실제 데이터 shape: {actual_full.shape}")
 print(f"예측 데이터 shape: {predicted_prices_actual.shape}")
@@ -652,15 +1028,35 @@ def save_predictions_to_db(result_df):
         records = result_df_clean.to_dict('records')
         print(f"저장할 레코드 수: {len(records)}")
         
+        # 날짜 정보 확인 및 출력
+        if len(records) > 0:
+            dates_in_data = [record.get('날짜') for record in records if '날짜' in record]
+            unique_dates = sorted(set(dates_in_data))
+            print(f"\n=== 저장할 날짜 정보 ===")
+            print(f"총 레코드 수: {len(records)}")
+            print(f"고유 날짜 수: {len(unique_dates)}")
+            print(f"날짜 범위: {unique_dates[0] if unique_dates else 'N/A'} ~ {unique_dates[-1] if unique_dates else 'N/A'}")
+            if len(unique_dates) <= 10:
+                print(f"모든 날짜: {unique_dates}")
+            else:
+                print(f"처음 5개 날짜: {unique_dates[:5]}")
+                print(f"마지막 5개 날짜: {unique_dates[-5:]}")
+        
         # 첫 번째 레코드 샘플 확인
         if len(records) > 0:
             first_record = records[0]
             predicted_in_first = {k: v for k, v in first_record.items() if '_Predicted' in k}
-            print(f"\n첫 번째 레코드의 Predicted 값 샘플 (처음 5개):")
+            print(f"\n첫 번째 레코드의 날짜: {first_record.get('날짜', 'N/A')}")
+            print(f"첫 번째 레코드의 Predicted 값 샘플 (처음 5개):")
             for i, (key, val) in enumerate(list(predicted_in_first.items())[:5]):
                 print(f"  {key}: {val} (type: {type(val).__name__})")
                 if val is None or (isinstance(val, float) and np.isnan(val)):
                     print(f"    ⚠️ 이 값이 NULL로 저장될 것입니다!")
+            
+            # 마지막 레코드도 확인
+            if len(records) > 1:
+                last_record = records[-1]
+                print(f"\n마지막 레코드의 날짜: {last_record.get('날짜', 'N/A')}")
 
         # 테이블에 먼저 데이터 삭제 후 새로 삽입
         delete_response = supabase.table("predicted_stocks").delete().neq("id", 0).execute()
@@ -702,12 +1098,225 @@ def save_predictions_to_db(result_df):
                     print(f"첫 번째 레코드의 Predicted 값: {dict(list(first_predicted.items())[:5])}")
                 raise
 
-        print(f"총 {total_inserted}개의 예측 결과가 데이터베이스에 저장되었습니다.")
+        print(f"총 {total_inserted}개의 예측 결과가 Supabase에 저장되었습니다.")
         
         # 저장 확인
         count_response = supabase.table("predicted_stocks").select("id", count="exact").execute()
         saved_count = count_response.count
         print(f"저장 확인: predicted_stocks 테이블에 {saved_count}개 레코드가 있습니다.")
+        
+        # MongoDB에도 저장
+        if db is not None:
+            print("\n=== MongoDB에 예측 데이터 저장 시작 ===")
+            try:
+                from datetime import datetime
+                
+                # 주식명 -> 티커 매핑 생성 (MongoDB stocks 컬렉션에서)
+                stock_to_ticker_map = {}
+                try:
+                    stocks = db.stocks.find({"is_active": True})
+                    for stock in stocks:
+                        stock_name = stock.get("stock_name")
+                        ticker = stock.get("ticker")
+                        if stock_name and ticker:
+                            stock_to_ticker_map[stock_name] = ticker
+                    print(f"주식명 -> 티커 매핑 {len(stock_to_ticker_map)}개 생성 완료")
+                except Exception as map_error:
+                    print(f"⚠️ 주식명 -> 티커 매핑 생성 실패: {str(map_error)}")
+                
+                # 날짜별로 그룹화하여 저장
+                date_predictions = {}  # {날짜: {티커: {predicted_price, actual_price}}}
+                
+                for record in records:
+                    date_str = record.get('날짜')
+                    if not date_str:
+                        continue
+                    
+                    # 날짜 형식 변환
+                    if isinstance(date_str, str):
+                        try:
+                            date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+                            date_str = date_obj.strftime('%Y-%m-%d')
+                        except:
+                            continue
+                    elif hasattr(date_str, 'strftime'):
+                        date_str = date_str.strftime('%Y-%m-%d')
+                    else:
+                        continue
+                    
+                    if date_str not in date_predictions:
+                        date_predictions[date_str] = {}
+                    
+                    # Predicted와 Actual 컬럼 찾기
+                    for col_name, value in record.items():
+                        if '_Predicted' in col_name:
+                            stock_name = col_name.replace('_Predicted', '')
+                            ticker = stock_to_ticker_map.get(stock_name)
+                            
+                            if ticker:
+                                if ticker not in date_predictions[date_str]:
+                                    date_predictions[date_str][ticker] = {}
+                                date_predictions[date_str][ticker]['predicted_price'] = float(value) if value is not None else None
+                        
+                        elif '_Actual' in col_name:
+                            stock_name = col_name.replace('_Actual', '')
+                            ticker = stock_to_ticker_map.get(stock_name)
+                            
+                            if ticker:
+                                if ticker not in date_predictions[date_str]:
+                                    date_predictions[date_str][ticker] = {}
+                                date_predictions[date_str][ticker]['actual_price'] = float(value) if value is not None else None
+                
+                # 1. daily_stock_data.predictions 필드에 저장 (날짜별 통합) - Bulk Write 사용
+                print(f"MongoDB daily_stock_data에 {len(date_predictions)}개 날짜의 예측 데이터 저장 중...")
+                from datetime import datetime
+                
+                daily_stock_updates = []
+                for date_str, ticker_predictions in date_predictions.items():
+                    try:
+                        # predictions 필드 구조: {티커: {predicted_price, actual_price, forecast_horizon}}
+                        predictions_data = {}
+                        for ticker, pred_data in ticker_predictions.items():
+                            predictions_data[ticker] = {
+                                'predicted_price': pred_data.get('predicted_price'),
+                                'actual_price': pred_data.get('actual_price'),
+                                'forecast_horizon': 14  # 14일 예측
+                            }
+                        
+                        # bulk_write를 위한 UpdateOne 객체 생성
+                        daily_stock_updates.append(
+                            UpdateOne(
+                                {"date": date_str},
+                                {
+                                    "$set": {
+                                        "predictions": predictions_data,
+                                        "updated_at": datetime.utcnow()
+                                    }
+                                },
+                                upsert=False  # 기존 문서가 있어야 함
+                            )
+                        )
+                    except Exception as e:
+                        print(f"⚠️ {date_str} 날짜의 predictions 데이터 준비 실패: {str(e)}")
+                
+                # Bulk write 실행
+                if daily_stock_updates:
+                    try:
+                        result = db.daily_stock_data.bulk_write(daily_stock_updates, ordered=False)
+                        print(f"✅ MongoDB daily_stock_data.predictions 저장 완료: {result.modified_count}개 업데이트")
+                    except Exception as e:
+                        print(f"⚠️ daily_stock_data bulk_write 실패: {str(e)}")
+                        # 실패 시 개별 업데이트로 fallback
+                        for date_str, ticker_predictions in date_predictions.items():
+                            try:
+                                predictions_data = {}
+                                for ticker, pred_data in ticker_predictions.items():
+                                    predictions_data[ticker] = {
+                                        'predicted_price': pred_data.get('predicted_price'),
+                                        'actual_price': pred_data.get('actual_price'),
+                                        'forecast_horizon': 14
+                                    }
+                                db.daily_stock_data.update_one(
+                                    {"date": date_str},
+                                    {
+                                        "$set": {
+                                            "predictions": predictions_data,
+                                            "updated_at": datetime.utcnow()
+                                        }
+                                    },
+                                    upsert=False
+                                )
+                            except Exception as fallback_e:
+                                print(f"⚠️ {date_str} Fallback 업데이트 실패: {str(fallback_e)}")
+                
+                # 2. stock_predictions 컬렉션에 저장 (종목별 시계열) - Bulk Write 사용
+                print(f"MongoDB stock_predictions 컬렉션에 종목별 예측 데이터 저장 중...")
+                stock_predictions_updates = []
+                
+                for date_str, ticker_predictions in date_predictions.items():
+                    try:
+                        date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+                        
+                        for ticker, pred_data in ticker_predictions.items():
+                            try:
+                                stock_predictions_updates.append(
+                                    UpdateOne(
+                                        {
+                                            "date": date_obj,
+                                            "ticker": ticker
+                                        },
+                                        {
+                                            "$set": {
+                                                "predicted_price": pred_data.get('predicted_price'),
+                                                "actual_price": pred_data.get('actual_price'),
+                                                "forecast_horizon": 14,
+                                                "updated_at": datetime.utcnow()
+                                            },
+                                            "$setOnInsert": {
+                                                "created_at": datetime.utcnow()
+                                            }
+                                        },
+                                        upsert=True
+                                    )
+                                )
+                            except Exception as e:
+                                print(f"⚠️ {ticker} ({date_str}) 데이터 준비 실패: {str(e)}")
+                    except Exception as e:
+                        print(f"⚠️ {date_str} 날짜 처리 실패: {str(e)}")
+                
+                # Bulk write 실행 (배치로 나누어 처리)
+                if stock_predictions_updates:
+                    batch_size = 1000
+                    total_processed = 0
+                    
+                    for i in range(0, len(stock_predictions_updates), batch_size):
+                        batch = stock_predictions_updates[i:i + batch_size]
+                        try:
+                            result = db.stock_predictions.bulk_write(batch, ordered=False)
+                            total_processed += result.upserted_count + result.modified_count
+                            print(f"  배치 {i//batch_size + 1}: {len(batch)}개 처리 완료 (총 {total_processed}개)")
+                        except Exception as e:
+                            print(f"⚠️ stock_predictions batch {i//batch_size + 1} bulk_write 실패: {str(e)}")
+                            # 실패 시 개별 업데이트로 fallback (배치의 원본 데이터 사용)
+                            batch_start_idx = i
+                            batch_end_idx = min(i + batch_size, len(date_predictions))
+                            batch_dates = list(date_predictions.keys())[batch_start_idx:batch_end_idx]
+                            
+                            for date_str in batch_dates:
+                                try:
+                                    date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+                                    ticker_predictions = date_predictions[date_str]
+                                    
+                                    for ticker, pred_data in ticker_predictions.items():
+                                        try:
+                                            db.stock_predictions.update_one(
+                                                {"date": date_obj, "ticker": ticker},
+                                                {
+                                                    "$set": {
+                                                        "predicted_price": pred_data.get('predicted_price'),
+                                                        "actual_price": pred_data.get('actual_price'),
+                                                        "forecast_horizon": 14,
+                                                        "updated_at": datetime.utcnow()
+                                                    },
+                                                    "$setOnInsert": {
+                                                        "created_at": datetime.utcnow()
+                                                    }
+                                                },
+                                                upsert=True
+                                            )
+                                        except Exception as ticker_e:
+                                            print(f"⚠️ {ticker} ({date_str}) Fallback 업데이트 실패: {str(ticker_e)}")
+                                except Exception as date_e:
+                                    print(f"⚠️ {date_str} Fallback 업데이트 실패: {str(date_e)}")
+                    
+                    print(f"✅ MongoDB stock_predictions 컬렉션에 총 {total_processed}개 문서 저장 완료")
+                
+            except Exception as mongo_error:
+                print(f"⚠️ MongoDB 저장 중 오류 발생: {str(mongo_error)}")
+                import traceback
+                traceback.print_exc()
+        else:
+            print("⚠️ MongoDB 연결이 없어 MongoDB 저장을 건너뜁니다.")
         
         return True
     except Exception as e:
@@ -875,12 +1484,177 @@ def save_analysis_to_db(result_df):
                 print(f"문제가 있는 청크의 첫 번째 레코드 샘플: {chunk[0] if chunk else 'None'}")
                 raise
 
-        print(f"총 {total_inserted}개의 분석 결과가 데이터베이스에 저장되었습니다.")
+        print(f"총 {total_inserted}개의 분석 결과가 Supabase에 저장되었습니다.")
         
         # 저장 확인
         count_response = supabase.table("stock_analysis_results").select("id", count="exact").execute()
         saved_count = count_response.count
         print(f"저장 확인: stock_analysis_results 테이블에 {saved_count}개 레코드가 있습니다.")
+        
+        # MongoDB에도 저장
+        if db is not None:
+            print("\n=== MongoDB에 분석 결과 저장 시작 ===")
+            try:
+                from datetime import datetime
+                
+                # 주식명 -> 티커 매핑 생성 (MongoDB stocks 컬렉션에서)
+                stock_to_ticker_map = {}
+                try:
+                    stocks = db.stocks.find({"is_active": True})
+                    for stock in stocks:
+                        stock_name = stock.get("stock_name")
+                        ticker = stock.get("ticker")
+                        if stock_name and ticker:
+                            stock_to_ticker_map[stock_name] = ticker
+                    print(f"주식명 -> 티커 매핑 {len(stock_to_ticker_map)}개 생성 완료")
+                except Exception as map_error:
+                    print(f"⚠️ 주식명 -> 티커 매핑 생성 실패: {str(map_error)}")
+                
+                # 오늘 날짜로 저장 (분석 기준일)
+                today_str = datetime.now().strftime('%Y-%m-%d')
+                today_obj = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+                
+                # 1. stock_analysis 컬렉션에 저장 (종목별 시계열) - Bulk Write 사용
+                print(f"MongoDB stock_analysis 컬렉션에 종목별 분석 데이터 저장 중...")
+                stock_analysis_updates = []
+                
+                for record in records:
+                    stock_name = record.get('Stock')
+                    if not stock_name:
+                        continue
+                    
+                    ticker = stock_to_ticker_map.get(stock_name)
+                    if not ticker:
+                        continue
+                    
+                    try:
+                        # 분석 데이터 구조화
+                        metrics = {
+                            'mae': record.get('MAE'),
+                            'mse': record.get('MSE'),
+                            'rmse': record.get('RMSE'),
+                            'mape': record.get('MAPE (%)'),
+                            'accuracy': record.get('Accuracy (%)')
+                        }
+                        
+                        predictions = {
+                            'last_actual_price': record.get('Last Actual Price'),
+                            'predicted_future_price': record.get('Predicted Future Price'),
+                            'predicted_rise': record.get('Predicted Rise'),
+                            'rise_probability': record.get('Rise Probability (%)')
+                        }
+                        
+                        stock_analysis_updates.append(
+                            UpdateOne(
+                                {
+                                    "date": today_obj,
+                                    "ticker": ticker,
+                                    "user_id": None  # 전역 분석
+                                },
+                                {
+                                    "$set": {
+                                        "stock_name": stock_name,
+                                        "metrics": metrics,
+                                        "predictions": predictions,
+                                        "recommendation": record.get('Recommendation'),
+                                        "analysis": record.get('Analysis'),
+                                        "updated_at": datetime.utcnow()
+                                    },
+                                    "$setOnInsert": {
+                                        "created_at": datetime.utcnow()
+                                    }
+                                },
+                                upsert=True
+                            )
+                        )
+                    except Exception as e:
+                        print(f"⚠️ {stock_name} ({ticker}) 분석 데이터 준비 실패: {str(e)}")
+                
+                # Bulk write 실행 (배치로 나누어 처리)
+                if stock_analysis_updates:
+                    batch_size = 1000
+                    total_processed = 0
+                    
+                    for i in range(0, len(stock_analysis_updates), batch_size):
+                        batch = stock_analysis_updates[i:i + batch_size]
+                        try:
+                            result = db.stock_analysis.bulk_write(batch, ordered=False)
+                            total_processed += result.upserted_count + result.modified_count
+                            print(f"  배치 {i//batch_size + 1}: {len(batch)}개 처리 완료 (총 {total_processed}개)")
+                        except Exception as e:
+                            print(f"⚠️ stock_analysis batch {i//batch_size + 1} bulk_write 실패: {str(e)}")
+                            # 실패 시 개별 업데이트로 fallback
+                            for update_op in batch:
+                                try:
+                                    filter_dict = update_op._filter
+                                    update_dict = update_op._doc
+                                    db.stock_analysis.update_one(
+                                        filter_dict,
+                                        update_dict,
+                                        upsert=True
+                                    )
+                                except Exception as fallback_e:
+                                    print(f"⚠️ Fallback 업데이트 실패: {str(fallback_e)}")
+                    
+                    print(f"✅ MongoDB stock_analysis 컬렉션에 총 {total_processed}개 문서 저장 완료")
+                
+                # 2. daily_stock_data.analysis 필드에 저장 (날짜별 통합) - Bulk Write 사용
+                print(f"MongoDB daily_stock_data.analysis 필드에 날짜별 통합 분석 데이터 저장 중...")
+                analysis_data = {}
+                
+                for record in records:
+                    stock_name = record.get('Stock')
+                    if not stock_name:
+                        continue
+                    
+                    ticker = stock_to_ticker_map.get(stock_name)
+                    if not ticker:
+                        continue
+                    
+                    try:
+                        analysis_data[ticker] = {
+                            'metrics': {
+                                'mae': record.get('MAE'),
+                                'mse': record.get('MSE'),
+                                'rmse': record.get('RMSE'),
+                                'mape': record.get('MAPE (%)'),
+                                'accuracy': record.get('Accuracy (%)')
+                            },
+                            'predictions': {
+                                'last_actual_price': record.get('Last Actual Price'),
+                                'predicted_future_price': record.get('Predicted Future Price'),
+                                'predicted_rise': record.get('Predicted Rise'),
+                                'rise_probability': record.get('Rise Probability (%)')
+                            },
+                            'recommendation': record.get('Recommendation'),
+                            'analysis': record.get('Analysis')
+                        }
+                    except Exception as e:
+                        print(f"⚠️ {stock_name} ({ticker}) 분석 데이터 준비 실패: {str(e)}")
+                
+                # daily_stock_data 업데이트
+                if analysis_data:
+                    try:
+                        db.daily_stock_data.update_one(
+                            {"date": today_str},
+                            {
+                                "$set": {
+                                    "analysis": analysis_data,
+                                    "updated_at": datetime.utcnow()
+                                }
+                            },
+                            upsert=False  # 기존 문서가 있어야 함
+                        )
+                        print(f"✅ MongoDB daily_stock_data.analysis 저장 완료: {len(analysis_data)}개 종목")
+                    except Exception as e:
+                        print(f"⚠️ daily_stock_data.analysis 저장 실패: {str(e)}")
+                
+            except Exception as mongo_error:
+                print(f"⚠️ MongoDB 저장 중 오류 발생: {str(mongo_error)}")
+                import traceback
+                traceback.print_exc()
+        else:
+            print("⚠️ MongoDB 연결이 없어 MongoDB 저장을 건너뜁니다.")
         
         return True
     except Exception as e:
