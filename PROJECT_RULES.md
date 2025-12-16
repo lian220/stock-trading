@@ -1,6 +1,13 @@
-# CLAUDE.md
+# 프로젝트 공통 규칙
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+이 파일은 Cursor와 Claude Code 모두에서 공통으로 사용하는 프로젝트 규칙입니다.
+
+**⚠️ 중요**: 
+- `.cursorrules` 파일은 이 파일을 참조합니다 (Cursor 전용 커밋 규칙 포함)
+- `.claude/CLAUDE.md` 파일은 이 파일을 참조합니다 (Claude Code 전용 안내 포함)
+- 프로젝트 규칙을 수정할 때는 이 파일만 수정하면 됩니다
+
+---
 
 ## Project Overview
 
@@ -30,11 +37,17 @@ Clean Architecture 패턴 사용:
 - **infrastructure/**: DB 클라이언트 (Supabase/MongoDB), Repository 구현체
 - **presentation/api/**: FastAPI 라우터
 
-### Database
+## Database
+
+**⚠️ CRITICAL: 데이터 조회 규칙**
+- **모든 데이터 조회는 MongoDB에서 수행해야 합니다**
+- Supabase는 저장용으로만 사용 (레거시 호환성)
+- 새로운 조회 기능은 반드시 MongoDB Repository 사용
+- `get_stock_repository()` 또는 `get_economic_repository()` 사용 시 MongoDB 구현체가 반환되도록 확인
 
 두 가지 DB 지원 (설정: `USE_MONGODB` 환경변수):
-- **Supabase (PostgreSQL)**: 기본
-- **MongoDB**: Atlas 지원, motor(async)/pymongo(sync) 사용
+- **Supabase (PostgreSQL)**: 저장용 (레거시 호환)
+- **MongoDB**: Atlas 지원, motor(async)/pymongo(sync) 사용, **모든 조회는 여기서 수행**
 
 모든 환경변수는 `app/core/config.py`의 `settings` 객체를 통해서만 접근:
 ```python
@@ -80,7 +93,7 @@ MongoDB 컬렉션명과 Supabase 테이블명이 다를 수 있음. 반드시 �
 }
 ```
 
-### API 구조
+## API 구조
 
 `app/api/api.py`에서 모든 라우터 중앙 등록:
 - `/stocks`: 주식 추천, 주식 조회
@@ -90,32 +103,15 @@ MongoDB 컬렉션명과 Supabase 테이블명이 다를 수 있음. 반드시 �
 - `/colab`: Colab/Vertex AI 연동
 - `/gcs`: GCS 업로드
 
-### Dependency Injection
+## Dependency Injection
 
 `app/application/dependencies.py`에서 Repository 팩토리 함수 제공:
 ```python
 from app.application.dependencies import get_stock_repository
-repository = get_stock_repository()  # MongoDB/Supabase 자동 선택
+repository = get_stock_repository()  # MongoDB Repository 반환 (조회용)
 ```
 
-## Commit Message Rules
-
-**반드시 한글로 작성**, Conventional Commits 형식:
-```
-<type>(<scope>): <한글 subject>
-
-<한글 body>
-```
-
-예시:
-```
-feat(api): 경제 지표 조회 API 추가함
-fix(scheduler): 주식 데이터 수집 오류 수정함
-refactor(service): 데이터 저장 로직 개선함
-```
-
-Type: feat, fix, docs, style, refactor, test, chore, perf, ci, build, revert
-Subject: 명령형 어미 ("추가함", "수정함", "개선함"), 마침표 없음, 50자 이내
+**⚠️ 중요**: Repository 팩토리 함수는 조회 시 MongoDB 구현체를 반환해야 합니다.
 
 ## Key Files
 
@@ -123,3 +119,11 @@ Subject: 명령형 어미 ("추가함", "수정함", "개선함"), 마침표 없
 - `app/core/config.py`: 환경변수 설정 (Settings 클래스)
 - `app/utils/scheduler.py`: 매수/매도 스케줄러
 - `scripts/run/run.py`: uvicorn 서버 실행 스크립트
+
+## 규칙 요약 체크리스트
+
+코드 작성/수정 전에 확인:
+- [ ] **데이터 조회는 MongoDB에서 수행했는가?** (Supabase 조회 금지)
+- [ ] Clean Architecture 계층 구조를 준수했는가?
+- [ ] 환경변수는 `settings` 객체로 접근했는가?
+- [ ] MongoDB/Supabase 컬렉션명/테이블명을 올바르게 사용했는가?
