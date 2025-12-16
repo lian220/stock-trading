@@ -43,6 +43,43 @@ url = settings.get_mongodb_url()  # ✅
 # os.getenv() 직접 사용 금지 ❌
 ```
 
+### MongoDB 컬렉션 네이밍
+
+MongoDB 컬렉션명과 Supabase 테이블명이 다를 수 있음. 반드시 실제 저장하는 코드 확인 필요:
+
+| 용도 | MongoDB 컬렉션 | Supabase 테이블 | 비고 |
+|------|---------------|-----------------|------|
+| AI 주가 예측 결과 | `stock_analysis` | `stock_analysis_results` | 필드 구조도 다름 |
+| 기술적 지표 추천 | `stock_recommendations` | `stock_recommendations` | 동일 |
+| 감정 분석 | `sentiment_analysis` | `ticker_sentiment_analysis` | 다름 |
+| 일별 통합 데이터 | `daily_stock_data` | - | MongoDB 전용 |
+| 주식 마스터 | `stocks` | `stocks` | 동일 |
+
+**MongoDB 필드 구조 예시 (`stock_analysis`):**
+```javascript
+{
+  "date": ISODate(),
+  "ticker": "AAPL",
+  "stock_name": "애플",
+  "metrics": { "accuracy": 85.5, "mae": ..., "mse": ... },
+  "predictions": { "rise_probability": 5.2, "last_actual_price": ..., "predicted_future_price": ... },
+  "recommendation": "Buy",
+  "analysis": "..."
+}
+```
+
+**Supabase 필드 구조 (`stock_analysis_results`):**
+```json
+{
+  "Stock": "애플",
+  "Accuracy (%)": 85.5,
+  "Rise Probability (%)": 5.2,
+  "Last Actual Price": 150.0,
+  "Predicted Future Price": 155.0,
+  "Recommendation": "Buy"
+}
+```
+
 ### API 구조
 
 `app/api/api.py`에서 모든 라우터 중앙 등록:

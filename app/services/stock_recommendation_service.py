@@ -436,44 +436,89 @@ class StockRecommendationService:
         """
         Accuracy가 80% 이상이고 상승 확률이 3% 이상인 추천 주식 목록을 반환합니다.
         상승 확률 기준으로 내림차순 정렬됩니다.
+
+        MongoDB stock_analysis 컬렉션에서 조회합니다.
         """
-        response = supabase.table("stock_analysis_results").select("*").order("created_at", desc=True).execute()
-        if not response.data:
-            return {"message": "분석 결과를 찾을 수 없습니다", "recommendations": []}
+        try:
+            db = get_db()
+            if db is None:
+                logger.error("MongoDB 연결 실패")
+                return {"message": "MongoDB 연결 실패", "recommendations": []}
 
-        df = pd.DataFrame(response.data)
-        numeric_columns = ['Accuracy (%)', 'Rise Probability (%)']
-        for col in numeric_columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
+            # MongoDB stock_analysis 컬렉션에서 조회 (필터 조건 적용)
+            cursor = db.stock_analysis.find({
+                "metrics.accuracy": {"$gte": 80},
+                "predictions.rise_probability": {"$gte": 3}
+            }).sort("predictions.rise_probability", -1)
+            data = list(cursor)
 
-        filtered_df = df[(df['Accuracy (%)'] >= 80) & (df['Rise Probability (%)'] >= 3)]
-        filtered_df = filtered_df.sort_values(by='Rise Probability (%)', ascending=False)
-        result_columns = [
-            'Stock', 'Accuracy (%)', 'Rise Probability (%)', 'Last Actual Price',
-            'Predicted Future Price', 'Recommendation', 'Analysis'
-        ]
-        result_df = filtered_df[result_columns]
+            if not data:
+                logger.info("MongoDB stock_analysis에서 조건을 만족하는 데이터가 없음")
+                return {"message": "분석 결과를 찾을 수 없습니다", "recommendations": []}
 
-        recommendations = result_df.to_dict(orient='records')
-        return {
-            "message": f"{len(recommendations)}개의 추천 주식을 찾았습니다",
-            "recommendations": recommendations
-        }
+            # MongoDB 구조를 Supabase 형식으로 변환
+            recommendations = []
+            for doc in data:
+                metrics = doc.get("metrics", {})
+                predictions = doc.get("predictions", {})
+
+                recommendations.append({
+                    "Stock": doc.get("stock_name"),
+                    "Accuracy (%)": metrics.get("accuracy"),
+                    "Rise Probability (%)": predictions.get("rise_probability"),
+                    "Last Actual Price": predictions.get("last_actual_price"),
+                    "Predicted Future Price": predictions.get("predicted_future_price"),
+                    "Recommendation": doc.get("recommendation"),
+                    "Analysis": doc.get("analysis")
+                })
+
+            logger.info(f"MongoDB stock_analysis에서 {len(recommendations)}개 추천 종목 조회")
+            return {
+                "message": f"{len(recommendations)}개의 추천 주식을 찾았습니다",
+                "recommendations": recommendations
+            }
+        except Exception as e:
+            logger.error(f"get_stock_recommendations 오류: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return {"message": f"분석 결과 조회 중 오류 발생: {str(e)}", "recommendations": []}
 
     def get_recommendations_with_sentiment(self):
         """
-        get_stock_recommendations에서 가져온 추천 주식 중 
+        get_stock_recommendations에서 가져온 추천 주식 중
         ticker_sentiment_analysis 테이블에서 average_sentiment_score >= 0.15인 주식만 필터링하고,
         두 데이터 소스의 정보를 결합하여 반환합니다.
+
+        MongoDB sentiment_analysis 컬렉션에서 조회합니다.
         """
         stock_recs = self.get_stock_recommendations()
         recommendations = stock_recs.get("recommendations", [])
         if not recommendations:
             return {"message": "추천 주식이 없습니다", "results": []}
 
-        sentiment_response = supabase.table("ticker_sentiment_analysis").select("*").gte("average_sentiment_score", 0.15).execute()
-        if not sentiment_response.data:
-            return {"message": "감정 분석 데이터가 없습니다", "results": []}
+        # MongoDB에서 sentiment_analysis 조회
+        try:
+            db = get_db()
+            if db is None:
+                logger.error("MongoDB 연결 실패")
+                return {"message": "MongoDB 연결 실패", "results": []}
+
+            # MongoDB에서 average_sentiment_score >= 0.15인 데이터 조회
+            cursor = db.sentiment_analysis.find({
+                "average_sentiment_score": {"$gte": 0.15}
+            })
+            sentiment_list = list(cursor)
+
+            if not sentiment_list:
+                logger.info("MongoDB sentiment_analysis가 비어있음")
+                return {"message": "감정 분석 데이터가 없습니다", "results": []}
+
+            sentiment_data = {item["ticker"]: item for item in sentiment_list}
+            logger.info(f"MongoDB sentiment_analysis에서 {len(sentiment_data)}개 조회")
+
+        except Exception as e:
+            logger.error(f"sentiment_analysis 조회 오류: {str(e)}")
+            return {"message": f"감정 분석 데이터 조회 중 오류: {str(e)}", "results": []}
 
         # MongoDB에서 주식명으로 ticker 조회
         ticker_to_recommendation = {}
@@ -482,7 +527,6 @@ class StockRecommendationService:
             ticker = get_ticker_from_stock_name(stock_name)
             if ticker:
                 ticker_to_recommendation[ticker] = rec
-        sentiment_data = {item["ticker"]: item for item in sentiment_response.data}
 
         results = []
         for ticker, sentiment in sentiment_data.items():
@@ -499,7 +543,7 @@ class StockRecommendationService:
                     "analysis": recommendation["Analysis"],
                     "average_sentiment_score": sentiment["average_sentiment_score"],
                     "article_count": sentiment["article_count"],
-                    "calculation_date": sentiment["calculation_date"]
+                    "calculation_date": sentiment.get("calculation_date") or sentiment.get("date")
                 }
                 results.append(combined_data)
 
@@ -909,14 +953,44 @@ class StockRecommendationService:
         - ticker_sentiment_analysis에서 average_sentiment_score >= 0.15인 데이터와 결합
         - get_stock_recommendations의 결과와 통합하여 반환
         - 추가 조건: sentiment_score와 기술적 지표를 기반으로 매수 추천 필터링
-        
+
+        MongoDB stock_recommendations, sentiment_analysis 컬렉션에서 조회합니다.
+
         Args:
             send_slack_notification: Slack 알림 전송 여부 (기본값: True)
         """
         try:
-            # 1. 기술적 지표 데이터 조회
-            tech_response = supabase.table("stock_recommendations").select("*").order("날짜", desc=True).execute()
-            if not tech_response.data:
+            # 1. 기술적 지표 데이터 조회 (MongoDB 우선)
+            tech_data = []
+            db = get_db()
+
+            if db is not None:
+                # MongoDB stock_recommendations에서 조회 (date 내림차순)
+                cursor = db.stock_recommendations.find({}).sort("date", -1)
+                mongo_tech_data = list(cursor)
+
+                if mongo_tech_data:
+                    # MongoDB 필드명을 Supabase 형식으로 변환
+                    for doc in mongo_tech_data:
+                        tech_indicators = doc.get("technical_indicators", {})
+                        tech_data.append({
+                            "날짜": doc.get("date"),
+                            "종목": get_stock_name_from_ticker(doc.get("ticker")) or doc.get("ticker"),
+                            "ticker": doc.get("ticker"),
+                            "SMA20": tech_indicators.get("sma20"),
+                            "SMA50": tech_indicators.get("sma50"),
+                            "골든_크로스": tech_indicators.get("golden_cross", False),
+                            "RSI": tech_indicators.get("rsi"),
+                            "MACD": tech_indicators.get("macd"),
+                            "Signal": tech_indicators.get("signal"),
+                            "MACD_매수_신호": tech_indicators.get("macd_buy_signal", False),
+                            "추천_여부": doc.get("is_recommended", False)
+                        })
+                    logger.info(f"MongoDB stock_recommendations에서 {len(tech_data)}개 조회")
+
+            # MongoDB에 데이터가 없으면 에러 반환
+            if not tech_data:
+                logger.info("MongoDB stock_recommendations가 비어있음")
                 # 데이터가 없어도 슬랙 알림 전송
                 if send_slack_notification:
                     try:
@@ -937,8 +1011,8 @@ class StockRecommendationService:
                     except Exception as slack_error:
                         logger.error(f"슬랙 알림 전송 실패: {str(slack_error)}")
                 return {"message": "기술적 지표 데이터가 없습니다", "results": []}
-            
-            tech_df = pd.DataFrame(tech_response.data)
+
+            tech_df = pd.DataFrame(tech_data)
             
             # 데이터 타입 변환
             tech_df["골든_크로스"] = tech_df["골든_크로스"].astype(bool)
@@ -962,13 +1036,25 @@ class StockRecommendationService:
             
             # 데이터가 있는 경우에만 처리
             if not filtered_tech_df.empty and recommendations:
-            
-                # 3. 감정 분석 데이터 조회
-                sentiment_response = supabase.table("ticker_sentiment_analysis").select("*").gte("average_sentiment_score", 0.15).execute()
-                
+
+                # 3. 감정 분석 데이터 조회 (MongoDB 우선)
+                sentiment_map = {}
+                if db is not None:
+                    # MongoDB sentiment_analysis에서 조회
+                    sentiment_cursor = db.sentiment_analysis.find({
+                        "average_sentiment_score": {"$gte": 0.15}
+                    })
+                    sentiment_list = list(sentiment_cursor)
+                    if sentiment_list:
+                        sentiment_map = {item["ticker"]: item for item in sentiment_list}
+                        logger.info(f"MongoDB sentiment_analysis에서 {len(sentiment_map)}개 조회")
+
+                # MongoDB에 데이터가 없으면 빈 맵 사용
+                if not sentiment_map:
+                    logger.info("MongoDB sentiment_analysis가 비어있음")
+
                 # 4. 데이터 매핑 준비
                 tech_map = {row["종목"]: row.to_dict() for _, row in filtered_tech_df.iterrows()}
-                sentiment_map = {item["ticker"]: item for item in sentiment_response.data} if sentiment_response.data else {}
                 
                 # 5. 결과 통합
                 for rec in recommendations:
@@ -994,7 +1080,7 @@ class StockRecommendationService:
                         "analysis": rec["Analysis"],
                         "sentiment_score": sentiment["average_sentiment_score"] if sentiment else None,
                         "article_count": sentiment["article_count"] if sentiment else None,
-                        "sentiment_date": sentiment["calculation_date"] if sentiment else None,
+                        "sentiment_date": sentiment.get("calculation_date") or sentiment.get("date") if sentiment else None,
                         "technical_date": tech_data["날짜"],
                         "sma20": float(tech_data["SMA20"]),
                         "sma50": float(tech_data["SMA50"]),
@@ -1142,24 +1228,57 @@ class StockRecommendationService:
                     ticker_to_korean[ticker] = name
                     korean_to_ticker[name] = ticker
             
-            # 3. 기술적 지표 데이터 가져오기
-            tech_response = supabase.table("stock_recommendations").select("*").order("날짜", desc=True).execute()
-            tech_data = pd.DataFrame(tech_response.data) if tech_response.data else pd.DataFrame()
-            
+            # 3. 기술적 지표 데이터 가져오기 (MongoDB 우선)
+            tech_list = []
+            db = get_db()
+
+            if db is not None:
+                # MongoDB stock_recommendations에서 조회
+                cursor = db.stock_recommendations.find({}).sort("date", -1)
+                mongo_tech_data = list(cursor)
+
+                if mongo_tech_data:
+                    for doc in mongo_tech_data:
+                        tech_indicators = doc.get("technical_indicators", {})
+                        tech_list.append({
+                            "날짜": doc.get("date"),
+                            "종목": get_stock_name_from_ticker(doc.get("ticker")) or doc.get("ticker"),
+                            "ticker": doc.get("ticker"),
+                            "골든_크로스": tech_indicators.get("golden_cross", False),
+                            "RSI": tech_indicators.get("rsi"),
+                            "MACD_매수_신호": tech_indicators.get("macd_buy_signal", False),
+                        })
+                    logger.info(f"get_stocks_to_sell: MongoDB stock_recommendations에서 {len(tech_list)}개 조회")
+
+            # MongoDB에 데이터가 없으면 빈 리스트
+            if not tech_list:
+                logger.info("get_stocks_to_sell: MongoDB stock_recommendations가 비어있음")
+
+            tech_data = pd.DataFrame(tech_list) if tech_list else pd.DataFrame()
+
             if not tech_data.empty:
                 # 데이터 타입 변환
                 tech_data["골든_크로스"] = tech_data["골든_크로스"].astype(bool)
                 tech_data["MACD_매수_신호"] = tech_data["MACD_매수_신호"].astype(bool)
                 tech_data["RSI"] = pd.to_numeric(tech_data["RSI"])
-                
+
                 # 최신 데이터만 필터링 (종목별 가장 최근 날짜의 데이터)
                 tech_data = tech_data.sort_values("날짜", ascending=False)
                 tech_data = tech_data.drop_duplicates(subset=["종목"], keep="first")
-            
-            # 4. 감성 분석 데이터 가져오기
-            sentiment_response = supabase.table("ticker_sentiment_analysis").select("*").execute()
-            sentiment_data = {item["ticker"]: item for item in sentiment_response.data} if sentiment_response.data else {}
-            
+
+            # 4. 감성 분석 데이터 가져오기 (MongoDB 우선)
+            sentiment_data = {}
+            if db is not None:
+                sentiment_cursor = db.sentiment_analysis.find({})
+                sentiment_list = list(sentiment_cursor)
+                if sentiment_list:
+                    sentiment_data = {item["ticker"]: item for item in sentiment_list}
+                    logger.info(f"get_stocks_to_sell: MongoDB sentiment_analysis에서 {len(sentiment_data)}개 조회")
+
+            # MongoDB에 데이터가 없으면 빈 딕셔너리
+            if not sentiment_data:
+                logger.info("get_stocks_to_sell: MongoDB sentiment_analysis가 비어있음")
+
             # 5. 매도 대상 종목 식별
             sell_candidates = []
             

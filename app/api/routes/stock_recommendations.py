@@ -109,6 +109,7 @@ async def get_recommended_stocks_with_technical_and_sentiment():
     - get_stock_recommendations의 결과와 통합하여 반환
     """
     try:
+        service = get_service()
         # API 호출 시에는 Slack 알림을 보내지 않음
         result = service.get_combined_recommendations_with_technical_and_sentiment(send_slack_notification=False)
         return result
@@ -208,6 +209,7 @@ async def get_sell_candidates():
     응답에는 각 매도 대상 종목에 대한 상세 정보와 매도 근거가 포함됩니다.
     """
     try:
+        service = get_service()
         result = service.get_stocks_to_sell()
         return result
     except Exception as e:
@@ -415,6 +417,7 @@ async def get_daily_data_from_mongodb(date: str):
     ```
     """
     try:
+        service = get_service()
         result = service.get_daily_recommendations_from_mongodb(date)
         return result
     except Exception as e:
@@ -491,6 +494,7 @@ async def get_stock_recommendation_history(
     ```
     """
     try:
+        service = get_service()
         result = service.get_stock_recommendation_history_from_mongodb(
             ticker=ticker,
             start_date=start_date,
@@ -561,6 +565,7 @@ async def get_recommended_stocks_by_date_range(
     ```
     """
     try:
+        service = get_service()
         result = service.get_recommended_stocks_by_date_range_from_mongodb(
             start_date=start_date,
             end_date=end_date
@@ -620,6 +625,7 @@ async def verify_mongodb_sync(date: str):
     ```
     """
     try:
+        service = get_service()
         result = service.verify_mongodb_sync(date)
         return result
     except Exception as e:
