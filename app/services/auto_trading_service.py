@@ -10,7 +10,7 @@ import time
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 import logging
-from app.db.supabase import supabase
+from app.db.mongodb import get_db
 from app.services.stock_recommendation_service import StockRecommendationService
 from app.services.balance_service import (
     get_overseas_balance,
@@ -41,16 +41,23 @@ class AutoTradingService:
         }
     
     def get_auto_trading_config(self) -> Dict:
-        """자동매매 설정 조회"""
+        """자동매매 설정 조회 (MongoDB trading_configs 컬렉션)"""
         try:
-            response = supabase.table("auto_trading_config") \
-                .select("*") \
-                .order("created_at", desc=True) \
-                .limit(1) \
-                .execute()
+            db = get_db()
+            if db is None:
+                logger.error("MongoDB 연결 실패")
+                return self.default_config
             
-            if response.data:
-                return response.data[0]
+            # 최신 설정 조회
+            config = db.trading_configs.find_one(
+                {},
+                sort=[("created_at", -1)]
+            )
+            
+            if config:
+                # ObjectId를 문자열로 변환
+                config["_id"] = str(config["_id"])
+                return config
             
             # 설정이 없으면 기본값 생성
             return self._create_default_config()
@@ -60,34 +67,56 @@ class AutoTradingService:
             return self.default_config
     
     def _create_default_config(self) -> Dict:
-        """기본 설정 생성"""
+        """기본 설정 생성 (MongoDB trading_configs 컬렉션)"""
         try:
-            config = {**self.default_config, "updated_at": datetime.now().isoformat()}
-            response = supabase.table("auto_trading_config").insert(config).execute()
-            return response.data[0] if response.data else self.default_config
+            db = get_db()
+            if db is None:
+                logger.error("MongoDB 연결 실패")
+                return self.default_config
+            
+            config = {
+                **self.default_config,
+                "created_at": datetime.now(),
+                "updated_at": datetime.now()
+            }
+            result = db.trading_configs.insert_one(config)
+            config["_id"] = str(result.inserted_id)
+            return config
         except Exception as e:
             logger.error(f"기본 설정 생성 중 오류: {str(e)}")
             return self.default_config
     
     def update_auto_trading_config(self, config: Dict) -> Dict:
-        """자동매매 설정 업데이트"""
+        """자동매매 설정 업데이트 (MongoDB trading_configs 컬렉션)"""
         try:
+            db = get_db()
+            if db is None:
+                logger.error("MongoDB 연결 실패")
+                return {"success": False, "error": "MongoDB 연결 실패"}
+            
             current_config = self.get_auto_trading_config()
             
             # 설정 업데이트
-            updated_config = {**current_config, **config, "updated_at": datetime.now().isoformat()}
+            updated_config = {**current_config, **config, "updated_at": datetime.now()}
             
-            if "id" in current_config:
+            # _id 필드 제거 (업데이트 시 _id는 변경 불가)
+            config_id = updated_config.pop("_id", None)
+            
+            if config_id:
                 # 기존 설정 업데이트
-                response = supabase.table("auto_trading_config") \
-                    .update(updated_config) \
-                    .eq("id", current_config["id"]) \
-                    .execute()
+                from bson import ObjectId
+                db.trading_configs.update_one(
+                    {"_id": ObjectId(config_id)},
+                    {"$set": updated_config}
+                )
+                updated_config["_id"] = config_id
             else:
                 # 새로운 설정 생성
-                response = supabase.table("auto_trading_config").insert(updated_config).execute()
+                updated_config["created_at"] = datetime.now()
+                result = db.trading_configs.insert_one(updated_config)
+                updated_config["_id"] = str(result.inserted_id)
             
-            return {"success": True, "config": response.data[0] if response.data else updated_config}
+            return {"success": True, "config": updated_config}
         
         except Exception as e:
             logger.error(f"자동매매 설정 업데이트 중 오류: {str(e)}")
@@ -512,8 +541,13 @@ class AutoTradingService:
             return {"error": str(e)}
     
     def _save_order_log(self, order_info: Dict, order_type: str):
-        """주문 기록 저장"""
+        """주문 기록 저장 (MongoDB trading_logs 컬렉션)"""
         try:
+            db = get_db()
+            if db is None:
+                logger.error("MongoDB 연결 실패 - 주문 기록 저장 불가")
+                return
+            
             log_data = {
                 "order_type": order_type,
                 "ticker": order_info.get("ticker"),
@@ -525,26 +559,37 @@ class AutoTradingService:
                 "price_change_percent": order_info.get("price_change_percent"),
                 "sell_reasons": order_info.get("sell_reasons"),
                 "order_result": order_info.get("order_result"),
-                "created_at": datetime.now().isoformat()
+                "created_at": datetime.now()
             }
             
-            supabase.table("auto_trading_logs").insert(log_data).execute()
+            db.trading_logs.insert_one(log_data)
         
         except Exception as e:
             logger.error(f"주문 기록 저장 중 오류: {str(e)}")
     
     def _get_recent_orders(self, days: int = 7) -> List[Dict]:
-        """최근 주문 내역 조회"""
+        """최근 주문 내역 조회 (MongoDB trading_logs 컬렉션)"""
         try:
-            start_date = (datetime.now() - timedelta(days=days)).isoformat()
+            db = get_db()
+            if db is None:
+                logger.error("MongoDB 연결 실패")
+                return []
             
-            response = supabase.table("auto_trading_logs") \
-                .select("*") \
-                .gte("created_at", start_date) \
-                .order("created_at", desc=True) \
-                .execute()
+            start_date = datetime.now() - timedelta(days=days)
             
-            return response.data if response.data else []
+            cursor = db.trading_logs.find(
+                {"created_at": {"$gte": start_date}}
+            ).sort("created_at", -1)
+            
+            orders = []
+            for doc in cursor:
+                doc["_id"] = str(doc["_id"])
+                # datetime을 ISO 문자열로 변환 (API 응답 호환성)
+                if isinstance(doc.get("created_at"), datetime):
+                    doc["created_at"] = doc["created_at"].isoformat()
+                orders.append(doc)
+            
+            return orders
         
         except Exception as e:
             logger.error(f"최근 주문 내역 조회 중 오류: {str(e)}")

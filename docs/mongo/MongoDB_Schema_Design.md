@@ -525,6 +525,54 @@ RDB(Supabase) 스키마와는 독립적으로 설계되었으며, 유연한 종�
 
 ---
 
+### 14. `access_tokens` Collection
+**목적**: 한국투자증권 API 접근 토큰 저장 (사용자별 + 모의투자/실제투자 구분)
+
+```javascript
+{
+  _id: ObjectId,
+  user_id: String,             // 사용자 ID (예: "lian")
+  account_type: String,        // "mock" (모의투자) | "real" (실제투자)
+  access_token: String,        // API 접근 토큰
+  expiration_time: String,     // 토큰 만료 시간 (ISO 8601 형식)
+  is_active: Boolean,          // 토큰 활성 상태
+  created_at: Date,
+  updated_at: Date
+}
+```
+
+**설계 이유**:
+- 사용자별로 토큰을 분리하여 관리 (다중 사용자 지원 가능)
+- 모의투자와 실제투자 토큰을 분리하여 관리
+- 서버 재시작 시에도 토큰 유지 가능
+- 토큰 만료 시간을 저장하여 불필요한 API 호출 방지
+
+**인덱스**:
+- `{ user_id: 1, account_type: 1 }` (unique) - 사용자별 계정 유형별 토큰 조회 최적화
+
+**사용 예시**:
+```python
+# lian 사용자의 모의투자 토큰 조회
+token_doc = db.access_tokens.find_one({"user_id": "lian", "account_type": "mock"})
+
+# lian 사용자의 실제투자 토큰 조회
+token_doc = db.access_tokens.find_one({"user_id": "lian", "account_type": "real"})
+
+# 토큰 저장/업데이트 (upsert)
+db.access_tokens.update_one(
+    {"user_id": "lian", "account_type": "mock"},
+    {"$set": {
+        "access_token": "...",
+        "expiration_time": "2024-01-16T10:00:00+00:00",
+        "is_active": True,
+        "updated_at": datetime.now()
+    }},
+    upsert=True
+)
+```
+
+---
+
 ## 레버리지 사용 흐름
 
 ### 시나리오: 사용자가 레버리지를 사용하여 주식을 매수
@@ -650,6 +698,11 @@ for us in user_stocks:
   
 - ✅ `user_stocks`: 사용자별 설정
   - `use_leverage`: 사용자가 레버리지 사용 여부를 개인적으로 설정
+
+- ✅ `access_tokens`: 한국투자증권 API 토큰 관리
+  - `user_id`: 사용자 ID (예: "lian")
+  - `account_type`: "mock" (모의투자) 또는 "real" (실제투자) 구분
+  - 서버 재시작 시에도 토큰 유지 가능
 
 - ✅ `daily_stock_data`: 날짜별 통합 데이터
   - `stocks`: 주가 데이터 (개선: 객체 형태로 open, high, low, close 포함)

@@ -16,10 +16,8 @@ app/
 │
 ├── infrastructure/         # Infrastructure Layer (외부 의존성)
 │   ├── database/          # DB 연결 관리
-│   │   ├── supabase_client.py
 │   │   └── mongodb_client.py
 │   └── repositories/      # Repository 구현체
-│       ├── supabase_*.py
 │       └── mongodb_*.py
 │
 ├── presentation/          # Presentation Layer (API)
@@ -44,7 +42,7 @@ app/
 ### 3. Infrastructure Layer (`app/infrastructure/`)
 - **의존성**: Domain Layer만 의존 (Repository 인터페이스 구현)
 - **내용**: DB 연결, 외부 API, Repository 구현체
-- **예시**: `SupabaseStockRepository`, `MongoDBStockRepository`
+- **예시**: `MongoDBStockRepository`, `MongodbEconomicRepository`
 
 ### 4. Presentation Layer (`app/presentation/` 또는 `app/api/`)
 - **의존성**: Application Layer
@@ -52,12 +50,6 @@ app/
 - **예시**: API 엔드포인트
 
 ## DB 연결 관리
-
-두 가지 DB를 지원합니다:
-
-### Supabase (PostgreSQL)
-- 설정: `app/infrastructure/database/supabase_client.py`
-- Repository: `app/infrastructure/repositories/supabase_*.py`
 
 ### MongoDB
 - 설정: `app/infrastructure/database/mongodb_client.py`
@@ -103,10 +95,9 @@ async def get_stocks(
 
 기존 코드와의 호환성을 위해 레거시 래퍼를 제공합니다:
 
-- `app/db/supabase.py` → `app/infrastructure/database/supabase_client.py`를 사용
 - `app/db/mongodb.py` → `app/infrastructure/database/mongodb_client.py`를 사용
 
-하지만 새로운 코드는 Infrastructure Layer를 직접 사용하는 것을 권장합니다.
+새로운 코드는 Infrastructure Layer를 직접 사용하는 것을 권장합니다.
 
 ## 마이그레이션 가이드
 
@@ -121,8 +112,9 @@ async def get_stocks(
 
 ```python
 # 기존 코드
-from app.db.supabase import supabase
-response = supabase.table("stocks").select("*").execute()
+from app.db.mongodb import get_db
+db = get_db()
+stocks = list(db.stocks.find({"is_active": True}))
 
 # 새로운 코드
 from app.application.use_cases.stock_use_case import StockUseCase

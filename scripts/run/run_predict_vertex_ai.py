@@ -10,8 +10,10 @@ FLEX_START 스케줄링 전략을 사용하여 GPU 리소스가 사용 가능해
 환경 변수:
     GCP_PROJECT_ID: Google Cloud 프로젝트 ID
     GCP_REGION: 리전 (예: us-central1)
-    SUPABASE_URL: Supabase URL
-    SUPABASE_KEY: Supabase Key
+    MONGODB_URL: MongoDB URL
+    MONGODB_USER: MongoDB 사용자명
+    MONGODB_PASSWORD: MongoDB 비밀번호
+    MONGODB_DATABASE: MongoDB 데이터베이스명
     GOOGLE_APPLICATION_CREDENTIALS: Google Cloud 인증 정보 파일 경로
 """
 
@@ -260,17 +262,6 @@ def create_custom_job_with_dws(
     # 환경 변수 설정
     env_vars = environment_variables or {}
     
-    # Supabase 환경 변수 추가 (없으면 기본값 사용)
-    if "SUPABASE_URL" not in env_vars:
-        supabase_url = os.getenv("SUPABASE_URL")
-        if supabase_url:
-            env_vars["SUPABASE_URL"] = supabase_url
-    
-    if "SUPABASE_KEY" not in env_vars:
-        supabase_key = os.getenv("SUPABASE_KEY")
-        if supabase_key:
-            env_vars["SUPABASE_KEY"] = supabase_key
-    
     # MongoDB 환경 변수 추가
     if "MONGO_URL" not in env_vars and "MONGODB_URL" not in env_vars:
         mongo_url = os.getenv("MONGO_URL") or os.getenv("MONGODB_URL")
@@ -311,7 +302,6 @@ def create_custom_job_with_dws(
         
         # predict.py에 필요한 패키지 목록
         required_packages = [
-            "supabase>=2.0.0",
             "pandas>=2.0.0",
             "numpy>=1.24.0",
             "scikit-learn>=1.3.0",
@@ -512,7 +502,7 @@ def main():
         # 주요 환경 변수 확인 (디버깅용)
         env_vars_to_check = [
             "GCP_PROJECT_ID", "GCP_REGION", "GCP_BUCKET_NAME", "GCP_STAGING_BUCKET",
-            "SUPABASE_URL", "SUPABASE_KEY",
+            "MONGODB_URL", "MONGODB_DATABASE",
             "VERTEX_AI_GPU_TYPE", "VERTEX_AI_MACHINE_TYPE", "VERTEX_AI_GPU_COUNT",
             "GOOGLE_APPLICATION_CREDENTIALS"
         ]
@@ -713,11 +703,7 @@ def main():
         # 환경 변수 딕셔너리
         environment_variables = {}
         
-        # Supabase 환경 변수 추가
-        if os.getenv("SUPABASE_URL"):
-            environment_variables["SUPABASE_URL"] = os.getenv("SUPABASE_URL")
-        if os.getenv("SUPABASE_KEY"):
-            environment_variables["SUPABASE_KEY"] = os.getenv("SUPABASE_KEY")
+        # MongoDB 환경 변수 추가 (자동으로 create_custom_job_with_dws에서 추가됨)
         
         # Python 모듈 경로 (기본값)
         python_module = os.getenv("VERTEX_AI_PYTHON_MODULE", "aiplatform_custom_trainer_script.task")

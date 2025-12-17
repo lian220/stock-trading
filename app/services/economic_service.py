@@ -1,5 +1,4 @@
 import pandas as pd
-from app.db.supabase import supabase
 # stock.py가 scripts/utils/로 이동했으므로 경로 수정
 from scripts.utils.stock import collect_economic_data
 import numpy as np
@@ -105,10 +104,30 @@ def fetch_economic_data(start_date: str = None, end_date: str = None):
         print(f"수집 시작일({start_date})이 종료일({collection_end_date})보다 큽니다. 수집할 데이터가 없습니다.")
         return {'should_skip': True}
     
-    # 이전 데이터 가져오기 (마지막 수집 날짜의 데이터)
+    # 이전 데이터 가져오기 (마지막 수집 날짜의 데이터) - MongoDB에서 조회
     previous_date = (datetime.strptime(start_date, '%Y-%m-%d') - timedelta(days=1)).strftime('%Y-%m-%d')
-    prev_data_response = supabase.table("economic_and_stock_data").select("*").eq("날짜", previous_date).execute()
-    previous_data = prev_data_response.data[0] if prev_data_response.data else {}
+    previous_data = {}
+    try:
+        db = get_db()
+        if db is not None:
+            prev_doc = db.daily_stock_data.find_one({"date": previous_date})
+            if prev_doc:
+                # MongoDB 문서를 API 응답 형식으로 변환
+                previous_data = {"날짜": prev_doc.get("date")}
+                # FRED 지표
+                for key, value in prev_doc.get("fred_indicators", {}).items():
+                    previous_data[key] = value
+                # Yahoo Finance 지표
+                for key, value in prev_doc.get("yfinance_indicators", {}).items():
+                    previous_data[key] = value
+                # 주가 데이터
+                for stock_name, stock_data in prev_doc.get("stocks", {}).items():
+                    if isinstance(stock_data, dict):
+                        previous_data[stock_name] = stock_data.get("close_price")
+                    else:
+                        previous_data[stock_name] = stock_data
+    except Exception as e:
+        logger.warning(f"이전 데이터 조회 중 오류 발생: {str(e)}")
     
     # stock_columns를 최신 상태로 업데이트 (매번 실행 시 최신 활성화 상태 반영)
     stock_columns = get_active_stock_columns()
@@ -233,9 +252,9 @@ def save_economic_data(new_data, start_date, storage_end_date, stock_columns, pr
     all_dates = pd.date_range(start=start_date, end=storage_end_date)
     saved_count = 0
     
-    # 재시도 로직이 포함된 데이터 저장 함수
+    # 재시도 로직이 포함된 데이터 저장 함수 (MongoDB 전용)
     def save_data_with_retry(date_str, data_dict, max_retries=3, short_interest_data_for_date=None):
-        """데이터 저장을 재시도하며 처리"""
+        """MongoDB에 데이터 저장을 재시도하며 처리"""
         # 데이터 딕셔너리 검증
         if not data_dict:
             print(f"⚠️ {date_str}: 저장할 데이터가 없습니다 (data_dict가 비어있음)")
@@ -248,158 +267,61 @@ def save_economic_data(new_data, start_date, storage_end_date, stock_columns, pr
         
         for attempt in range(max_retries):
             try:
-                # 기존 데이터 확인
-                check = supabase.table("economic_and_stock_data").select("*").eq("날짜", date_str).execute()
+                db = get_db()
+                if db is None:
+                    logger.error(f"MongoDB 연결 실패: {date_str}")
+                    return False
                 
-                # 중복 방지를 위해 기존 데이터가 있으면 업데이트, 없으면 삽입
-                if check.data and len(check.data) > 0:
-                    # 기존 레코드가 있는 경우, null 값만 업데이트
-                    existing_data = check.data[0]
-                    update_dict = {}
-                    
-                    for col_name, value in data_dict.items():
-                        # 기존 값이 null이거나 누락된 경우에만 업데이트
-                        if col_name not in existing_data or existing_data[col_name] is None:
-                            update_dict[col_name] = value
-                    
-                    if update_dict:  # 업데이트할 값이 있는 경우에만
-                        supabase.table("economic_and_stock_data").update(update_dict).eq("날짜", date_str).execute()
-                        print(f"  ✅ {date_str}: 업데이트 성공")
-                        
-                        # Supabase 업데이트 성공 후 MongoDB에도 저장
-                        try:
-                            db = get_db()
-                            if db is not None:
-                                # 데이터 분류
-                                categorized = categorize_data_for_mongodb(update_dict)
-                                
-                                # stocks 필드에 공매도 데이터 통합 (MongoDB만)
-                                # 주식명(한글) -> 티커 변환 매핑 생성
-                                stock_to_ticker = get_stock_to_ticker_mapping(exclude_etf=False)
-                                
-                                # stocks 필드를 티커 기반으로 변환
-                                stocks_with_short_interest = {}
-                                for stock_name, price in categorized['stocks'].items():
-                                    ticker = stock_to_ticker.get(stock_name)
-                                    if ticker:
-                                        # 티커를 키로 사용
-                                        stocks_with_short_interest[ticker] = {
-                                            'close_price': price
-                                        }
-                                
-                                # 공매도 데이터 통합 (티커 기반)
-                                if short_interest_data_for_date:
-                                    for ticker, stock_data in short_interest_data_for_date.items():
-                                        if ticker in stocks_with_short_interest:
-                                            # 기존 close_price 가격과 공매도 데이터 통합
-                                            stocks_with_short_interest[ticker].update(stock_data)
-                                        else:
-                                            # 가격 데이터가 없어도 공매도 데이터만 저장
-                                            stocks_with_short_interest[ticker] = stock_data
-                                
-                                # MongoDB에 upsert (구조화된 형태로)
-                                mongo_doc = {
-                                    "date": date_str,
-                                    "fred_indicators": categorized['fred_indicators'],
-                                    "yfinance_indicators": categorized['yfinance_indicators'],
-                                    "stocks": stocks_with_short_interest,
-                                    "updated_at": datetime.utcnow()
-                                }
-                                
-                                db.daily_stock_data.update_one(
-                                    {"date": date_str},
-                                    {
-                                        "$set": mongo_doc,
-                                        "$setOnInsert": {
-                                            "created_at": datetime.utcnow()
-                                        }
-                                    },
-                                    upsert=True
-                                )
-                                print(f"  📊 MongoDB 업데이트 성공: {date_str}")
-                            else:
-                                logger.warning(f"  ⚠️ MongoDB 연결 실패 (Supabase는 성공): {date_str}")
-                        except Exception as mongo_e:
-                            logger.warning(f"  ⚠️ MongoDB 저장 실패 (Supabase는 성공): {str(mongo_e)}")
-                    else:
-                        print(f"  ℹ️ {date_str}: 업데이트할 데이터가 없음 (모든 값이 이미 존재)")
-                else:
-                    # 새 레코드 추가
-                    insert_dict = {"날짜": date_str}
-                    insert_dict.update(data_dict)
-                    supabase.table("economic_and_stock_data").insert(insert_dict).execute()
-                    print(f"  ✅ {date_str}: 삽입 성공")
+                # 데이터 분류
+                categorized = categorize_data_for_mongodb(data_dict)
                 
-                # Supabase 저장 성공 후 MongoDB에도 저장
-                try:
-                    db = get_db()
-                    if db is not None:
-                        # 데이터 분류
-                        categorized = categorize_data_for_mongodb(data_dict)
-                        
-                        # stocks 필드에 공매도 데이터 통합 (MongoDB만)
-                        # 주식명(한글) -> 티커 변환 매핑 생성
-                        stock_to_ticker = get_stock_to_ticker_mapping(exclude_etf=False)
-                        
-                        # stocks 필드를 티커 기반으로 변환
-                        stocks_with_short_interest = {}
-                        for stock_name, price in categorized['stocks'].items():
-                            ticker = stock_to_ticker.get(stock_name)
-                            if ticker:
-                                # 티커를 키로 사용
-                                stocks_with_short_interest[ticker] = {
-                                    'close_price': price
-                                }
-                        
-                        # 공매도 데이터 통합 (티커 기반)
-                        if short_interest_data_for_date:
-                            for ticker, stock_data in short_interest_data_for_date.items():
-                                if ticker in stocks_with_short_interest:
-                                    # 기존 close_price 가격과 공매도 데이터 통합
-                                    stocks_with_short_interest[ticker].update(stock_data)
-                                else:
-                                    # 가격 데이터가 없어도 공매도 데이터만 저장
-                                    stocks_with_short_interest[ticker] = stock_data
-                        
-                        # MongoDB에 upsert (구조화된 형태로)
-                        mongo_doc = {
-                            "date": date_str,
-                            "fred_indicators": categorized['fred_indicators'],
-                            "yfinance_indicators": categorized['yfinance_indicators'],
-                            "stocks": stocks_with_short_interest,
-                            "updated_at": datetime.utcnow()
+                # stocks 필드에 공매도 데이터 통합
+                # 주식명(한글) -> 티커 변환 매핑 생성
+                stock_to_ticker = get_stock_to_ticker_mapping(exclude_etf=False)
+                
+                # stocks 필드를 티커 기반으로 변환
+                stocks_with_short_interest = {}
+                for stock_name, price in categorized['stocks'].items():
+                    ticker = stock_to_ticker.get(stock_name)
+                    if ticker:
+                        # 티커를 키로 사용
+                        stocks_with_short_interest[ticker] = {
+                            'close_price': price
                         }
-                        
-                        db.daily_stock_data.update_one(
-                            {"date": date_str},
-                            {
-                                "$set": mongo_doc,
-                                "$setOnInsert": {
-                                    "created_at": datetime.utcnow()
-                                }
-                            },
-                            upsert=True
-                        )
-                        print(f"  📊 MongoDB 저장 성공: {date_str}")
-                    else:
-                        logger.warning(f"  ⚠️ MongoDB 연결 실패 (Supabase는 성공): {date_str}")
-                except Exception as mongo_e:
-                    # MongoDB 저장 실패해도 Supabase 저장은 성공으로 처리
-                    logger.warning(f"  ⚠️ MongoDB 저장 실패 (Supabase는 성공): {str(mongo_e)}")
                 
+                # 공매도 데이터 통합 (티커 기반)
+                if short_interest_data_for_date:
+                    for ticker, stock_data in short_interest_data_for_date.items():
+                        if ticker in stocks_with_short_interest:
+                            # 기존 close_price 가격과 공매도 데이터 통합
+                            stocks_with_short_interest[ticker].update(stock_data)
+                        else:
+                            # 가격 데이터가 없어도 공매도 데이터만 저장
+                            stocks_with_short_interest[ticker] = stock_data
+                
+                # MongoDB에 upsert (구조화된 형태로)
+                mongo_doc = {
+                    "date": date_str,
+                    "fred_indicators": categorized['fred_indicators'],
+                    "yfinance_indicators": categorized['yfinance_indicators'],
+                    "stocks": stocks_with_short_interest,
+                    "updated_at": datetime.utcnow()
+                }
+                
+                db.daily_stock_data.update_one(
+                    {"date": date_str},
+                    {
+                        "$set": mongo_doc,
+                        "$setOnInsert": {
+                            "created_at": datetime.utcnow()
+                        }
+                    },
+                    upsert=True
+                )
+                print(f"  ✅ MongoDB 저장 성공: {date_str}")
                 return True  # 성공
                 
-            except (httpx.RemoteProtocolError, httpx.ConnectError, httpx.TimeoutException) as e:
-                if attempt < max_retries - 1:
-                    print(f"  ⚠️ {date_str} 저장 실패 (시도 {attempt+1}/{max_retries}): {str(e)}. 재시도...")
-                    time.sleep(2)  # 재시도 전 대기
-                else:
-                    print(f"  ❌ {date_str} 저장 최종 실패: {str(e)}")
-                    import traceback
-                    print(traceback.format_exc())
-                    return False
             except Exception as e:
-                # 다른 종류의 에러는 즉시 재시도
                 if attempt < max_retries - 1:
                     print(f"  ⚠️ {date_str} 저장 실패 (시도 {attempt+1}/{max_retries}): {str(e)}. 재시도...")
                     time.sleep(2)  # 재시도 전 대기
@@ -541,41 +463,11 @@ def get_last_updated_date():
     MongoDB의 daily_stock_data 컬렉션에서 마지막으로 수집된 날짜를 조회합니다.
     """
     try:
-        from app.core.config import settings
-        
-        # MongoDB 사용 여부 확인
-        use_mongodb = settings.is_mongodb_enabled()
-        
-        if not use_mongodb:
-            print("⚠️ 경고: USE_MONGODB가 False로 설정되어 있습니다. Supabase에서 조회합니다.")
-            # MongoDB가 비활성화된 경우 Supabase에서 조회 (fallback)
-            response = supabase.table("economic_and_stock_data").select("날짜").order("날짜", desc=True).limit(1).execute()
-            
-            if response.data and len(response.data) > 0:
-                last_date = datetime.fromisoformat(response.data[0]["날짜"].replace('Z', '+00:00'))
-                # 다음 날짜 반환
-                next_date = (last_date + timedelta(days=1)).strftime('%Y-%m-%d')
-                print(f"마지막 수집 날짜 (Supabase): {last_date.strftime('%Y-%m-%d')}, 다음 수집 시작일: {next_date}")
-                return next_date
-            else:
-                print("기존 데이터가 없습니다. 기본 시작 날짜(2006-01-01)로 설정합니다.")
-                return "2006-01-01"
-        
         # MongoDB에서 조회
         db = get_db()
         if db is None:
-            print("⚠️ 경고: MongoDB 연결 실패. Supabase에서 조회합니다.")
-            # MongoDB 연결 실패 시 Supabase에서 조회 (fallback)
-            response = supabase.table("economic_and_stock_data").select("날짜").order("날짜", desc=True).limit(1).execute()
-            
-            if response.data and len(response.data) > 0:
-                last_date = datetime.fromisoformat(response.data[0]["날짜"].replace('Z', '+00:00'))
-                next_date = (last_date + timedelta(days=1)).strftime('%Y-%m-%d')
-                print(f"마지막 수집 날짜 (Supabase fallback): {last_date.strftime('%Y-%m-%d')}, 다음 수집 시작일: {next_date}")
-                return next_date
-            else:
-                print("기존 데이터가 없습니다. 기본 시작 날짜(2006-01-01)로 설정합니다.")
-                return "2006-01-01"
+            logger.error("MongoDB 연결 실패. 기본 시작 날짜로 설정합니다.")
+            return "2006-01-01"
         
         # daily_stock_data 컬렉션에서 마지막 날짜 조회
         last_doc = db.daily_stock_data.find_one(

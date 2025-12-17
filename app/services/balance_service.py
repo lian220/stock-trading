@@ -4,7 +4,7 @@ import time
 from datetime import datetime, timedelta
 import pytz
 from app.core.config import settings
-from app.db.supabase import supabase
+from app.db.mongodb import get_db
 from threading import Lock
 from app.services.auth_service import parse_expiration_date
 import logging
@@ -64,13 +64,18 @@ def _handle_rate_limit_error(result, attempt, max_retries):
             return False  # 재시도 불가
     return None  # Rate limiting 에러가 아님
 
-def get_access_token():
-    """한국투자증권 API 접근 토큰 발급 또는 캐시된 토큰 반환"""
+def get_access_token(user_id: str = "lian"):
+    """한국투자증권 API 접근 토큰 발급 또는 캐시된 토큰 반환
+    
+    Args:
+        user_id: 사용자 ID (기본값: "lian")
+    """
     global _token_cache, _last_refresh_time
     
     # 현재 설정에 따른 토큰 캐시 키
     cache_key = _get_token_cache_key()
     token_type = "모의투자" if settings.KIS_USE_MOCK else "실제투자"
+    account_type = "mock" if settings.KIS_USE_MOCK else "real"
     
     # 현재 시간
     now = datetime.now(pytz.UTC)
@@ -92,30 +97,35 @@ def get_access_token():
             return cache["access_token"]
         
         try:
-            # 테이블에서 토큰 레코드 조회 (모의투자/실제투자 구분 없이 최신 토큰 사용)
-            # 실제로는 DB에 is_mock 컬럼이 있다면 필터링할 수 있지만, 현재는 최신 토큰 사용
-            response = supabase.table("access_tokens").select("*").order("created_at", desc=True).limit(1).execute()
+            # MongoDB에서 토큰 레코드 조회 (user_id + account_type별로 최신 토큰 사용)
+            db = get_db()
+            if db is None:
+                raise Exception("MongoDB 연결 실패")
             
-            if response.data:
-                token_data = response.data[0]
-                
-                # 이 부분을 수정 - auth_service의 parse_expiration_date 함수 사용
-                expiration_time = parse_expiration_date(token_data["expiration_time"])
+            token_doc = db.access_tokens.find_one(
+                {"user_id": user_id, "account_type": account_type},
+                sort=[("created_at", -1)]
+            )
+            
+            if token_doc:
+                # auth_service의 parse_expiration_date 함수 사용
+                expiration_time = parse_expiration_date(token_doc["expiration_time"])
                 
                 if now < expiration_time:  # 토큰이 아직 유효한 경우
-                    cache["access_token"] = token_data["access_token"]
+                    cache["access_token"] = token_doc["access_token"]
                     cache["expires_at"] = expiration_time
                     _last_refresh_time[cache_key] = current_time
-                    return token_data["access_token"]
+                    logger.info(f"[{user_id}] {token_type} 토큰 조회 성공 (MongoDB)")
+                    return token_doc["access_token"]
                 
                 # 토큰이 만료된 경우 갱신
-                token = refresh_token_with_retry(token_data["id"])
+                token = refresh_token_with_retry(str(token_doc["_id"]), account_type=account_type, user_id=user_id)
                 cache["access_token"] = token
                 cache["expires_at"] = now + timedelta(days=1)
                 _last_refresh_time[cache_key] = current_time
                 return token
             else:
-                token = refresh_token_with_retry()
+                token = refresh_token_with_retry(account_type=account_type, user_id=user_id)
                 cache["access_token"] = token
                 cache["expires_at"] = now + timedelta(days=1)
                 _last_refresh_time[cache_key] = current_time
@@ -124,10 +134,23 @@ def get_access_token():
         except Exception as e:
             if cache["access_token"]:
                 return cache["access_token"]
-            raise Exception(f"{token_type} 토큰 발급 실패: {str(e)}")
+            raise Exception(f"[{user_id}] {token_type} 토큰 발급 실패: {str(e)}")
 
-def refresh_token_with_retry(record_id=None, max_retries=3):
-    """토큰 갱신을 재시도하며 처리"""
+def refresh_token_with_retry(record_id=None, max_retries=3, account_type=None, user_id: str = "lian"):
+    """토큰 갱신을 재시도하며 처리 (MongoDB access_tokens 컬렉션)
+    
+    Args:
+        record_id: 업데이트할 토큰 레코드의 ID (없으면 새로 생성)
+        max_retries: 최대 재시도 횟수
+        account_type: 계정 유형 ("mock" 또는 "real")
+        user_id: 사용자 ID (기본값: "lian")
+    """
+    # account_type이 없으면 현재 설정에서 결정
+    if account_type is None:
+        account_type = "mock" if settings.KIS_USE_MOCK else "real"
+    
+    token_type = "모의투자" if account_type == "mock" else "실제투자"
+    
     for attempt in range(max_retries):
         try:
             url = f"{settings.kis_base_url}/oauth2/tokenP"
@@ -151,23 +174,40 @@ def refresh_token_with_retry(record_id=None, max_retries=3):
             token_data = {
                 "access_token": access_token,
                 "expiration_time": expiration_time.isoformat(),
-                "is_active": True
+                "user_id": user_id,
+                "account_type": account_type,
+                "is_active": True,
+                "updated_at": datetime.now(pytz.UTC)
             }
             
-            # 레코드 ID가 있으면 업데이트, 없으면 새로 생성
+            # MongoDB에 저장
+            db = get_db()
+            if db is None:
+                raise Exception("MongoDB 연결 실패")
+            
+            # 레코드 ID가 있으면 업데이트, 없으면 upsert로 처리
             if record_id:
-                supabase.table("access_tokens").update(token_data).eq("id", record_id).execute()
-                print("토큰 업데이트 완료")
+                from bson import ObjectId
+                db.access_tokens.update_one(
+                    {"_id": ObjectId(record_id)},
+                    {"$set": token_data}
+                )
+                logger.info(f"[{user_id}] {token_type} 토큰 업데이트 완료 (MongoDB)")
             else:
-                supabase.table("access_tokens").insert(token_data).execute()
-                print("새 토큰 레코드 생성 완료")
+                # user_id + account_type 기준으로 upsert
+                db.access_tokens.update_one(
+                    {"user_id": user_id, "account_type": account_type},
+                    {"$set": token_data, "$setOnInsert": {"created_at": datetime.now(pytz.UTC)}},
+                    upsert=True
+                )
+                logger.info(f"[{user_id}] {token_type} 토큰 저장 완료 (MongoDB)")
             
             return access_token
             
         except Exception as e:
-            print(f"토큰 갱신 오류 (시도 {attempt+1}/{max_retries}): {str(e)}")
+            logger.error(f"[{user_id}] 토큰 갱신 오류 (시도 {attempt+1}/{max_retries}): {str(e)}")
             if "EGW00133" in str(e) and attempt < max_retries - 1:
-                print("1분 제한 에러 발생, 61초 대기 후 재시도")
+                logger.warning("1분 제한 에러 발생, 61초 대기 후 재시도")
                 time.sleep(61)  # 1분 이상 대기
             else:
                 raise

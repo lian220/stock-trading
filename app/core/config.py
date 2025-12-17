@@ -15,15 +15,6 @@ class Settings(BaseSettings):
     
     CORS_ORIGINS: List[str] = ["*"]
     
-    SUPABASE_URL: Optional[str] = Field(
-        default=None,
-        description="Supabase URL"
-    )
-    SUPABASE_KEY: Optional[str] = Field(
-        default=None,
-        description="Supabase Key"
-    )
-    
     # 한국투자증권 API 설정
     KIS_BASE_URL: str = Field(
         default="https://openapivts.koreainvestment.com:29443", 

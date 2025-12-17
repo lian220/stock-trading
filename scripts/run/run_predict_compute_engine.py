@@ -11,8 +11,10 @@ Compute Engine VM을 직접 사용하여 predict.py를 실행하는 스크립트
     GCP_PROJECT_ID: Google Cloud 프로젝트 ID
     GCP_REGION: 리전 (예: us-central1)
     GCP_ZONE: 존 (예: us-central1-a)
-    SUPABASE_URL: Supabase URL
-    SUPABASE_KEY: Supabase Key
+    MONGODB_URL: MongoDB URL
+    MONGODB_USER: MongoDB 사용자명
+    MONGODB_PASSWORD: MongoDB 비밀번호
+    MONGODB_DATABASE: MongoDB 데이터베이스명
     GOOGLE_APPLICATION_CREDENTIALS: Google Cloud 인증 정보 파일 경로
 """
 
@@ -287,7 +289,7 @@ def execute_script_on_vm(
             sudo apt-get update -qq
             sudo apt-get install -y -qq python3-pip python3-dev
             # 필요한 패키지 설치
-            pip3 install --quiet supabase pandas numpy scikit-learn tensorflow matplotlib
+            pip3 install --quiet pandas numpy scikit-learn tensorflow matplotlib pymongo
             # 스크립트 실행
             python3 {script_name}
             """
@@ -441,10 +443,14 @@ def main():
         
         # 환경 변수 준비
         environment_variables = {}
-        if os.getenv("SUPABASE_URL"):
-            environment_variables["SUPABASE_URL"] = os.getenv("SUPABASE_URL")
-        if os.getenv("SUPABASE_KEY"):
-            environment_variables["SUPABASE_KEY"] = os.getenv("SUPABASE_KEY")
+        if os.getenv("MONGODB_URL"):
+            environment_variables["MONGODB_URL"] = os.getenv("MONGODB_URL")
+        if os.getenv("MONGODB_USER"):
+            environment_variables["MONGODB_USER"] = os.getenv("MONGODB_USER")
+        if os.getenv("MONGODB_PASSWORD"):
+            environment_variables["MONGODB_PASSWORD"] = os.getenv("MONGODB_PASSWORD")
+        if os.getenv("MONGODB_DATABASE"):
+            environment_variables["MONGODB_DATABASE"] = os.getenv("MONGODB_DATABASE")
         
         # VM 생성 (여러 리전과 존 시도)
         logger.info("=" * 60)

@@ -1,14 +1,10 @@
 """Dependency Injection 설정"""
 from typing import Optional
-from fastapi import Depends
-from app.core.config import settings
 from app.domain.repositories.stock_repository import (
     IStockRepository,
     IEconomicDataRepository,
     IStockRecommendationRepository
 )
-from app.infrastructure.repositories.supabase_stock_repository import SupabaseStockRepository
-from app.infrastructure.repositories.supabase_economic_repository import SupabaseEconomicRepository
 from app.infrastructure.repositories.mongodb_stock_repository import MongoDBStockRepository
 from app.infrastructure.repositories.mongodb_economic_repository import MongodbEconomicRepository
 
@@ -16,31 +12,17 @@ from app.infrastructure.repositories.mongodb_economic_repository import MongodbE
 def get_stock_repository() -> IStockRepository:
     """
     Stock Repository를 반환합니다.
-    설정에 따라 Supabase 또는 MongoDB를 사용합니다.
+    MongoDB를 사용합니다.
     """
-    if settings.is_mongodb_enabled():
-        try:
-            return MongoDBStockRepository()
-        except Exception:
-            # MongoDB 실패 시 Supabase로 fallback
-            return SupabaseStockRepository()
-    else:
-        return SupabaseStockRepository()
+    return MongoDBStockRepository()
 
 
 def get_economic_repository() -> IEconomicDataRepository:
     """
     Economic Data Repository를 반환합니다.
-    설정에 따라 Supabase 또는 MongoDB를 사용합니다.
+    MongoDB를 사용합니다.
     """
-    if settings.is_mongodb_enabled():
-        try:
-            return MongodbEconomicRepository()
-        except Exception:
-            # MongoDB 실패 시 Supabase로 fallback
-            return SupabaseEconomicRepository()
-    else:
-        return SupabaseEconomicRepository()
+    return MongodbEconomicRepository()
 
 
 def get_recommendation_repository() -> Optional[IStockRecommendationRepository]:

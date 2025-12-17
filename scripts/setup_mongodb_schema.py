@@ -185,74 +185,14 @@ def create_indexes():
         raise
 
 
-def migrate_stock_ticker_mapping():
-    """
-    기존 RDB의 stock_ticker_mapping 데이터를 MongoDB로 마이그레이션
-    
-    주의사항:
-    - leverage_ticker는 종목 정보이므로 stocks collection에 저장
-    - use_leverage는 사용자별 설정이므로 user_stocks collection에서 관리
-      (이 함수에서는 마이그레이션하지 않음)
-    """
-    try:
-        from app.db.supabase import supabase
-        
-        client, db = get_sync_client()
-        
-        logger.info("stock_ticker_mapping 데이터 마이그레이션 시작...")
-        
-        # Supabase에서 데이터 가져오기
-        response = supabase.table("stock_ticker_mapping").select("*").execute()
-        
-        if not response.data:
-            logger.warning("마이그레이션할 데이터가 없습니다.")
-            return
-        
-        stocks_to_insert = []
-        for item in response.data:
-            stock_doc = {
-                "ticker": item["ticker"],
-                "stock_name": item["stock_name"],
-                "is_etf": item.get("is_etf", False),
-                "leverage_ticker": item.get("leverage_ticker"),
-                # 주의: use_leverage는 사용자별 설정이므로 stocks collection에는 저장하지 않음
-                # 사용자는 user_stocks collection에서 use_leverage를 설정할 수 있음
-                "is_active": item.get("is_active", True),
-                "created_at": item.get("created_at"),
-                "updated_at": item.get("updated_at")
-            }
-            stocks_to_insert.append(stock_doc)
-        
-        # MongoDB에 삽입 (중복 시 무시)
-        if stocks_to_insert:
-            result = db.stocks.insert_many(stocks_to_insert, ordered=False)
-            logger.info(f"✓ {len(result.inserted_ids)}개의 종목 데이터 마이그레이션 완료")
-            logger.info("⚠️ use_leverage 설정은 사용자가 user_stocks collection에서 개별적으로 설정해야 합니다.")
-        else:
-            logger.info("✓ 마이그레이션할 종목이 없습니다.")
-            
-    except Exception as e:
-        if "duplicate key error" in str(e).lower() or "E11000" in str(e):
-            logger.warning("일부 종목이 이미 존재합니다 (중복 무시).")
-        else:
-            logger.error(f"stock_ticker_mapping 마이그레이션 중 오류 발생: {e}")
-            import traceback
-            traceback.print_exc()
-
-
 if __name__ == "__main__":
     if not settings.USE_MONGODB:
         logger.error("USE_MONGODB 설정이 False입니다. .env 파일에서 USE_MONGODB=true로 설정해주세요.")
         sys.exit(1)
     
     try:
-        # 1. 인덱스 생성
+        # 인덱스 생성
         create_indexes()
-        
-        # 2. 기본 종목 데이터 마이그레이션 (선택사항)
-        migrate_choice = input("\n기존 stock_ticker_mapping 데이터를 마이그레이션하시겠습니까? (y/n): ")
-        if migrate_choice.lower() == 'y':
-            migrate_stock_ticker_mapping()
         
         logger.info("\n✅ MongoDB 스키마 설정 완료!")
         

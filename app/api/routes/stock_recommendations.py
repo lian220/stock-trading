@@ -77,7 +77,7 @@ async def analyze_news_sentiment(
 @router.post("/recommended-stocks/generate-technical-recommendations", response_model=dict)
 async def generate_technical_recommendations():
     """
-    기술적 지표를 기반으로 추천 데이터를 생성하고 Supabase에 저장합니다.
+    기술적 지표를 기반으로 추천 데이터를 생성하고 MongoDB에 저장합니다.
     
     **동작 방식:**
     - 최근 6개월(180일) 데이터를 자동으로 조회하여 분석합니다.

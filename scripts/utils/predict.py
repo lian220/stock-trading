@@ -1,6 +1,5 @@
-# Supabase 클라이언트 설정
+# MongoDB 클라이언트 설정
 import os
-from supabase import create_client, Client
 import pandas as pd
 import numpy as np
 from sklearn.preprocessing import MinMaxScaler
@@ -16,11 +15,6 @@ import matplotlib.dates as mdates
 import json
 from datetime import datetime, timedelta
 from sklearn.metrics import mean_absolute_error, mean_squared_error
-
-# Supabase 연결 설정
-url: str = os.getenv("SUPABASE_URL")
-key: str = os.getenv("SUPABASE_KEY")
-supabase: Client = create_client(url, key)
 
 # MongoDB 연결 설정
 from pymongo import MongoClient, UpdateOne
@@ -304,23 +298,9 @@ def get_stock_data_from_db():
 def get_all_data(collection_name):
     """
     MongoDB에서 daily_stock_data 컬렉션의 데이터를 가져와서
-    Supabase의 economic_and_stock_data 테이블과 같은 형태로 변환합니다.
+    economic_and_stock_data 형태로 변환합니다.
     stocks 컬렉션에서 is_active가 true인 종목만 필터링합니다.
     """
-    if collection_name != "economic_and_stock_data":
-        # 기존 Supabase 방식 (다른 테이블의 경우)
-        all_data = []
-        offset = 0
-        limit = 1000  # Supabase의 기본 제한
-        while True:
-            response = supabase.table(collection_name).select("*").order("날짜", desc=False).limit(limit).offset(offset).execute()
-            data = response.data
-            if not data:  # 더 이상 데이터가 없으면 종료
-                break
-            all_data.extend(data)
-            offset += limit
-        return all_data
-    
     # MongoDB에서 데이터 가져오기
     if db is None:
         raise ValueError("MongoDB 연결이 없습니다. MongoDB 연결 정보를 확인해주세요.")
@@ -507,46 +487,46 @@ forecast_horizon = 14  # 예측 기간 (14일 후를 예측)
 
 # DB에서 활성화된 주식 목록 조회
 def get_target_columns_from_db():
-    """stock_ticker_mapping 테이블에서 활성화된 주식명 목록을 가져옵니다."""
+    """MongoDB stocks 컬렉션에서 활성화된 주식명 목록을 가져옵니다."""
     try:
-        response = supabase.table("stock_ticker_mapping").select("stock_name, is_etf").eq("is_active", True).execute()
+        if db is None:
+            print("⚠️ 경고: MongoDB 연결이 없습니다.")
+            print("⚠️ 경고: 하드코딩된 기본 주식 목록을 사용합니다. DB 연결을 확인하세요.")
+            return _get_default_target_columns()
         
-        if not response.data:
-            print("⚠️ 경고: stock_ticker_mapping 테이블에서 활성화된 주식을 찾을 수 없습니다.")
+        # MongoDB stocks 컬렉션에서 활성화된 주식 조회
+        active_stocks = list(db.stocks.find({"is_active": True}, {"stock_name": 1, "is_etf": 1}))
+        
+        if not active_stocks:
+            print("⚠️ 경고: MongoDB stocks 컬렉션에서 활성화된 주식을 찾을 수 없습니다.")
             print("⚠️ 경고: 하드코딩된 기본 주식 목록을 사용합니다. DB 상태를 확인하세요.")
-            # 기본값 반환 (fallback)
-            return [
-                '애플', '마이크로소프트', '아마존', '구글 A', '구글 C', '메타',
-                '테슬라', '엔비디아', '인텔', '마이크론', '브로드컴',
-                '텍사스 인스트루먼트', 'AMD', '어플라이드 머티리얼즈',
-                '셀레스티카', '버티브 홀딩스', '비스트라 에너지', '블룸에너지', '오클로', '팔란티어',
-                '세일즈포스', '오라클', '앱플로빈', '팔로알토 네트웍스', '크라우드 스트라이크',
-                '스노우플레이크', 'TSMC', '크리도 테크놀로지 그룹 홀딩', '로빈후드', '일라이릴리',
-                '월마트', '존슨앤존슨', 'S&P 500 ETF', 'QQQ ETF'
-            ]
+            return _get_default_target_columns()
         
         # 주식명 목록 추출 (ETF 포함)
-        target_columns = [item["stock_name"] for item in response.data]
+        target_columns = [item["stock_name"] for item in active_stocks if item.get("stock_name")]
         
-        print(f"DB에서 {len(target_columns)}개의 활성화된 주식을 가져왔습니다.")
+        print(f"MongoDB에서 {len(target_columns)}개의 활성화된 주식을 가져왔습니다.")
         print(f"주식 목록: {target_columns[:10]}... (총 {len(target_columns)}개)")
         
         return target_columns
     except Exception as e:
-        print(f"⚠️ 경고: DB에서 주식 목록 조회 중 오류 발생: {str(e)}")
+        print(f"⚠️ 경고: MongoDB에서 주식 목록 조회 중 오류 발생: {str(e)}")
         print("⚠️ 경고: 하드코딩된 기본 주식 목록을 사용합니다. DB 연결을 확인하세요.")
         import traceback
         traceback.print_exc()
-        # 오류 발생 시 기본값 반환 (fallback)
-        return [
-            '애플', '마이크로소프트', '아마존', '구글 A', '구글 C', '메타',
-            '테슬라', '엔비디아', '인텔', '마이크론', '브로드컴',
-            '텍사스 인스트루먼트', 'AMD', '어플라이드 머티리얼즈',
-            '셀레스티카', '버티브 홀딩스', '비스트라 에너지', '블룸에너지', '오클로', '팔란티어',
-            '세일즈포스', '오라클', '앱플로빈', '팔로알토 네트웍스', '크라우드 스트라이크',
-            '스노우플레이크', 'TSMC', '크리도 테크놀로지 그룹 홀딩', '로빈후드', '일라이릴리',
-            '월마트', '존슨앤존슨', 'S&P 500 ETF', 'QQQ ETF'
-        ]
+        return _get_default_target_columns()
+
+def _get_default_target_columns():
+    """기본 주식 목록 반환 (fallback)"""
+    return [
+        '애플', '마이크로소프트', '아마존', '구글 A', '구글 C', '메타',
+        '테슬라', '엔비디아', '인텔', '마이크론', '브로드컴',
+        '텍사스 인스트루먼트', 'AMD', '어플라이드 머티리얼즈',
+        '셀레스티카', '버티브 홀딩스', '비스트라 에너지', '블룸에너지', '오클로', '팔란티어',
+        '세일즈포스', '오라클', '앱플로빈', '팔로알토 네트웍스', '크라우드 스트라이크',
+        '스노우플레이크', 'TSMC', '크리도 테크놀로지 그룹 홀딩', '로빈후드', '일라이릴리',
+        '월마트', '존슨앤존슨', 'S&P 500 ETF', 'QQQ ETF'
+    ]
 
 target_columns = get_target_columns_from_db()
 
@@ -977,12 +957,16 @@ if final_nan_count > 0:
 else:
     print("✅ 모든 데이터가 유효합니다.")
 
-# # 결과를 Supabase에 저장
+# 결과를 MongoDB에 저장
 def save_predictions_to_db(result_df):
     try:
         # 입력 데이터 검증
         if result_df is None or len(result_df) == 0:
             print("경고: 저장할 데이터가 없습니다.")
+            return False
+
+        if db is None:
+            print("❌ MongoDB 연결이 없습니다. 저장을 건너뜁니다.")
             return False
 
         # 저장 전 최종 검증
@@ -997,13 +981,11 @@ def save_predictions_to_db(result_df):
         print(f"Actual 컬럼 수: {len(actual_cols)}")
         
         # Predicted 컬럼의 유효성 확인
-        for col in predicted_cols:
+        for col in predicted_cols[:5]:  # 처음 5개만 출력
             nan_count = result_df[col].isna().sum()
-            null_count = (result_df[col] == None).sum() if None in result_df[col].values else 0
-            if nan_count > 0 or null_count > 0:
-                print(f"⚠️ 경고: {col}에 {nan_count}개 NaN, {null_count}개 None이 있습니다!")
+            if nan_count > 0:
+                print(f"⚠️ 경고: {col}에 {nan_count}개 NaN이 있습니다!")
             else:
-                # 값이 있는지 확인
                 valid_count = result_df[col].notna().sum()
                 if valid_count == 0:
                     print(f"⚠️ 경고: {col}에 유효한 값이 없습니다!")
@@ -1011,24 +993,20 @@ def save_predictions_to_db(result_df):
                     sample_val = result_df[col].iloc[0]
                     print(f"  ✓ {col}: {valid_count}개 유효값, 샘플: {sample_val}")
         
-        # NaN 값을 None으로 변환 (JSON 직렬화를 위해 필수)
-        # Supabase는 NaN을 지원하지 않으므로 None(null)로 변환해야 함
+        # NaN/inf 값 처리
         result_df_clean = result_df.copy()
         
-        # 먼저 모든 NaN을 확인하고 로그 출력
         nan_count_before = result_df_clean.isna().sum().sum()
         if nan_count_before > 0:
-            print(f"⚠️ 경고: {nan_count_before}개의 NaN이 발견되었습니다. 0으로 채운 후 저장합니다.")
+            print(f"⚠️ 경고: {nan_count_before}개의 NaN이 발견되었습니다. 0으로 채웁니다.")
             result_df_clean = result_df_clean.fillna(0)
         
-        # inf 값도 처리
         result_df_clean = result_df_clean.replace([np.inf, -np.inf], 0)
         
-        # 기존 테이블이 없으면 생성 (predicted_stocks 테이블에 저장)
         records = result_df_clean.to_dict('records')
         print(f"저장할 레코드 수: {len(records)}")
         
-        # 날짜 정보 확인 및 출력
+        # 날짜 정보 확인
         if len(records) > 0:
             dates_in_data = [record.get('날짜') for record in records if '날짜' in record]
             unique_dates = sorted(set(dates_in_data))
@@ -1036,76 +1014,8 @@ def save_predictions_to_db(result_df):
             print(f"총 레코드 수: {len(records)}")
             print(f"고유 날짜 수: {len(unique_dates)}")
             print(f"날짜 범위: {unique_dates[0] if unique_dates else 'N/A'} ~ {unique_dates[-1] if unique_dates else 'N/A'}")
-            if len(unique_dates) <= 10:
-                print(f"모든 날짜: {unique_dates}")
-            else:
-                print(f"처음 5개 날짜: {unique_dates[:5]}")
-                print(f"마지막 5개 날짜: {unique_dates[-5:]}")
-        
-        # 첫 번째 레코드 샘플 확인
-        if len(records) > 0:
-            first_record = records[0]
-            predicted_in_first = {k: v for k, v in first_record.items() if '_Predicted' in k}
-            print(f"\n첫 번째 레코드의 날짜: {first_record.get('날짜', 'N/A')}")
-            print(f"첫 번째 레코드의 Predicted 값 샘플 (처음 5개):")
-            for i, (key, val) in enumerate(list(predicted_in_first.items())[:5]):
-                print(f"  {key}: {val} (type: {type(val).__name__})")
-                if val is None or (isinstance(val, float) and np.isnan(val)):
-                    print(f"    ⚠️ 이 값이 NULL로 저장될 것입니다!")
-            
-            # 마지막 레코드도 확인
-            if len(records) > 1:
-                last_record = records[-1]
-                print(f"\n마지막 레코드의 날짜: {last_record.get('날짜', 'N/A')}")
 
-        # 테이블에 먼저 데이터 삭제 후 새로 삽입
-        delete_response = supabase.table("predicted_stocks").delete().neq("id", 0).execute()
-        print(f"기존 데이터 삭제 완료")
-
-        # 일괄 삽입 (큰 데이터라면 청크로 나누어 삽입)
-        chunk_size = 100
-        total_inserted = 0
-        for i in range(0, len(records), chunk_size):
-            chunk = records[i:i+chunk_size]
-            
-            # 각 청크의 NaN/None 값을 0으로 변환 (이중 안전장치)
-            # ⚠️ 중요: None으로 변환하면 DB에 NULL로 저장되므로 0으로 변환
-            for record in chunk:
-                for key, value in record.items():
-                    # Predicted/Actual 컬럼의 경우 None이나 NaN을 0으로 변환
-                    if '_Predicted' in key or '_Actual' in key:
-                        if value is None:
-                            print(f"⚠️ 경고: {key}에 None 값 발견! 0으로 변환합니다.")
-                            record[key] = 0
-                        elif isinstance(value, (float, np.floating)):
-                            if np.isnan(value):
-                                print(f"⚠️ 경고: {key}에 NaN 값 발견! 0으로 변환합니다.")
-                                record[key] = 0
-                            elif np.isinf(value):
-                                print(f"⚠️ 경고: {key}에 Inf 값 발견! 0으로 변환합니다.")
-                                record[key] = 0
-            
-            try:
-                response = supabase.table("predicted_stocks").insert(chunk).execute()
-                total_inserted += len(chunk)
-                print(f"청크 {i//chunk_size + 1}: {len(chunk)}개 레코드 삽입 완료")
-            except Exception as chunk_error:
-                print(f"청크 {i//chunk_size + 1} 삽입 실패: {chunk_error}")
-                print(f"문제가 있는 청크의 첫 번째 레코드 샘플: {chunk[0] if chunk else 'None'}")
-                # 첫 번째 레코드의 Predicted 값 확인
-                if chunk and len(chunk) > 0:
-                    first_predicted = {k: v for k, v in chunk[0].items() if '_Predicted' in k}
-                    print(f"첫 번째 레코드의 Predicted 값: {dict(list(first_predicted.items())[:5])}")
-                raise
-
-        print(f"총 {total_inserted}개의 예측 결과가 Supabase에 저장되었습니다.")
-        
-        # 저장 확인
-        count_response = supabase.table("predicted_stocks").select("id", count="exact").execute()
-        saved_count = count_response.count
-        print(f"저장 확인: predicted_stocks 테이블에 {saved_count}개 레코드가 있습니다.")
-        
-        # MongoDB에도 저장
+        # MongoDB에 저장
         if db is not None:
             print("\n=== MongoDB에 예측 데이터 저장 시작 ===")
             try:
@@ -1315,8 +1225,7 @@ def save_predictions_to_db(result_df):
                 print(f"⚠️ MongoDB 저장 중 오류 발생: {str(mongo_error)}")
                 import traceback
                 traceback.print_exc()
-        else:
-            print("⚠️ MongoDB 연결이 없어 MongoDB 저장을 건너뜁니다.")
+                return False
         
         return True
     except Exception as e:
@@ -1373,37 +1282,95 @@ print(f"모든 예측 결과가 DB에 저장되었습니다.")
 # (0) Get Predictions From DB Function
 ######################
 
-# Supabase에서 예측 데이터 가져오기 (청크 단위)
+# MongoDB에서 예측 데이터 가져오기
 def get_predictions_from_db(chunk_size=1000):
     try:
-        # 전체 레코드 수 확인
-        count_response = supabase.table("predicted_stocks").select("id", count="exact").execute()
-        total_count = count_response.count
-        print(f"predicted_stocks 테이블의 총 레코드 수: {total_count}")
-
-        # 데이터가 없으면 빈 DataFrame 반환
-        if total_count == 0:
-            print("경고: predicted_stocks 테이블이 비어있습니다.")
+        if db is None:
+            print("❌ MongoDB 연결이 없습니다.")
             return pd.DataFrame()
-
-        # 데이터를 저장할 빈 리스트
+        
+        # stock_predictions 컬렉션에서 데이터 가져오기
+        print("\n=== MongoDB stock_predictions 컬렉션에서 데이터 조회 ===")
+        
+        # 총 문서 수 확인
+        total_count = db.stock_predictions.count_documents({})
+        print(f"stock_predictions 컬렉션의 총 문서 수: {total_count}")
+        
+        if total_count == 0:
+            print("경고: stock_predictions 컬렉션이 비어있습니다.")
+            return pd.DataFrame()
+        
+        # stocks 컬렉션에서 티커 -> 주식명 매핑 생성
+        ticker_to_name = {}
+        try:
+            stocks = db.stocks.find({"is_active": True})
+            for stock in stocks:
+                ticker = stock.get("ticker")
+                stock_name = stock.get("stock_name")
+                if ticker and stock_name:
+                    ticker_to_name[ticker] = stock_name
+            print(f"티커 -> 주식명 매핑 {len(ticker_to_name)}개 생성 완료")
+        except Exception as e:
+            print(f"⚠️ 티커 -> 주식명 매핑 생성 실패: {e}")
+        
+        # 일반 find()로 데이터 가져오기 (aggregation/sort 제거 - Shared Tier 메모리 제한 회피)
+        # MongoDB에서 정렬하지 않고 Python에서 처리
+        print("stock_predictions에서 데이터 조회 중... (정렬 없이)")
+        cursor = db.stock_predictions.find(
+            {},
+            {"date": 1, "ticker": 1, "predicted_price": 1, "actual_price": 1, "_id": 0}
+        ).batch_size(5000)  # 배치 크기 설정으로 메모리 효율화
+        
+        # Python에서 날짜별로 그룹화
+        from collections import defaultdict
+        date_groups = defaultdict(list)
+        
+        doc_count = 0
+        for doc in cursor:
+            doc_count += 1
+            if doc_count % 50000 == 0:
+                print(f"  {doc_count}개 문서 처리 중...")
+            date_val = doc.get("date")
+            if date_val:
+                date_groups[date_val].append({
+                    "ticker": doc.get("ticker"),
+                    "predicted_price": doc.get("predicted_price"),
+                    "actual_price": doc.get("actual_price")
+                })
+        
+        print(f"총 {doc_count}개 문서 조회, {len(date_groups)}개 날짜로 그룹화 완료")
+        
+        # Python에서 날짜순으로 정렬
+        results = [{"_id": date, "predictions": preds} for date, preds in sorted(date_groups.items())]
+        print(f"날짜별 그룹화된 결과: {len(results)}개 날짜")
+        
+        if len(results) == 0:
+            return pd.DataFrame()
+        
+        # DataFrame 형태로 변환 (기존 Supabase 형식과 호환)
         all_data = []
-
-        # 청크 단위로 데이터 가져오기
-        for offset in range(0, total_count, chunk_size):
-            response = (
-                supabase.table("predicted_stocks")
-                .select("*")
-                .order("날짜", desc=False)
-                .limit(chunk_size)
-                .offset(offset)
-                .execute()
-            )
-            chunk_data = response.data
-            print(f"오프셋 {offset}에서 {len(chunk_data)}개 데이터를 가져왔습니다.")
-            all_data.extend(chunk_data)
-
-        # 모든 데이터를 DataFrame으로 변환
+        for result in results:
+            date_val = result["_id"]
+            if isinstance(date_val, datetime):
+                date_str = date_val.strftime('%Y-%m-%d')
+            else:
+                date_str = str(date_val)
+            
+            row = {"날짜": date_str}
+            
+            for pred in result["predictions"]:
+                ticker = pred.get("ticker")
+                stock_name = ticker_to_name.get(ticker, ticker)  # 주식명으로 변환, 없으면 티커 사용
+                
+                predicted_price = pred.get("predicted_price")
+                actual_price = pred.get("actual_price")
+                
+                if stock_name:
+                    row[f"{stock_name}_Predicted"] = predicted_price if predicted_price is not None else 0
+                    row[f"{stock_name}_Actual"] = actual_price if actual_price is not None else 0
+            
+            all_data.append(row)
+        
         df = pd.DataFrame(all_data)
         print(f"총 {len(df)}개 데이터를 성공적으로 가져왔습니다!")
         
@@ -1416,19 +1383,14 @@ def get_predictions_from_db(chunk_size=1000):
         actual_cols = [col for col in df.columns if '_Actual' in str(col)]
         print(f"Predicted 컬럼 수: {len(predicted_cols)}, 샘플: {predicted_cols[:5]}")
         print(f"Actual 컬럼 수: {len(actual_cols)}, 샘플: {actual_cols[:5]}")
-
-        # 빈 DataFrame인 경우 체크
-        if len(df) == 0:
-            print("경고: 가져온 데이터가 없습니다.")
-            return pd.DataFrame()
-
-        # 날짜 열이 있는지 확인 후 datetime으로 변환
+        
+        # 날짜 열을 datetime으로 변환
         if '날짜' in df.columns:
             df['날짜'] = pd.to_datetime(df['날짜'])
         else:
             print("경고: '날짜' 컬럼이 데이터에 없습니다.")
             return pd.DataFrame()
-
+        
         return df
     except Exception as e:
         print(f"데이터 가져오기 오류: {e}")
@@ -1436,7 +1398,7 @@ def get_predictions_from_db(chunk_size=1000):
         traceback.print_exc()
         return None
 
-# 결과를 Supabase에 저장
+# 결과를 MongoDB에 저장
 def save_analysis_to_db(result_df):
     try:
         # 입력 데이터 검증
@@ -1444,54 +1406,23 @@ def save_analysis_to_db(result_df):
             print("경고: 저장할 분석 결과 데이터가 없습니다.")
             return False
         
-        # NaN 값을 None으로 변환 (JSON 직렬화를 위해 필수)
-        # Supabase는 NaN을 지원하지 않으므로 None(null)로 변환해야 함
+        if db is None:
+            print("❌ MongoDB 연결이 없습니다. 저장을 건너뜁니다.")
+            return False
+        
+        # NaN/inf 값 처리
         result_df_clean = result_df.copy()
         result_df_clean = result_df_clean.replace([np.nan, np.inf, -np.inf], None)
         
-        # stock_analysis_results 테이블에 저장
         records = result_df_clean.to_dict('records')
         
-        # NaN이 남아있는지 확인 (디버깅용)
         nan_count = result_df.isna().sum().sum()
         if nan_count > 0:
             print(f"경고: {nan_count}개의 NaN 값이 None으로 변환되었습니다.")
         
         print(f"저장할 분석 결과 레코드 수: {len(records)}")
-
-        # 테이블에 먼저 데이터 삭제 후 새로 삽입
-        supabase.table("stock_analysis_results").delete().neq("id", 0).execute()
-        print("기존 분석 결과 데이터 삭제 완료")
-
-        # 일괄 삽입 (큰 데이터라면 청크로 나누어 삽입)
-        chunk_size = 100
-        total_inserted = 0
-        for i in range(0, len(records), chunk_size):
-            chunk = records[i:i+chunk_size]
-            
-            # 각 청크의 NaN 값을 None으로 변환 (이중 안전장치)
-            for record in chunk:
-                for key, value in record.items():
-                    if isinstance(value, (float, np.floating)) and (np.isnan(value) or np.isinf(value)):
-                        record[key] = None
-            
-            try:
-                response = supabase.table("stock_analysis_results").insert(chunk).execute()
-                total_inserted += len(chunk)
-                print(f"청크 {i//chunk_size + 1}: {len(chunk)}개 레코드 삽입 완료")
-            except Exception as chunk_error:
-                print(f"청크 {i//chunk_size + 1} 삽입 실패: {chunk_error}")
-                print(f"문제가 있는 청크의 첫 번째 레코드 샘플: {chunk[0] if chunk else 'None'}")
-                raise
-
-        print(f"총 {total_inserted}개의 분석 결과가 Supabase에 저장되었습니다.")
         
-        # 저장 확인
-        count_response = supabase.table("stock_analysis_results").select("id", count="exact").execute()
-        saved_count = count_response.count
-        print(f"저장 확인: stock_analysis_results 테이블에 {saved_count}개 레코드가 있습니다.")
-        
-        # MongoDB에도 저장
+        # MongoDB에 저장
         if db is not None:
             print("\n=== MongoDB에 분석 결과 저장 시작 ===")
             try:
@@ -1518,15 +1449,18 @@ def save_analysis_to_db(result_df):
                 print(f"MongoDB stock_analysis 컬렉션에 종목별 분석 데이터 저장 중...")
                 stock_analysis_updates = []
                 
+                skipped_no_ticker = 0
                 for record in records:
                     stock_name = record.get('Stock')
                     if not stock_name:
                         continue
-                    
+
                     ticker = stock_to_ticker_map.get(stock_name)
                     if not ticker:
-                        continue
-                    
+                        # 티커 매핑이 없으면 주식명을 티커로 사용
+                        ticker = stock_name
+                        skipped_no_ticker += 1
+
                     try:
                         # 분석 데이터 구조화
                         metrics = {
@@ -1571,6 +1505,10 @@ def save_analysis_to_db(result_df):
                         print(f"⚠️ {stock_name} ({ticker}) 분석 데이터 준비 실패: {str(e)}")
                 
                 # Bulk write 실행 (배치로 나누어 처리)
+                print(f"stock_analysis_updates 개수: {len(stock_analysis_updates)}")
+                if skipped_no_ticker > 0:
+                    print(f"⚠️ 티커 매핑 없이 주식명을 티커로 사용한 종목: {skipped_no_ticker}개")
+                
                 if stock_analysis_updates:
                     batch_size = 1000
                     total_processed = 0
@@ -1597,6 +1535,8 @@ def save_analysis_to_db(result_df):
                                     print(f"⚠️ Fallback 업데이트 실패: {str(fallback_e)}")
                     
                     print(f"✅ MongoDB stock_analysis 컬렉션에 총 {total_processed}개 문서 저장 완료")
+                else:
+                    print(f"⚠️ stock_analysis_updates가 비어있습니다. 저장할 데이터가 없습니다.")
                 
                 # 2. daily_stock_data.analysis 필드에 저장 (날짜별 통합) - Bulk Write 사용
                 print(f"MongoDB daily_stock_data.analysis 필드에 날짜별 통합 분석 데이터 저장 중...")
@@ -1609,7 +1549,8 @@ def save_analysis_to_db(result_df):
                     
                     ticker = stock_to_ticker_map.get(stock_name)
                     if not ticker:
-                        continue
+                        # 티커 매핑이 없으면 주식명을 티커로 사용
+                        ticker = stock_name
                     
                     try:
                         analysis_data[ticker] = {
@@ -1653,8 +1594,7 @@ def save_analysis_to_db(result_df):
                 print(f"⚠️ MongoDB 저장 중 오류 발생: {str(mongo_error)}")
                 import traceback
                 traceback.print_exc()
-        else:
-            print("⚠️ MongoDB 연결이 없어 MongoDB 저장을 건너뜁니다.")
+                return False
         
         return True
     except Exception as e:
@@ -1929,22 +1869,22 @@ def generate_analysis(row):
 print("=" * 60)
 print("[2단계] 예측 결과 분석 시작")
 print("=" * 60)
-# 1) Load Data from Supabase (predicted_stocks 테이블에서 읽기)
-print("predicted_stocks 테이블에서 데이터 로드 중...")
+# 1) Load Data from MongoDB (stock_predictions 컬렉션에서 읽기)
+print("MongoDB stock_predictions 컬렉션에서 데이터 로드 중...")
 data = get_predictions_from_db(chunk_size=1000)
 if data is None:
     print("데이터를 가져오는데 실패했습니다. (None 반환)")
     exit(1)
 if len(data) == 0:
     print("=" * 60)
-    print("경고: predicted_stocks 테이블이 비어있습니다!")
+    print("경고: MongoDB stock_predictions 컬렉션이 비어있습니다!")
     print("=" * 60)
-    print("\n모델 학습 및 예측을 실행하여 predicted_stocks 테이블에 데이터를 생성해야 합니다.")
-    print("코드의 178-361줄 부분(모델 학습 및 예측)을 먼저 실행해주세요.")
+    print("\n모델 학습 및 예측을 실행하여 stock_predictions 컬렉션에 데이터를 생성해야 합니다.")
+    print("코드의 [1단계] 부분(모델 학습 및 예측)을 먼저 실행해주세요.")
     print("\n또는 전체 스크립트를 처음부터 실행하면 자동으로:")
-    print("  1) 모델 학습 및 예측 (178-361줄)")
-    print("  2) predicted_stocks 테이블에 저장 (335줄)")
-    print("  3) 결과 분석 (712줄 이후)")
+    print("  1) 모델 학습 및 예측")
+    print("  2) stock_predictions 컬렉션에 저장")
+    print("  3) 결과 분석")
     print("순서로 실행됩니다.")
     print("=" * 60)
     exit(1)
@@ -2015,9 +1955,9 @@ column_order = [
 ]
 final_results = final_results[column_order]
 
-# 9) Save final results to Supabase
+# 9) Save final results to MongoDB
 save_analysis_to_db(final_results)
-print("\n분석 결과가 'stock_analysis_results' 테이블에 저장되었습니다.")
+print("\n분석 결과가 MongoDB 'stock_analysis' 컬렉션에 저장되었습니다.")
 
 # 10) Print final report
 print("=============== Final Report ===============")

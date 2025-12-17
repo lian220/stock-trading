@@ -24,7 +24,7 @@ async def trigger_colab_job(
     ### 실행 내용
     - Vertex AI Job을 통해 predict.py 실행
     - AI 예측 모델 학습 및 예측 수행
-    - 결과를 Supabase에 저장
+    - 결과를 MongoDB에 저장
     
     ### 파라미터
     - **send_slack_notification**: Slack 알림 전송 여부 (기본값: False)

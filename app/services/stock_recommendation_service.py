@@ -2,7 +2,6 @@ import pandas as pd
 import requests
 import time
 from datetime import datetime, timedelta
-from app.db.supabase import supabase
 from app.db.mongodb import get_db
 import numpy as np
 from app.core.config import settings
@@ -54,7 +53,7 @@ class StockRecommendationService:
         return macd, signal
 
     def generate_technical_recommendations(self, send_slack_notification: bool = False, start_date: str = None, end_date: str = None):
-        """기술적 지표를 기반으로 추천 데이터를 생성하고 Supabase에 저장
+        """기술적 지표를 기반으로 추천 데이터를 생성하고 MongoDB에 저장
         
         Args:
             send_slack_notification: Slack 알림 전송 여부 (기본값: False, 스케줄러에서 관리)
@@ -267,24 +266,19 @@ class StockRecommendationService:
             logger.warning(f"⚠️ {error_msg}")
             return {"message": error_msg, "data": []}
 
-        # 기존 데이터 삭제 후 새 데이터 저장
+        # MongoDB에 저장
         try:
             # 가장 최근 날짜 사용 (recommendations의 첫 번째 항목에서 가져옴)
             today_str = recommendations[0].get("날짜")
             if not today_str:
                 logger.error("⚠️ 추천 데이터에 날짜가 없습니다.")
                 return {"message": "추천 데이터에 날짜가 없습니다", "data": []}
-            supabase.table("stock_recommendations").delete().eq("날짜", today_str).execute()
-            
-            # 새 데이터 삽입 (UPSERT 사용하여 중복 시 업데이트)
-            # upsert는 기본 키("날짜", "종목")가 중복되면 업데이트, 없으면 삽입
-            supabase.table("stock_recommendations").upsert(recommendations).execute()
             
             # 하나의 상세한 로그로 통합
             recommended_count = len([r for r in recommendations if r.get('추천_여부', False)])
             logger.info(f"기술적 지표 분석 완료: {today_str} 기준 {len(recommendations)}개 종목 분석, 추천 종목 {recommended_count}개")
             
-            # Supabase 저장 성공 후 MongoDB에도 저장
+            # MongoDB에 저장
             try:
                 db = get_db()
                 if db is not None:
@@ -388,10 +382,9 @@ class StockRecommendationService:
                     else:
                         logger.info(f"ℹ️ MongoDB가 비활성화되어 있습니다. (USE_MONGODB=False)")
                 else:
-                    logger.warning(f"⚠️ MongoDB 연결 실패 (Supabase는 성공): {today_str}")
+                    logger.warning(f"⚠️ MongoDB 연결 실패: {today_str}")
             except Exception as mongo_e:
-                # MongoDB 저장 실패해도 Supabase 저장은 성공으로 처리
-                logger.warning(f"⚠️ MongoDB 저장 실패 (Supabase는 성공): {str(mongo_e)}")
+                logger.warning(f"⚠️ MongoDB 저장 실패: {str(mongo_e)}")
                 import traceback
                 logger.warning(traceback.format_exc())
         
@@ -456,7 +449,7 @@ class StockRecommendationService:
                 logger.info("MongoDB stock_analysis에서 조건을 만족하는 데이터가 없음")
                 return {"message": "분석 결과를 찾을 수 없습니다", "recommendations": []}
 
-            # MongoDB 구조를 Supabase 형식으로 변환
+            # MongoDB 구조를 API 응답 형식으로 변환
             recommendations = []
             for doc in data:
                 metrics = doc.get("metrics", {})
@@ -554,7 +547,7 @@ class StockRecommendationService:
 
     def fetch_and_store_sentiment_for_recommendations(self, start_date: str = None, end_date: str = None):
         """
-        추천 주식과 보유 중인 주식에 대해 뉴스 감정 데이터를 가져오고, Supabase와 MongoDB에 저장하며,
+        추천 주식과 보유 중인 주식에 대해 뉴스 감정 데이터를 가져오고, MongoDB에 저장하며,
         감정 분석과 추천 정보를 통합하여 반환합니다.
         
         MongoDB 하이브리드 접근법:
@@ -634,10 +627,11 @@ class StockRecommendationService:
         # 보유 주식 정보를 ticker로 매핑
         holdings_by_ticker = {item.get("ovrs_pdno"): item for item in holdings if item.get("ovrs_pdno")}
 
-        # 기존 감정 분석 데이터 삭제
-        print("기존 감정 분석 데이터 삭제 중...")
-        supabase.table("ticker_sentiment_analysis").delete().gte("ticker", "").execute()
-        print("기존 감정 분석 데이터 삭제 완료")
+        # MongoDB 연결
+        db = get_db()
+        if db is None:
+            logger.error("MongoDB 연결 실패 - 감정 분석 불가")
+            return {"message": "MongoDB 연결 실패", "results": []}
 
         results = []
         for ticker in all_tickers:
@@ -685,22 +679,29 @@ class StockRecommendationService:
             article_count = len(articles)
             calculation_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             
-            # 해당 티커에 대한 데이터 추가
-            # 테이블 스키마에 맞게 필드 조정
-            supabase_data = {
-                "ticker": ticker,
-                "average_sentiment_score": average_sentiment,
-                "article_count": article_count,
-                "calculation_date": calculation_date
-            }
-            supabase.table("ticker_sentiment_analysis").insert(supabase_data).execute()
+            # MongoDB에 감정 분석 데이터 upsert (ticker 기준)
+            db.sentiment_analysis.update_one(
+                {"ticker": ticker},
+                {
+                    "$set": {
+                        "average_sentiment_score": average_sentiment,
+                        "article_count": article_count,
+                        "calculation_date": calculation_date,
+                        "updated_at": datetime.now()
+                    },
+                    "$setOnInsert": {
+                        "created_at": datetime.now()
+                    }
+                },
+                upsert=True
+            )
 
             results.append({
                 "ticker": ticker,
                 "stock_name": ticker_to_stock.get(ticker, ticker),
                 "average_sentiment_score": average_sentiment,
                 "article_count": article_count,
-                "calculation_date": calculation_date,  # MongoDB 저장 시 사용
+                "calculation_date": calculation_date,
                 "is_recommended": ticker in recommended_tickers,
                 "is_holding": ticker in holding_tickers,
                 "recommendation_info": recommendations_by_ticker.get(ticker, {}),
@@ -708,7 +709,7 @@ class StockRecommendationService:
             })
             time.sleep(sleep_interval)
 
-        # Supabase 저장 성공 후 MongoDB에도 저장 (하이브리드 접근법)
+        # daily_stock_data에 sentiment 정보 저장
         try:
             db = get_db()
             if db is not None:
@@ -804,10 +805,9 @@ class StockRecommendationService:
                 else:
                     logger.info(f"ℹ️ MongoDB가 비활성화되어 있습니다. (USE_MONGODB=False)")
             else:
-                logger.warning(f"⚠️ MongoDB 연결 실패 (Supabase는 성공)")
+                logger.warning(f"⚠️ MongoDB 연결 실패")
         except Exception as mongo_e:
-            # MongoDB 저장 실패해도 Supabase 저장은 성공으로 처리
-            logger.warning(f"⚠️ MongoDB 저장 실패 (Supabase는 성공): {str(mongo_e)}")
+            logger.warning(f"⚠️ MongoDB 저장 실패: {str(mongo_e)}")
             import traceback
             logger.warning(traceback.format_exc())
 
@@ -867,10 +867,11 @@ class StockRecommendationService:
         # 보유 주식 정보를 ticker로 매핑
         holdings_by_ticker = {item.get("ovrs_pdno"): item for item in holdings if item.get("ovrs_pdno")}
 
-        # 기존 감정 분석 데이터 삭제
-        print("기존 감정 분석 데이터 삭제 중...")
-        supabase.table("ticker_sentiment_analysis").delete().gte("ticker", "").execute()
-        print("기존 감정 분석 데이터 삭제 완료")
+        # MongoDB 연결
+        db = get_db()
+        if db is None:
+            logger.error("MongoDB 연결 실패 - 감정 분석 불가")
+            return {"message": "MongoDB 연결 실패", "results": []}
 
         results = []
         for ticker in all_tickers:
@@ -916,14 +917,22 @@ class StockRecommendationService:
             article_count = len(articles)
             calculation_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             
-            # Supabase에 데이터 저장
-            supabase_data = {
-                "ticker": ticker,
-                "average_sentiment_score": average_sentiment,
-                "article_count": article_count,
-                "calculation_date": calculation_date
-            }
-            supabase.table("ticker_sentiment_analysis").insert(supabase_data).execute()
+            # MongoDB에 감정 분석 데이터 upsert (ticker 기준)
+            db.sentiment_analysis.update_one(
+                {"ticker": ticker},
+                {
+                    "$set": {
+                        "average_sentiment_score": average_sentiment,
+                        "article_count": article_count,
+                        "calculation_date": calculation_date,
+                        "updated_at": datetime.now()
+                    },
+                    "$setOnInsert": {
+                        "created_at": datetime.now()
+                    }
+                },
+                upsert=True
+            )
 
             results.append({
                 "ticker": ticker,
@@ -970,7 +979,7 @@ class StockRecommendationService:
                 mongo_tech_data = list(cursor)
 
                 if mongo_tech_data:
-                    # MongoDB 필드명을 Supabase 형식으로 변환
+                    # MongoDB 필드명을 API 응답 형식으로 변환
                     for doc in mongo_tech_data:
                         tech_indicators = doc.get("technical_indicators", {})
                         tech_data.append({

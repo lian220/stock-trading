@@ -1,12 +1,36 @@
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends, Query
 from app.schemas.stock import UpdateResponse
 from app.utils.scheduler import run_economic_data_update_now
-from app.services.economic_service import update_economic_data_in_background
+from app.services.economic_service import update_economic_data_in_background, get_last_updated_date
 from datetime import date, datetime
 from typing import Optional
 import pytz
 
 router = APIRouter()
+
+
+@router.get("/last-updated", summary="마지막 경제 데이터 업데이트 날짜 조회")
+async def get_last_updated():
+    """
+    MongoDB에 저장된 경제 데이터의 마지막 업데이트 날짜를 조회합니다.
+    """
+    try:
+        last_date = get_last_updated_date()
+        # get_last_updated_date()는 문자열(YYYY-MM-DD) 또는 None을 반환
+        if last_date and last_date != "2006-01-01":
+            return {
+                "success": True,
+                "last_updated_date": last_date,
+                "message": f"마지막 업데이트: {last_date}"
+            }
+        else:
+            return {
+                "success": True,
+                "last_updated_date": None,
+                "message": "업데이트된 데이터가 없습니다."
+            }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"조회 중 오류 발생: {str(e)}")
 
 @router.post("/update", summary="경제 및 주식 데이터 업데이트", response_model=UpdateResponse)
 async def update_economic_data(
@@ -15,7 +39,7 @@ async def update_economic_data(
     end_date: Optional[str] = Query(None, description="수집 종료 날짜 (YYYY-MM-DD 형식, 기본값: 오늘)")
 ):
     """
-    경제 및 주식 데이터를 Supabase와 MongoDB에 저장합니다.
+    경제 및 주식 데이터를 MongoDB에 저장합니다.
     이 작업은 백그라운드에서 실행되어 API 응답을 블로킹하지 않습니다.
     
     **날짜 범위 설정:**

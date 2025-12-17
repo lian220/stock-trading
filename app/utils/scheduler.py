@@ -166,10 +166,6 @@ class StockScheduler:
             
             # 환경변수 설정
             env = os.environ.copy()
-            if hasattr(settings, 'SUPABASE_URL') and settings.SUPABASE_URL:
-                env['SUPABASE_URL'] = settings.SUPABASE_URL
-            if hasattr(settings, 'SUPABASE_KEY') and settings.SUPABASE_KEY:
-                env['SUPABASE_KEY'] = settings.SUPABASE_KEY
             if hasattr(settings, 'GCP_PROJECT_ID') and settings.GCP_PROJECT_ID:
                 env['GCP_PROJECT_ID'] = settings.GCP_PROJECT_ID
             if hasattr(settings, 'GCP_REGION') and settings.GCP_REGION:
@@ -261,12 +257,8 @@ class StockScheduler:
             return False
         
         try:
-            # 환경변수 설정 (Supabase 연결 정보)
+            # 환경변수 설정
             env = os.environ.copy()
-            if hasattr(settings, 'SUPABASE_URL') and settings.SUPABASE_URL:
-                env['SUPABASE_URL'] = settings.SUPABASE_URL
-            if hasattr(settings, 'SUPABASE_KEY') and settings.SUPABASE_KEY:
-                env['SUPABASE_KEY'] = settings.SUPABASE_KEY
             
             # predict.py 실행 (최대 2시간 타임아웃)
             logger.info(f"predict.py 실행 중... (경로: {predict_path})")
