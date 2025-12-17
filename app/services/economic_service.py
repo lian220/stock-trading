@@ -7,7 +7,8 @@ import pytz
 from app.core.config import settings
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends
 from app.services.stock_recommendation_service import StockRecommendationService
-from app.services.stock_service import get_stock_to_ticker_mapping
+from app.services.stock_service import get_stock_to_ticker_mapping, get_ticker_to_stock_mapping
+from app.utils.slack_notifier import slack_notifier
 import httpx
 import time
 import os
@@ -429,6 +430,20 @@ async def update_economic_data_in_background(start_date: str = None, end_date: s
             today=fetch_result['today'],
             short_interest_data=fetch_result.get('short_interest_data', {})
         )
+        
+        # 3. 공매도 정보 슬랙 전송
+        short_interest_data = fetch_result.get('short_interest_data', {})
+        if short_interest_data:
+            try:
+                # 티커 -> 주식명 매핑 생성
+                ticker_to_stock_mapping = get_ticker_to_stock_mapping(exclude_etf=False)
+                # 공매도 정보 슬랙 전송
+                slack_notifier.send_short_interest_notification(
+                    short_interest_data=short_interest_data,
+                    ticker_to_stock_mapping=ticker_to_stock_mapping
+                )
+            except Exception as slack_e:
+                logger.warning(f"공매도 정보 슬랙 전송 중 오류 발생: {str(slack_e)}")
         
         # 참고: 기술적 지표 생성 및 뉴스 감정 분석은 별도 API로 분리됨
         # - 기술적 지표: POST /recommended-stocks/generate-technical-recommendations

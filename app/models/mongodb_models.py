@@ -78,17 +78,17 @@ class UserPreferences(BaseModel):
 
 
 class UserStockEmbedded(BaseModel):
-    """사용자 문서에 embedded되는 종목 정보"""
-    ticker: str
-    stock_name: str
-    stock_name_en: Optional[str] = None
-    is_etf: bool = False
-    leverage_ticker: Optional[str] = None
+    """사용자 문서에 embedded되는 종목 정보 (사용자별 고유 정보만 저장)
+    
+    stocks 컬렉션에 있는 정보(ticker, stock_name, is_etf, leverage_ticker 등)는 
+    stocks 컬렉션을 참조하여 조회합니다.
+    """
+    ticker: str  # stocks 컬렉션 참조용
     use_leverage: bool = False  # 사용자별 레버리지 사용 여부
-    notes: Optional[str] = None
-    tags: Optional[List[str]] = Field(default_factory=list)
-    is_active: bool = True
-    added_at: Optional[datetime] = Field(default_factory=datetime.utcnow)
+    notes: Optional[str] = None  # 사용자 메모
+    tags: Optional[List[str]] = Field(default_factory=list)  # 사용자 정의 태그
+    is_active: bool = True  # 사용자별 활성화 여부 (stocks.is_active와 독립적)
+    added_at: Optional[datetime] = Field(default_factory=datetime.utcnow)  # 관심 종목 추가 일시
 
 
 class User(BaseModel):

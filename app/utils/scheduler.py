@@ -906,7 +906,7 @@ class StockScheduler:
         logger.info(f"[{function_name}] 매수 대상 종목 {len(buy_candidates)}개를 찾았습니다. (종합 점수 높은 순)")
         
         # MongoDB에서 사용자 정보 조회 (레버리지 설정 확인용)
-        user_leverage_map = {}  # ticker -> (use_leverage, leverage_ticker)
+        user_leverage_map = {}  # ticker -> use_leverage (leverage_ticker는 stocks 컬렉션에서 조회)
         try:
             from app.infrastructure.database.mongodb_client import get_mongodb_database
             db = get_mongodb_database()
@@ -920,12 +920,11 @@ class StockScheduler:
                     for stock in user.get("stocks", []):
                         ticker = stock.get("ticker")
                         use_leverage = stock.get("use_leverage", False)
-                        leverage_ticker = stock.get("leverage_ticker")
                         
                         if ticker:
                             user_leverage_map[ticker] = {
-                                "use_leverage": use_leverage,
-                                "leverage_ticker": leverage_ticker
+                                "use_leverage": use_leverage
+                                # leverage_ticker는 stocks 컬렉션에서 조회
                             }
                     
                     logger.info(f"[{function_name}] 사용자 '{user_id}'의 레버리지 설정 로드 완료: {len(user_leverage_map)}개 종목")
@@ -947,17 +946,18 @@ class StockScheduler:
                 ticker = candidate["ticker"]
                 stock_name = candidate["stock_name"]
                 
-                # 사용자의 레버리지 설정 확인
+                # 사용자의 레버리지 설정 확인 (leverage_ticker는 stocks 컬렉션에서 조회)
                 actual_ticker = ticker  # 기본값은 원래 티커
-                if ticker in user_leverage_map:
-                    leverage_info = user_leverage_map[ticker]
-                    if leverage_info["use_leverage"] and leverage_info["leverage_ticker"]:
-                        actual_ticker = leverage_info["leverage_ticker"]
+                if ticker in user_leverage_map and user_leverage_map[ticker]["use_leverage"]:
+                    # stocks 컬렉션에서 레버리지 티커 조회
+                    stock_doc = db.stocks.find_one({"ticker": ticker})
+                    if stock_doc and stock_doc.get("leverage_ticker"):
+                        actual_ticker = stock_doc["leverage_ticker"]
                         logger.info(f"[{function_name}] {stock_name}({ticker}) - 레버리지 활성화, {actual_ticker}로 매수")
                     else:
-                        logger.info(f"[{function_name}] {stock_name}({ticker}) - 일반 티커로 매수")
+                        logger.warning(f"[{function_name}] {stock_name}({ticker}) - 레버리지 설정 활성화되었으나 leverage_ticker가 없음, 일반 티커로 매수")
                 else:
-                    logger.info(f"[{function_name}] {stock_name}({ticker}) - 사용자 설정 없음, 일반 티커로 매수")                
+                    logger.info(f"[{function_name}] {stock_name}({ticker}) - 일반 티커로 매수")                
                 # 거래소 코드 결정 (미국 주식 기준)
                 if actual_ticker.endswith(".X") or actual_ticker.endswith(".N"):
                     # 거래소 구분이 티커에 포함된 경우

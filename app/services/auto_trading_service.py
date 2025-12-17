@@ -137,6 +137,7 @@ class AutoTradingService:
             if recommendations and recommendations.get("results"):
                 # MongoDB에서 사용자별 레버리지 설정 조회
                 user_leverage_map = {}
+                db = None
                 try:
                     from app.infrastructure.database.mongodb_client import get_mongodb_database
                     db = get_mongodb_database()
@@ -149,8 +150,8 @@ class AutoTradingService:
                                 ticker = stock.get("ticker")
                                 if ticker:
                                     user_leverage_map[ticker] = {
-                                        "use_leverage": stock.get("use_leverage", False),
-                                        "leverage_ticker": stock.get("leverage_ticker")
+                                        "use_leverage": stock.get("use_leverage", False)
+                                        # leverage_ticker는 stocks 컬렉션에서 조회
                                     }
                 except Exception as e:
                     logger.error(f"레버리지 설정 조회 실패: {str(e)}")
@@ -160,18 +161,20 @@ class AutoTradingService:
                     if stock.get("composite_score", 0) < config.get("min_composite_score", 2.0):
                         continue
                     
-                    # 레버리지 설정 적용
+                    # 레버리지 설정 적용 (leverage_ticker는 stocks 컬렉션에서 조회)
                     original_ticker = stock.get("ticker")
                     actual_ticker = original_ticker
                     is_leverage = False
                     
-                    if original_ticker in user_leverage_map:
-                        leverage_info = user_leverage_map[original_ticker]
-                        if leverage_info["use_leverage"] and leverage_info["leverage_ticker"]:
-                            actual_ticker = leverage_info["leverage_ticker"]
-                            is_leverage = True
-                            stock["original_ticker"] = original_ticker
-                            stock["note"] = "사용자 설정에 의해 레버리지 티커 적용됨"
+                    if original_ticker in user_leverage_map and user_leverage_map[original_ticker]["use_leverage"]:
+                        # stocks 컬렉션에서 레버리지 티커 조회
+                        if db is not None:
+                            stock_doc = db.stocks.find_one({"ticker": original_ticker})
+                            if stock_doc and stock_doc.get("leverage_ticker"):
+                                actual_ticker = stock_doc["leverage_ticker"]
+                                is_leverage = True
+                                stock["original_ticker"] = original_ticker
+                                stock["note"] = "사용자 설정에 의해 레버리지 티커 적용됨"
                     
                     stock["ticker"] = actual_ticker
                     stock["is_leverage"] = is_leverage

@@ -854,6 +854,140 @@ class SlackNotifier:
         text = f"Vertex AI Job 오류 발생"
         return self.send_message(text, blocks, webhook_type='analysis')
     
+    def send_short_interest_notification(
+        self,
+        short_interest_data: dict,
+        ticker_to_stock_mapping: dict
+    ) -> bool:
+        """
+        공매도 정보 알림을 전송합니다.
+        
+        Args:
+            short_interest_data: 공매도 데이터 딕셔너리 {날짜: {티커: {'short_interest': {...}}}}
+            ticker_to_stock_mapping: 티커 -> 주식명 매핑 딕셔너리
+        
+        Returns:
+            bool: 전송 성공 여부
+        """
+        if not self.analysis_enabled:
+            return False
+        
+        # 공매도 데이터가 없으면 전송하지 않음
+        if not short_interest_data:
+            return False
+        
+        try:
+            # 가장 최근 날짜의 데이터 사용 (공매도 데이터는 날짜별로 동일하므로 첫 번째 날짜 사용)
+            first_date = list(short_interest_data.keys())[0] if short_interest_data else None
+            if not first_date:
+                return False
+            
+            date_short_data = short_interest_data.get(first_date, {})
+            if not date_short_data:
+                return False
+            
+            # 공매도 데이터가 있는 종목만 추출
+            stocks_with_short_data = []
+            for ticker, stock_data in date_short_data.items():
+                short_info = stock_data.get('short_interest', {})
+                if short_info:
+                    stock_name = ticker_to_stock_mapping.get(ticker, ticker)
+                    
+                    shares_short = short_info.get('sharesShort')
+                    shares_short_prior = short_info.get('sharesShortPriorMonth')
+                    short_ratio = short_info.get('shortRatio')
+                    short_percent = short_info.get('shortPercentOfFloat')
+                    
+                    stocks_with_short_data.append({
+                        'ticker': ticker,
+                        'stock_name': stock_name,
+                        'sharesShort': shares_short,
+                        'sharesShortPriorMonth': shares_short_prior,
+                        'shortRatio': short_ratio,
+                        'shortPercentOfFloat': short_percent
+                    })
+            
+            # 공매도 데이터가 있는 종목이 없으면 전송하지 않음
+            if not stocks_with_short_data:
+                return False
+            
+            # 공매도 비율이 높은 순으로 정렬 (shortPercentOfFloat 기준, 없으면 shortRatio 기준)
+            stocks_with_short_data.sort(
+                key=lambda x: x.get('shortPercentOfFloat') or x.get('shortRatio') or 0,
+                reverse=True
+            )
+            
+            # 상위 10개만 표시
+            top_stocks = stocks_with_short_data[:10]
+            
+            # Slack Block Kit 형식의 메시지 생성
+            blocks = [
+                {
+                    "type": "header",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "📊 공매도 정보 수집 완료",
+                        "emoji": True
+                    }
+                },
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"✅ 공매도 데이터가 수집되었습니다.\n*수집 날짜:* {first_date}\n*수집 종목 수:* {len(stocks_with_short_data)}개"
+                    }
+                },
+                {
+                    "type": "divider"
+                }
+            ]
+            
+            # 상위 종목 정보 추가
+            stock_text = "*🔝 공매도 비율 상위 종목 (Top 10):*\n\n"
+            for i, stock in enumerate(top_stocks, 1):
+                stock_name = stock['stock_name']
+                ticker = stock['ticker']
+                short_percent = stock.get('shortPercentOfFloat')
+                short_ratio = stock.get('shortRatio')
+                shares_short = stock.get('sharesShort')
+                
+                stock_text += f"*{i}. {stock_name}* (`{ticker}`)\n"
+                if short_percent is not None:
+                    stock_text += f"   • 공매도 비율: {short_percent:.2f}%\n"
+                if short_ratio is not None:
+                    stock_text += f"   • 공매도 비율 (Short Ratio): {short_ratio:.2f}\n"
+                if shares_short is not None:
+                    stock_text += f"   • 공매도 주식 수: {shares_short:,.0f}주\n"
+                stock_text += "\n"
+            
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": stock_text
+                }
+            })
+            
+            # 시간 정보
+            blocks.append({
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": f"🕒 수집 시각: {self._get_current_time()}"
+                    }
+                ]
+            })
+            
+            # 간단한 텍스트 메시지 (알림용)
+            text = f"📊 공매도 정보 수집 완료: {len(stocks_with_short_data)}개 종목"
+            
+            return self.send_message(text, blocks, webhook_type='analysis')
+            
+        except Exception as e:
+            logger.error(f"공매도 정보 슬랙 전송 중 오류 발생: {str(e)}")
+            return False
+    
     def _get_current_time(self) -> str:
         """현재 시각을 포맷팅해서 반환"""
         from datetime import datetime

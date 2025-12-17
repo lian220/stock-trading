@@ -5,11 +5,24 @@ from pymongo.errors import DuplicateKeyError
 from app.db.mongodb import get_db
 from app.models.mongodb_models import Stock
 from app.schemas.stock import StockPrediction
+from pydantic import BaseModel
 import logging
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+class StockUpdate(BaseModel):
+    """종목 정보 업데이트 요청 스키마 (ticker 제외)"""
+    stock_name: Optional[str] = None
+    stock_name_en: Optional[str] = None
+    is_etf: Optional[bool] = None
+    leverage_ticker: Optional[str] = None
+    exchange: Optional[str] = None
+    sector: Optional[str] = None
+    industry: Optional[str] = None
+    is_active: Optional[bool] = None
 
 @router.get("", summary="종목 목록 조회", response_model=List[dict])
 async def get_stocks(
@@ -213,6 +226,96 @@ def read_stock_info(ticker: str):
     except Exception as e:
         logger.error(f"주식 정보 조회 중 오류 발생: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"주식 정보 조회 중 오류 발생: {str(e)}")
+
+
+@router.put("/{ticker}", summary="종목 정보 수정", response_model=dict)
+async def update_stock(ticker: str, stock_update: StockUpdate):
+    """
+    MongoDB의 stocks 컬렉션에서 종목 정보를 수정합니다.
+    
+    - **stock_name**: 종목명 (선택)
+    - **stock_name_en**: 영문 종목명 (선택)
+    - **is_etf**: ETF 여부 (선택)
+    - **leverage_ticker**: 레버리지 티커 심볼 (선택)
+    - **exchange**: 거래소 (선택)
+    - **sector**: 섹터 (선택)
+    - **industry**: 산업 (선택)
+    - **is_active**: 활성화 여부 (선택)
+    
+    ticker는 변경할 수 없습니다. 제공된 필드만 업데이트됩니다.
+    """
+    try:
+        db = get_db()
+        if db is None:
+            raise HTTPException(status_code=500, detail="MongoDB 연결에 실패했습니다.")
+        
+        # 종목 존재 확인
+        stock_doc = db.stocks.find_one({"ticker": ticker.upper()})
+        if not stock_doc:
+            raise HTTPException(status_code=404, detail=f"{ticker} 종목 정보를 찾을 수 없습니다.")
+        
+        now = datetime.utcnow()
+        
+        # 업데이트할 데이터 구성
+        update_data = {
+            "updated_at": now
+        }
+        
+        # 제공된 필드만 업데이트
+        if stock_update.stock_name is not None:
+            update_data["stock_name"] = stock_update.stock_name
+        if stock_update.stock_name_en is not None:
+            update_data["stock_name_en"] = stock_update.stock_name_en
+        if stock_update.is_etf is not None:
+            update_data["is_etf"] = stock_update.is_etf
+        if stock_update.leverage_ticker is not None:
+            update_data["leverage_ticker"] = stock_update.leverage_ticker
+        if stock_update.exchange is not None:
+            update_data["exchange"] = stock_update.exchange
+        if stock_update.sector is not None:
+            update_data["sector"] = stock_update.sector
+        if stock_update.industry is not None:
+            update_data["industry"] = stock_update.industry
+        if stock_update.is_active is not None:
+            update_data["is_active"] = stock_update.is_active
+        
+        # leverage_ticker를 None으로 설정하려면 $unset 사용
+        if stock_update.leverage_ticker is None and "leverage_ticker" in stock_doc:
+            # leverage_ticker 제거
+            result = db.stocks.update_one(
+                {"ticker": ticker.upper()},
+                {
+                    "$unset": {"leverage_ticker": ""},
+                    "$set": {k: v for k, v in update_data.items() if k != "leverage_ticker"}
+                }
+            )
+        else:
+            result = db.stocks.update_one(
+                {"ticker": ticker.upper()},
+                {"$set": update_data}
+            )
+        
+        if result.modified_count > 0:
+            logger.info(f"종목 수정 성공: {ticker}")
+            return {
+                "success": True,
+                "message": f"종목 정보가 수정되었습니다: {ticker}",
+                "ticker": ticker.upper(),
+                "action": "updated"
+            }
+        else:
+            return {
+                "success": True,
+                "message": f"종목 정보에 변경사항이 없습니다: {ticker}",
+                "ticker": ticker.upper(),
+                "action": "no_change"
+            }
+            
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        logger.error(f"종목 수정 중 오류 발생: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"종목 수정 중 오류 발생: {str(e)}")
 
 
 @router.delete("/{ticker}", summary="종목 삭제", response_model=dict)
