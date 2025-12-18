@@ -750,6 +750,123 @@ def get_overseas_order_resv_list(params):
             "output": []
         }
 
+def order_overseas_stock_daytime(order_data):
+    """해외주식 주간주문 실행 (10:00 ~ 18:00 한국시간)"""
+    try:
+        # 토큰 가져오기
+        access_token = get_access_token()
+        
+        # 기본 계좌정보 설정
+        if "CANO" not in order_data or not order_data["CANO"]:
+            order_data["CANO"] = settings.KIS_CANO
+        if "ACNT_PRDT_CD" not in order_data or not order_data["ACNT_PRDT_CD"]:
+            order_data["ACNT_PRDT_CD"] = settings.KIS_ACNT_PRDT_CD
+        
+        # 모의투자 미지원
+        is_virtual = "openapivts" in settings.kis_base_url
+        if is_virtual:
+            return {
+                "rt_cd": "1",
+                "msg_cd": "MOCK_UNSUPPORTED",
+                "msg1": "주간주문 API는 모의투자에서 지원되지 않습니다.",
+                "output": {}
+            }
+        
+        # 매수/매도 여부 확인
+        is_buy = order_data.get("is_buy", True)
+        
+        # 주간주문 TR_ID 결정 (미국 주식만 지원)
+        # 문서 참조: 미국주간매수 : TTTS6036U, 미국주간매도 : TTTS6037U
+        if is_buy:
+            tr_id = "TTTS6036U"  # 미국 주간 매수
+        else:
+            tr_id = "TTTS6037U"  # 미국 주간 매도
+        
+        # API 요청 URL 및 헤더 설정
+        url = f"{settings.kis_base_url}/uapi/overseas-stock/v1/trading/daytime-order"
+        headers = {
+            "Content-Type": "application/json; charset=utf-8",
+            "authorization": f"Bearer {access_token}",
+            "appkey": settings.KIS_APPKEY,
+            "appsecret": settings.KIS_APPSECRET,
+            "tr_id": tr_id
+        }
+        
+        # 필수 파라미터 준비 (요청 본문에서 is_buy 제거)
+        request_body = order_data.copy()
+        if "is_buy" in request_body:
+            del request_body["is_buy"]
+        
+        # 기본 값 설정
+        if "ORD_SVR_DVSN_CD" not in request_body:
+            request_body["ORD_SVR_DVSN_CD"] = "0"  # 주문서버구분코드 (필수)
+        
+        # 주문구분 설정 (주간주문은 지정가만 가능)
+        if "ORD_DVSN" not in request_body:
+            request_body["ORD_DVSN"] = "00"  # 지정가
+        
+        # 디버깅 정보 로깅
+        order_type = "매수" if is_buy else "매도"
+        logger.debug(f"주간주문 요청 헤더: {headers}")
+        logger.debug(f"주간주문 요청 본문: {request_body}")
+        
+        # API 호출
+        response = requests.post(url, headers=headers, json=request_body)
+        
+        # 응답 처리
+        if response.status_code != 200:
+            # HTTP 에러 발생 시 응답 본문 로깅
+            error_response_text = response.text[:500] if response.text else "(응답 본문 없음)"
+            logger.error(f"주간주문 API HTTP {response.status_code} 에러 발생")
+            logger.error(f"요청 URL: {url}")
+            logger.error(f"요청 본문: {request_body}")
+            logger.error(f"응답 본문: {error_response_text}")
+            
+            # 응답 본문을 JSON으로 파싱 시도
+            try:
+                error_result = response.json()
+                error_msg = error_result.get("msg1", f"HTTP {response.status_code}")
+                error_code = error_result.get("msg_cd", f"HTTP_{response.status_code}")
+            except (ValueError, AttributeError):
+                error_msg = f"API 호출 실패: HTTP {response.status_code}"
+                error_code = f"HTTP_{response.status_code}"
+            
+            return {
+                "rt_cd": "1",
+                "msg_cd": error_code,
+                "msg1": error_msg,
+                "output": {}
+            }
+        
+        try:
+            result = response.json()
+        except ValueError:
+            logger.error(f"주간주문 API 응답 파싱 오류. 응답 본문: {response.text[:500]}")
+            return {
+                "rt_cd": "1",
+                "msg_cd": "PARSEERR",
+                "msg1": "응답 파싱 오류",
+                "output": {}
+            }
+        
+        # 주문 결과 로깅
+        if result.get("rt_cd") == "0":
+            logger.info(f"해외주식 주간 {order_type} 주문 성공: {result.get('msg1', '주문이 접수되었습니다.')}")
+        else:
+            logger.error(f"해외주식 주간 {order_type} 주문 실패: {result.get('msg1', '알 수 없는 오류')}")
+            logger.error(f"오류 코드: {result.get('msg_cd')}, 종목={request_body.get('PDNO')}")
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"해외주식 주간주문 중 오류 발생: {str(e)}", exc_info=True)
+        return {
+            "rt_cd": "1", 
+            "msg_cd": "ERROR",
+            "msg1": f"API 호출 오류: {str(e)}",
+            "output": {}
+        }
+
 def order_overseas_stock(order_data):
     """해외주식 주문 실행"""
     try:
@@ -893,31 +1010,37 @@ def order_overseas_stock(order_data):
                         success=True
                     )
             else:
-                logger.error(f"해외주식 {order_type} 주문 실패: {result.get('msg1', '알 수 없는 오류')}")
-                logger.error(f"오류 코드: {result.get('msg_cd')}, 종목={request_body.get('PDNO')}")
+                error_msg = result.get('msg1', '알 수 없는 오류')
+                error_code = result.get('msg_cd', '')
+                logger.error(f"해외주식 {order_type} 주문 실패: {error_msg}")
+                logger.error(f"오류 코드: {error_code}, 종목={request_body.get('PDNO')}")
                 
-                # 슬랙 알림 전송 (실패)
-                if is_buy:
-                    slack_notifier.send_buy_notification(
-                        stock_name=ticker,
-                        ticker=ticker,
-                        quantity=quantity,
-                        price=price,
-                        exchange_code=exchange_code,
-                        success=False,
-                        error_message=result.get('msg1', '알 수 없는 오류')
-                    )
+                # 장외거래시간 에러인 경우 슬랙 알림 보내지 않음
+                if "장운영시간" in error_msg or "APBK0918" in error_code:
+                    logger.info(f"장외거래시간 주문 실패로 슬랙 알림을 보내지 않습니다: {error_msg}")
                 else:
-                    slack_notifier.send_sell_notification(
-                        stock_name=ticker,
-                        ticker=ticker,
-                        quantity=quantity,
-                        price=price,
-                        exchange_code=exchange_code,
-                        sell_reasons=["수동 매도"],
-                        success=False,
-                        error_message=result.get('msg1', '알 수 없는 오류')
-                    )
+                    # 슬랙 알림 전송 (실패) - 장외거래시간 에러가 아닌 경우에만
+                    if is_buy:
+                        slack_notifier.send_buy_notification(
+                            stock_name=ticker,
+                            ticker=ticker,
+                            quantity=quantity,
+                            price=price,
+                            exchange_code=exchange_code,
+                            success=False,
+                            error_message=error_msg
+                        )
+                    else:
+                        slack_notifier.send_sell_notification(
+                            stock_name=ticker,
+                            ticker=ticker,
+                            quantity=quantity,
+                            price=price,
+                            exchange_code=exchange_code,
+                            sell_reasons=["수동 매도"],
+                            success=False,
+                            error_message=error_msg
+                        )
             
             # 주문 내역을 DB에 저장 (옵션)
             # save_order_history(request_body, result)

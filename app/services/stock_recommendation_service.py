@@ -1294,6 +1294,7 @@ class StockRecommendationService:
             for item in holdings:
                 ticker = item.get("ovrs_pdno")
                 stock_name = item.get("ovrs_item_name")
+                
                 purchase_price = float(item.get("pchs_avg_pric", 0))
                 current_price = float(item.get("now_pric2", 0))
                 quantity = int(item.get("ovrs_cblc_qty", 0))

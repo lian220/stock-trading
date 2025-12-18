@@ -7,11 +7,12 @@ from pathlib import Path
 import threading
 from typing import Callable
 from app.services.stock_recommendation_service import StockRecommendationService
-from app.services.balance_service import get_current_price, order_overseas_stock, get_all_overseas_balances, get_overseas_balance, get_overseas_order_possible_amount
+from app.services.balance_service import get_current_price, order_overseas_stock, order_overseas_stock_daytime, get_all_overseas_balances, get_overseas_balance, get_overseas_order_possible_amount
 from app.core.config import settings
 import logging
 from app.services.economic_service import update_economic_data_in_background
 from app.utils.slack_notifier import slack_notifier
+from app.db.mongodb import get_db
 import httpx
 
 class StockScheduler:
@@ -27,6 +28,10 @@ class StockScheduler:
         self.analysis_executing = False  # 분석 작업 실행 중 플래그 (중복 실행 방지)
         self.prediction_executing = False  # Vertex AI 예측 작업 실행 중 플래그 (중복 실행 방지)
         self.stopping = False  # 중지 중 플래그 (중복 중지 방지)
+        # 현재가 조회 실패한 종목 추적 (ticker -> (실패 횟수, 마지막 실패 시간))
+        self.price_fetch_failures = {}  # type: dict[str, tuple[int, datetime]]
+        # 주문 실패한 종목 추적 (ticker -> 마지막 실패 시간)
+        self.order_failures = {}  # type: dict[str, datetime]
     
     def start(self):
         """매수 스케줄러 시작"""
@@ -652,15 +657,6 @@ class StockScheduler:
         """자동 매도 실행 로직"""
         function_name = "_execute_auto_sell"
         
-        # 현재 시간이 미국 장 시간인지 확인 (서머타임 고려)
-        now_in_korea = datetime.now(pytz.timezone('Asia/Seoul'))
-        
-        # 미국 뉴욕 시간 (서머타임 자동 고려)
-        now_in_ny = datetime.now(pytz.timezone('America/New_York'))
-        ny_hour = now_in_ny.hour
-        ny_minute = now_in_ny.minute
-        ny_weekday = now_in_ny.weekday()  # 0=월요일, 6=일요일
-        
         # 매도 대상 종목 조회
         sell_candidates_result = self.recommendation_service.get_stocks_to_sell()
         
@@ -690,69 +686,290 @@ class StockScheduler:
                 elif exchange_code == "NYSE":
                     api_exchange_code = "NYS"
                 
-                # 현재가 조회
-                price_params = {
-                    "AUTH": "",
-                    "EXCD": api_exchange_code,  # 변환된 거래소 코드 사용
-                    "SYMB": ticker
-                }
+                # 현재가 조회 실패 추적: 일정 횟수 이상 실패한 종목은 일정 시간 동안 제외
+                MAX_PRICE_FETCH_FAILURES = 3  # 최대 실패 횟수
+                PRICE_FETCH_EXCLUDE_MINUTES = 30  # 제외 시간 (분)
                 
-                price_result = get_current_price(price_params)
+                now = datetime.now()
                 
-                if price_result.get("rt_cd") != "0":
-                    logger.error(f"[{function_name}] {stock_name}({ticker}) 현재가 조회 실패: {price_result.get('msg1', '알 수 없는 오류')}")
+                # 이전에 실패한 적이 있는 종목인지 확인
+                if ticker in self.price_fetch_failures:
+                    failure_count, last_failure_time = self.price_fetch_failures[ticker]
+                    time_since_last_failure = now - last_failure_time
+                    
+                    # 실패 횟수가 최대치를 초과하고, 제외 시간이 지나지 않았으면 스킵
+                    if failure_count >= MAX_PRICE_FETCH_FAILURES:
+                        if time_since_last_failure < timedelta(minutes=PRICE_FETCH_EXCLUDE_MINUTES):
+                            logger.debug(f"[{function_name}] {stock_name}({ticker}) 현재가 조회 실패로 인해 일시적으로 제외됨 (실패 {failure_count}회, {int((PRICE_FETCH_EXCLUDE_MINUTES * 60 - time_since_last_failure.total_seconds()) / 60)}분 후 재시도 가능)")
+                            continue
+                        else:
+                            # 제외 시간이 지났으면 카운터 리셋
+                            logger.info(f"[{function_name}] {stock_name}({ticker}) 제외 시간이 경과하여 다시 시도합니다.")
+                            del self.price_fetch_failures[ticker]
+                
+                # 레버리지 티커인지 확인하고, 본주 티커 가격으로 매도 조건 체크
+                base_ticker = None  # 본주 티커 (레버리지 티커인 경우)
+                is_leverage = False
+                
+                # MongoDB에서 레버리지 티커인지 확인 (leverage_ticker 필드로 역매핑)
+                try:
+                    from app.db.mongodb import get_db
+                    db = get_db()
+                    if db is not None:
+                        # stocks 컬렉션에서 leverage_ticker가 현재 티커인 문서 찾기
+                        base_stock = db.stocks.find_one({"leverage_ticker": ticker})
+                        if base_stock:
+                            base_ticker = base_stock.get("ticker")
+                            is_leverage = True
+                            logger.info(f"[{function_name}] {stock_name}({ticker})는 레버리지 티커입니다. 본주 {base_ticker}의 가격으로 매도 조건을 확인합니다.")
+                except Exception as e:
+                    logger.warning(f"[{function_name}] 레버리지 티커 확인 중 오류 (계속 진행): {str(e)}")
+                
+                # 매도 조건 체크용 가격 조회 (레버리지 티커인 경우 본주 가격, 아니면 원래 티커)
+                price_check_ticker = base_ticker if is_leverage else ticker
+                
+                # 현재가 조회 (매도 조건 체크용)
+                exchanges = ["NAS", "AMS", "NYS"]
+                price_result = None
+                
+                # 기본 거래소를 맨 앞으로
+                if api_exchange_code in exchanges:
+                    exchanges.remove(api_exchange_code)
+                    exchanges.insert(0, api_exchange_code)
+                
+                # 여러 거래소에서 현재가 조회 시도 (본주 티커로 - 레버리지인 경우)
+                for exchange in exchanges:
+                    price_params = {
+                        "AUTH": "",
+                        "EXCD": exchange,
+                        "SYMB": price_check_ticker
+                    }
+                    
+                    temp_result = get_current_price(price_params)
+                    
+                    # 데이터가 있는지 확인 (last나 base가 있어야 함)
+                    output = temp_result.get("output", {})
+                    if temp_result.get("rt_cd") == "0" and (output.get("last") or output.get("base")):
+                        price_result = temp_result
+                        if exchange != api_exchange_code:
+                            logger.info(f"[{function_name}] {stock_name}({ticker}) 거래소 변경 발견: {api_exchange_code} -> {exchange}")
+                        break
+                    
+                    # 마지막 시도였으면 결과 저장 (에러 메시지 확인용)
+                    if exchange == exchanges[-1]:
+                        price_result = temp_result
+                
+                # API 호출 자체가 실패한 경우
+                if not price_result or price_result.get("rt_cd") != "0":
+                    error_msg = price_result.get('msg1', '알 수 없는 오류') if price_result else 'API 호출 실패'
+                    logger.error(f"[{function_name}] {stock_name}({ticker}) 현재가 조회 실패 (모든 거래소): {error_msg}")
+                    # 실패 횟수 증가
+                    if ticker not in self.price_fetch_failures:
+                        self.price_fetch_failures[ticker] = (1, now)
+                    else:
+                        failure_count, _ = self.price_fetch_failures[ticker]
+                        self.price_fetch_failures[ticker] = (failure_count + 1, now)
+                    
                     # API 속도 제한에 도달했을 때 더 오래 대기
-                    if "초당" in price_result.get('msg1', ''):
+                    if price_result and "초당" in error_msg:
                         await asyncio.sleep(3)  # 속도 제한 오류 시 3초 대기
                     continue
                 
-                # 현재가 추출 (안전하게 처리)
-                last_price = price_result.get("output", {}).get("last", "")
+                # 현재가 추출 (안전하게 처리) - last 우선, 없으면 base(전일 종가) 사용
+                output = price_result.get("output", {})
+                last_price = output.get("last", "") or ""
+                base_price = output.get("base", "") or ""
+                
                 try:
-                    # 빈 문자열이나 None 체크
-                    if not last_price or last_price == "":
-                        logger.error(f"[{function_name}] {stock_name}({ticker}) 현재가가 비어있습니다. 다음 API 호출에서 다시 시도합니다.")
+                    current_price = None
+                    
+                    # 1순위: 실시간 현재가 (last)
+                    if last_price and last_price != "":
+                        try:
+                            current_price = float(last_price)
+                            if current_price > 0:
+                                if is_leverage:
+                                    logger.info(f"[{function_name}] {stock_name}({ticker}) 레버리지 티커 - 본주 {price_check_ticker}의 실시간 현재가 사용: {current_price}")
+                                else:
+                                    logger.debug(f"[{function_name}] {stock_name}({ticker}) 실시간 현재가 사용: {current_price}")
+                        except (ValueError, TypeError):
+                            pass
+                    
+                    # 2순위: 전일 종가 (base) - 레버리지 ETF 등 특수 종목 대응
+                    if (current_price is None or current_price <= 0) and base_price and base_price != "":
+                        try:
+                            current_price = float(base_price)
+                            if current_price > 0:
+                                if is_leverage:
+                                    logger.warning(f"[{function_name}] {stock_name}({ticker}) 레버리지 티커 - 본주 {price_check_ticker}의 실시간 현재가 없음, 전일 종가 사용: {current_price}")
+                                else:
+                                    logger.warning(f"[{function_name}] {stock_name}({ticker}) 실시간 현재가 없음, 전일 종가 사용: {current_price}")
+                        except (ValueError, TypeError):
+                            pass
+                    
+                    # 현재가를 찾지 못한 경우
+                    if current_price is None or current_price <= 0:
+                        logger.error(f"[{function_name}] {stock_name}({ticker}) 현재가가 비어있거나 유효하지 않습니다 (last: '{last_price}', base: '{base_price}'). 실패 횟수를 기록합니다.")
+                        # 실패 횟수 증가
+                        if ticker not in self.price_fetch_failures:
+                            self.price_fetch_failures[ticker] = (1, now)
+                        else:
+                            failure_count, _ = self.price_fetch_failures[ticker]
+                            self.price_fetch_failures[ticker] = (failure_count + 1, now)
+                        
+                        if self.price_fetch_failures[ticker][0] >= MAX_PRICE_FETCH_FAILURES:
+                            logger.warning(f"[{function_name}] {stock_name}({ticker}) 현재가 조회가 {MAX_PRICE_FETCH_FAILURES}회 연속 실패했습니다. {PRICE_FETCH_EXCLUDE_MINUTES}분 동안 제외합니다.")
+                        else:
+                            logger.info(f"[{function_name}] {stock_name}({ticker}) 현재가 조회 실패 ({self.price_fetch_failures[ticker][0]}/{MAX_PRICE_FETCH_FAILURES}회). 다음 스케줄러 실행에서 다시 시도합니다.")
+                        
                         await asyncio.sleep(2)  # 잠시 기다렸다가 넘어감
                         continue
                     
-                    current_price = float(last_price)
+                    # 현재가 조회 성공: 실패 카운터 리셋 (있었다면)
+                    if ticker in self.price_fetch_failures:
+                        del self.price_fetch_failures[ticker]
+                        logger.debug(f"[{function_name}] {stock_name}({ticker}) 현재가 조회 성공. 실패 카운터를 리셋했습니다.")
                     
-                    if current_price <= 0:
-                        logger.error(f"[{function_name}] {stock_name}({ticker}) 현재가가 유효하지 않습니다: {current_price}")
-                        continue
-                except ValueError as ve:
-                    logger.error(f"[{function_name}] {stock_name}({ticker}) 현재가 변환 오류: {str(ve)}, 값: '{last_price}'")
+                except Exception as ve:
+                    logger.error(f"[{function_name}] {stock_name}({ticker}) 현재가 변환 오류: {str(ve)}, last: '{last_price}', base: '{base_price}'")
                     continue
                 
                 # 매도 주문 실행
+                # 레버리지 티커인 경우: 본주 가격으로 조건 확인했지만, 실제 주문은 레버리지 티커의 현재가 사용
+                # (본주 가격으로 주문하면 레버리지 티커의 시장 가격과 다를 수 있으므로)
+                order_price = current_price  # 기본값은 조회한 가격 (본주 가격)
+                
+                # 레버리지 티커인 경우 레버리지 티커의 실제 현재가도 조회 시도 (주문 가격으로 사용)
+                if is_leverage:
+                    try:
+                        leverage_price_result = None
+                        for exchange in exchanges:
+                            leverage_price_params = {
+                                "AUTH": "",
+                                "EXCD": exchange,
+                                "SYMB": ticker  # 레버리지 티커로 조회
+                            }
+                            leverage_temp_result = get_current_price(leverage_price_params)
+                            output = leverage_temp_result.get("output", {})
+                            if leverage_temp_result.get("rt_cd") == "0" and (output.get("last") or output.get("base")):
+                                leverage_price_result = leverage_temp_result
+                                break
+                        
+                        if leverage_price_result and leverage_price_result.get("rt_cd") == "0":
+                            leverage_output = leverage_price_result.get("output", {})
+                            leverage_last = leverage_output.get("last", "") or ""
+                            leverage_base = leverage_output.get("base", "") or ""
+                            
+                            if leverage_last and leverage_last != "":
+                                try:
+                                    order_price = float(leverage_last)
+                                    if order_price > 0:
+                                        logger.info(f"[{function_name}] {stock_name}({ticker}) 레버리지 티커의 현재가 조회 성공: {order_price} (본주 {base_ticker} 가격: {current_price})")
+                                except (ValueError, TypeError):
+                                    pass
+                            elif leverage_base and leverage_base != "":
+                                try:
+                                    order_price = float(leverage_base)
+                                    if order_price > 0:
+                                        logger.warning(f"[{function_name}] {stock_name}({ticker}) 레버리지 티커의 현재가 없음, 전일 종가 사용: {order_price} (본주 {base_ticker} 가격: {current_price})")
+                                except (ValueError, TypeError):
+                                    pass
+                        else:
+                            logger.warning(f"[{function_name}] {stock_name}({ticker}) 레버리지 티커의 현재가 조회 실패, 본주 가격({current_price})으로 주문 진행")
+                    except Exception as e:
+                        logger.warning(f"[{function_name}] {stock_name}({ticker}) 레버리지 티커 가격 조회 중 오류: {str(e)}, 본주 가격({current_price})으로 주문 진행")
+                
+                # 주문 가격 검증
+                if order_price is None or order_price <= 0:
+                    logger.error(f"[{function_name}] {stock_name}({ticker}) 주문 가격이 유효하지 않습니다: {order_price}")
+                    continue
+                
+                # 주문 데이터 준비
+                # 거래소 코드는 원래 값 사용 (NASD, NYSE, AMEX 등)
+                # order_overseas_stock 함수 내부에서 필요시 변환됨
                 order_data = {
                     "CANO": settings.KIS_CANO,
                     "ACNT_PRDT_CD": settings.KIS_ACNT_PRDT_CD,
-                    "OVRS_EXCG_CD": exchange_code,  # API 문서에 따라 원래대로 exchange_code 사용
-                    "PDNO": ticker,
+                    "OVRS_EXCG_CD": exchange_code,  # 원래 거래소 코드 사용 (NASD, NYSE, AMEX 등)
+                    "PDNO": ticker,  # 레버리지 티커로 주문
                     "ORD_DVSN": "00",  # 지정가
                     "ORD_QTY": str(quantity),
-                    "OVRS_ORD_UNPR": str(current_price),
+                    "OVRS_ORD_UNPR": f"{order_price:.2f}",  # 소수점 2자리로 포맷팅
                     "is_buy": False  # 매도
                 }
                 
-                order_result = order_overseas_stock(order_data)
+                # 주문 실패 추적: 일정 시간 동안 실패한 종목은 제외
+                ORDER_FAILURE_EXCLUDE_MINUTES = 60  # 주문 실패 후 60분 동안 제외
+                now = datetime.now()
+                
+                # 이전에 주문 실패한 적이 있는 종목인지 확인
+                if ticker in self.order_failures:
+                    time_since_last_failure = now - self.order_failures[ticker]
+                    if time_since_last_failure < timedelta(minutes=ORDER_FAILURE_EXCLUDE_MINUTES):
+                        logger.info(f"[{function_name}] {stock_name}({ticker}) 이전 주문 실패로 인해 일시적으로 제외됨 ({int((ORDER_FAILURE_EXCLUDE_MINUTES * 60 - time_since_last_failure.total_seconds()) / 60)}분 후 재시도 가능)")
+                        continue
+                    else:
+                        # 제외 시간이 지났으면 제거
+                        del self.order_failures[ticker]
+                
+                # 주간거래 시간 체크 (10:00 ~ 18:00 한국시간)
+                now_in_korea = datetime.now(pytz.timezone('Asia/Seoul'))
+                korea_hour = now_in_korea.hour
+                is_daytime_trading = 10 <= korea_hour < 18
+                
+                # 주간거래 시간이고 미국 주식인 경우 주간주문 API 사용
+                if is_daytime_trading and exchange_code in ["NASD", "NYSE", "AMEX"]:
+                    logger.info(f"[{function_name}] {stock_name}({ticker}) 주간거래 시간(10:00~18:00)이므로 주간주문 API를 사용합니다.")
+                    order_result = order_overseas_stock_daytime(order_data)
+                else:
+                    # 일반 주문 API 사용
+                    order_result = order_overseas_stock(order_data)
                 
                 if order_result.get("rt_cd") == "0":
-                    logger.info(f"[{function_name}] {stock_name}({ticker}) 매도 주문 성공: {order_result.get('msg1', '주문이 접수되었습니다.')}")
+                    # 주문 성공: 실패 기록 제거 (있었다면)
+                    if ticker in self.order_failures:
+                        del self.order_failures[ticker]
+                    
+                    order_type = "시장가" if order_data["ORD_DVSN"] == "02" else "지정가"
+                    logger.info(f"[{function_name}] {stock_name}({ticker}) 매도 주문 성공 ({order_type}): {order_result.get('msg1', '주문이 접수되었습니다.')}")
+                    
+                    # 매도 성공 기록을 MongoDB에 저장
+                    self._save_trading_log(
+                        order_type="sell",
+                        ticker=ticker,
+                        stock_name=stock_name,
+                        price=order_price,
+                        quantity=quantity,
+                        status="success",
+                        price_change_percent=candidate.get("price_change_percent"),
+                        sell_reasons=sell_reasons,
+                        order_result=order_result,
+                        exchange_code=exchange_code
+                    )
+                    
                     # Slack 알림 전송 (성공 시에만)
                     slack_notifier.send_sell_notification(
                         stock_name=stock_name,
                         ticker=ticker,
                         quantity=quantity,
-                        price=current_price,
+                        price=order_price if order_data["ORD_DVSN"] == "00" else None,  # 시장가는 가격 없음
                         exchange_code=exchange_code,
                         sell_reasons=sell_reasons,
                         success=True
                     )
                 else:
                     error_msg = order_result.get('msg1', '알 수 없는 오류')
+                    error_code = order_result.get('msg_cd', '')
+                    
+                    # 장외거래시간 에러인 경우: 실패 기록하지 않고 조용히 건너뜀 (로그 레벨을 INFO로 변경)
+                    if "장운영시간" in error_msg or "APBK0918" in error_code:
+                        logger.info(f"[{function_name}] {stock_name}({ticker}) 장외거래시간 주문 불가: {error_msg}. 다음 스케줄러 실행에서 다시 시도합니다.")
+                        continue  # 실패 기록 없이 다음 종목으로 (재시도 안 함)
+                    
+                    # 다른 에러인 경우: 실패 기록
                     logger.error(f"[{function_name}] {stock_name}({ticker}) 매도 주문 실패: {error_msg}")
+                    self.order_failures[ticker] = now
+                    logger.warning(f"[{function_name}] {stock_name}({ticker}) 주문 실패로 {ORDER_FAILURE_EXCLUDE_MINUTES}분 동안 제외합니다.")
                 
                 # 요청 간 지연 (API 요청 제한 방지)
                 await asyncio.sleep(2)  # 1초에서 2초로 증가
@@ -1040,6 +1257,19 @@ class StockScheduler:
                     successful_purchases += 1
                     logger.info(f"[{function_name}] 매수 후 잔고: ${available_cash:,.2f}")
                     
+                    # 매수 성공 기록을 MongoDB에 저장
+                    self._save_trading_log(
+                        order_type="buy",
+                        ticker=ticker,
+                        stock_name=stock_name,
+                        price=current_price,
+                        quantity=quantity,
+                        status="success",
+                        composite_score=candidate.get("composite_score"),
+                        order_result=order_result,
+                        exchange_code=exchange_code
+                    )
+                    
                     # 개별 알림은 제거하고 요약 알림만 사용 (중복 방지)
                 else:
                     error_msg = order_result.get('msg1', '알 수 없는 오류')
@@ -1051,40 +1281,55 @@ class StockScheduler:
             except Exception as e:
                 logger.error(f"[{function_name}] {candidate['stock_name']}({candidate['ticker']}) 매수 처리 중 오류: {str(e)}", exc_info=True)
         
-        # 매수 처리 완료 요약
-        logger.info("=" * 60)
-        logger.info(f"[{function_name}] 자동 매수 처리가 완료되었습니다.")
-        logger.info(f"[{function_name}] 총 매수 대상: {len(buy_candidates)}개")
-        logger.info(f"[{function_name}] 매수 성공: {successful_purchases}개")
-        logger.info(f"[{function_name}] 잔고 부족으로 건너뜀: {skipped_no_cash}개")
-        logger.info(f"[{function_name}] 남은 잔고: ${available_cash:,.2f}")
-        logger.info("=" * 60)
-        logger.info(f"[{function_name}] 함수 실행 완료")
+    def _save_trading_log(
+        self,
+        order_type: str,
+        ticker: str,
+        stock_name: str,
+        price: float,
+        quantity: int,
+        status: str,
+        composite_score: float = None,
+        price_change_percent: float = None,
+        sell_reasons: list = None,
+        order_result: dict = None,
+        exchange_code: str = None
+    ):
+        """매매 성공 기록을 MongoDB trading_logs 컬렉션에 저장"""
+        try:
+            db = get_db()
+            if db is None:
+                logger.warning("MongoDB 연결 실패 - 매매 기록 저장 불가")
+                return
+            
+            log_data = {
+                "user_id": "system",  # 스케줄러는 시스템 계정으로 저장
+                "order_type": order_type,  # "buy" | "sell"
+                "ticker": ticker,
+                "stock_name": stock_name,
+                "price": price,
+                "quantity": quantity,
+                "status": status,  # "success"
+                "created_at": datetime.now()
+            }
+            
+            # 선택적 필드 추가
+            if composite_score is not None:
+                log_data["composite_score"] = composite_score
+            if price_change_percent is not None:
+                log_data["price_change_percent"] = price_change_percent
+            if sell_reasons:
+                log_data["sell_reasons"] = sell_reasons
+            if order_result:
+                log_data["order_result"] = order_result
+            if exchange_code:
+                log_data["exchange_code"] = exchange_code
+            
+            db.trading_logs.insert_one(log_data)
+            logger.debug(f"매매 기록 저장 완료: {order_type} {ticker} {quantity}주 @ ${price}")
         
-        # 매수 결과 요약 Slack 알림 (스케줄된 시간에만 전송)
-        if send_slack_notification:
-            if successful_purchases == 0:
-                # 매수를 하나도 하지 않은 경우
-                if skipped_no_cash > 0:
-                    slack_notifier.send_no_buy_notification(
-                        reason="잔고 부족",
-                        details=f"총 매수 대상: {len(buy_candidates)}개\n잔고 부족으로 건너뜀: {skipped_no_cash}개\n현재 잔고: ${available_cash:,.2f}"
-                    )
-                else:
-                    slack_notifier.send_no_buy_notification(
-                        reason="매수 성공 없음",
-                        details=f"총 매수 대상: {len(buy_candidates)}개\n매수 성공: 0개\n남은 잔고: ${available_cash:,.2f}"
-                    )
-            else:
-                # 매수 성공한 경우 요약 알림
-                summary_message = (
-                    f"✅ *자동 매수 작업 완료*\n"
-                    f"총 매수 대상: {len(buy_candidates)}개\n"
-                    f"매수 성공: {successful_purchases}개\n"
-                    f"잔고 부족으로 건너뜀: {skipped_no_cash}개\n"
-                    f"남은 잔고: ${available_cash:,.2f}"
-                )
-                send_scheduler_slack_notification(summary_message)
+        except Exception as e:
+            logger.error(f"매매 기록 저장 중 오류: {str(e)}", exc_info=True)
 
 # 싱글톤 인스턴스 생성
 stock_scheduler = StockScheduler()
