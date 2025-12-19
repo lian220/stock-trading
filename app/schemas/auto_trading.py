@@ -17,6 +17,7 @@ class AutoTradingConfigUpdate(BaseModel):
     use_sentiment: Optional[bool] = Field(None, description="감정 분석 사용 여부")
     min_sentiment_score: Optional[float] = Field(None, ge=-1, le=1, description="최소 감정 점수 (-1 ~ 1)")
     order_type: Optional[str] = Field(None, description="주문 구분 (00: 지정가)")
+    allow_buy_existing_stocks: Optional[bool] = Field(None, description="보유 중인 종목도 매수 허용 여부")
 
 
 class AutoTradingExecuteRequest(BaseModel):

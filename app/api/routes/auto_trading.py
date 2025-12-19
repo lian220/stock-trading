@@ -34,6 +34,7 @@ def get_auto_trading_config():
     - **use_sentiment**: 감정 분석 사용 여부
     - **min_sentiment_score**: 최소 감정 점수
     - **order_type**: 주문 구분
+    - **allow_buy_existing_stocks**: 보유 중인 종목도 매수 허용 여부 (기본값: true)
     """
     try:
         config = auto_trading_service.get_auto_trading_config()
@@ -60,6 +61,7 @@ def update_auto_trading_config(config: AutoTradingConfigUpdate):
     - **use_sentiment**: 감정 분석 사용 여부
     - **min_sentiment_score**: 최소 감정 점수 (-1 ~ 1)
     - **order_type**: 주문 구분 (00: 지정가)
+    - **allow_buy_existing_stocks**: 보유 중인 종목도 매수 허용 여부 (기본값: true)
     
     ### 예시
     ```json
@@ -226,6 +228,7 @@ def get_auto_trading_status():
       - count: 보유 종목 수
       - total_value: 총 평가 금액
       - items: 종목별 상세 정보
+    - **available_cash**: 현금 잔고 (USD)
     - **candidates**: 매수/매도 후보
       - buy: 매수 추천 종목 목록
       - sell: 매도 대상 종목 목록

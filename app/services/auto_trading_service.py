@@ -16,7 +16,8 @@ from app.services.balance_service import (
     get_overseas_balance,
     order_overseas_stock,
     inquire_psamount,
-    get_current_price
+    get_current_price,
+    get_overseas_order_possible_amount
 )
 from app.core.config import settings
 
@@ -38,6 +39,7 @@ class AutoTradingService:
             "use_sentiment": True,  # 감정 분석 사용 여부
             "min_sentiment_score": 0.15,  # 최소 감정 점수
             "order_type": "00",  # 주문 구분 (00: 지정가)
+            "allow_buy_existing_stocks": True,  # 보유 중인 종목도 매수 허용 여부
         }
     
     def get_auto_trading_config(self) -> Dict:
@@ -370,7 +372,8 @@ class AutoTradingService:
                     "ORD_QTY": str(quantity),
                     "OVRS_ORD_UNPR": str(current_price),
                     "is_buy": True,
-                    "ORD_DVSN": config.get("order_type", "00")
+                    "ORD_DVSN": config.get("order_type", "00"),
+                    "stock_name": candidate.get("stock_name")  # 종목명 추가
                 }
                 
                 order_result = order_overseas_stock(order_data)
@@ -453,7 +456,8 @@ class AutoTradingService:
                     "ORD_QTY": str(quantity),
                     "OVRS_ORD_UNPR": str(current_price),
                     "is_buy": False,  # 매도
-                    "ORD_DVSN": config.get("order_type", "00")
+                    "ORD_DVSN": config.get("order_type", "00"),
+                    "stock_name": candidate.get("stock_name")  # 종목명 추가
                 }
                 
                 order_result = order_overseas_stock(order_data)
@@ -511,6 +515,25 @@ class AutoTradingService:
                         continue
                     total_value += quantity * current_price
             
+            # 현금 잔고 조회 (매수가능금액 API 사용 - TTTS3007R)
+            available_cash = 0.0
+            try:
+                # 매수가능금액 API 사용 (ovrs_ord_psbl_amt: 해외주문가능금액)
+                order_psbl_result = get_overseas_order_possible_amount("NASD", "AAPL")
+                if order_psbl_result.get("rt_cd") == "0":
+                    output = order_psbl_result.get("output", {})
+                    if output:
+                        # ovrs_ord_psbl_amt: 해외주문가능금액 (실제 사용 가능한 전체 금액)
+                        cash_str = output.get("ovrs_ord_psbl_amt") or "0"
+                        if cash_str and cash_str != "0":
+                            try:
+                                available_cash = float(cash_str)
+                                logger.info(f"매수가능금액 API에서 현금 잔고 조회 성공: ${available_cash:,.2f}")
+                            except (ValueError, TypeError):
+                                logger.warning(f"매수가능금액 API에서 현금 잔고 변환 실패: {cash_str}")
+            except Exception as e:
+                logger.warning(f"현금 잔고 조회 중 오류: {str(e)}", exc_info=True)
+            
             # 최근 주문 내역
             recent_orders = self._get_recent_orders(days=7)
             
@@ -526,6 +549,7 @@ class AutoTradingService:
                     "total_value": total_value,
                     "items": holdings
                 },
+                "available_cash": available_cash,
                 "candidates": {
                     "buy": {
                         "count": len(buy_candidates),

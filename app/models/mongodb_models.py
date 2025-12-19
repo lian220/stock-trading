@@ -288,6 +288,7 @@ class TradingConfig(BaseModel):
     use_sentiment: bool = True
     min_sentiment_score: float = 0.15
     order_type: str = "00"
+    allow_buy_existing_stocks: bool = True  # 보유 중인 종목도 매수 허용 여부
     watchlist_stocks: Optional[List[str]] = Field(default_factory=list)
     created_at: Optional[datetime] = Field(default_factory=datetime.utcnow)
     updated_at: Optional[datetime] = Field(default_factory=datetime.utcnow)
