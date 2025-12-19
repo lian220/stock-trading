@@ -1,0 +1,64 @@
+# 커밋 메시지 컨벤션
+
+## 형식
+
+```
+<type>: <subject>
+
+<body> (선택사항)
+```
+
+## Type 종류
+
+- `feat`: 새로운 기능 추가
+- `fix`: 버그 수정
+- `docs`: 문서 수정
+- `style`: 코드 포맷팅, 세미콜론 누락 등 (코드 변경 없음)
+- `refactor`: 코드 리팩토링
+- `test`: 테스트 코드 추가/수정
+- `chore`: 빌드 업무 수정, 패키지 매니저 설정 등
+
+## 작성 규칙
+
+### 제목 (Subject)
+- **50자 이내**: 간결하고 명확하게
+- **한글로 작성**: 팀 내 소통을 위해
+- **과도한 상세 설명 지양**: 핵심 내용만
+
+### 본문 (Body)
+- **선택사항**: 상세 설명이 필요한 경우에만 작성
+- **간결하게**: 핵심 변경사항만 간단히 설명
+
+## 예시
+
+### 좋은 예시
+```
+feat: 답글 일괄 등록 기능 사용 여부 확인 API 추가
+```
+
+### 나쁜 예시
+```
+feat: 답글 일괄 등록 기능 사용 여부 확인 API 추가
+
+- MembershipPassAdminResponse에 isBulkReplyUsed 필드 추가
+- LedgerFeignClient에 /adm/review/usage API 메서드 추가
+- ReviewUsageRequest DTO 생성
+- MembershipAdminQuery에서 Feign 클라이언트를 통해 isBatchReplyEnabled 확인
+- REVIEW_SERVICE 카테고리인 경우에만 API 호출하여 답글 일괄 등록 기능 사용 여부 확인
+```
+
+## PR 작성 규칙
+
+### 변경사항 섹션
+- **간결하게 작성**: 3-5줄로 핵심 변경사항만 나열
+- **과도한 상세 설명 지양**: 구현 세부사항은 코드 리뷰에서 확인
+- **구체적인 파일명이나 클래스명은 생략**: 변경사항의 본질에 집중
+
+### 예시
+```
+## 변경사항
+
+- MembershipPassAdminResponse에 isBulkReplyUsed 필드 추가
+- LedgerFeignClient에 /adm/review/usage API 추가
+- REVIEW_SERVICE 카테고리인 경우 Feign 클라이언트를 통해 isBatchReplyEnabled 확인
+```
