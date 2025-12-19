@@ -59,6 +59,9 @@ class StockScheduler:
         # 한국 시간 기준 밤 11시에 경제 데이터 재수집 (최신 지표 반영)
         schedule.every().day.at("23:00").do(self._run_economic_data_update)
         
+        # 한국 시간 기준 밤 11시에 Vertex AI 예측 작업 실행
+        schedule.every().day.at("23:00").do(self._run_vertex_ai_prediction)
+        
         # 한국 시간 기준 밤 11시 15분에 병렬 분석 작업 실행
         schedule.every().day.at("23:15").do(self._run_parallel_analysis)
 
@@ -78,8 +81,9 @@ class StockScheduler:
         # 하나의 상세한 로그로 통합
         logger.info("주식 자동매매 스케줄러가 시작되었습니다.")
         logger.info("  - 경제 데이터: 매일 06:05, 23:00 (재수집)")
-        logger.info("  - 병렬 분석: 매일 23:15 (Vertex AI + 기술적 지표 + 감정 분석)")
-        logger.info("  - 통합 분석: 매일 23:45 (3가지 결과 통합)")
+        logger.info("  - Vertex AI 예측: 매일 23:00")
+        logger.info("  - 병렬 분석: 매일 23:15 (기술적 지표 + 감정 분석)")
+        logger.info("  - 통합 분석: 매일 23:45 (AI 예측 + 기술적 지표 + 감정 분석)")
         logger.info("  - 매수: 매일 00:00")
         return True
     
@@ -335,8 +339,8 @@ class StockScheduler:
             schedule.cancel_job(job)
             logger.debug(f"기존 매도 작업 취소: {job.job_func.__name__}")
         
-        # 1분마다 매도 작업 실행
-        schedule.every(1).minutes.do(self._run_auto_sell)
+        # 5분마다 매도 작업 실행
+        schedule.every(5).minutes.do(self._run_auto_sell)
         
         # 스케줄러 스레드가 없으면 시작
         if not self.running and not self.scheduler_thread:
@@ -346,7 +350,7 @@ class StockScheduler:
         
         self.sell_running = True
         logger.info("매도 스케줄러가 시작되었습니다.")
-        logger.info("  - 실행 주기: 1분마다 매도 대상 확인")
+        logger.info("  - 실행 주기: 5분마다 매도 대상 확인")
         return True
     
     def stop_sell_scheduler(self):
@@ -449,10 +453,11 @@ class StockScheduler:
     
     def _run_parallel_analysis(self, send_slack_notification: bool = True):
         """
-        세 가지 분석 작업을 병렬로 실행
-        - Vertex AI 예측 (백그라운드, ~2시간)
+        두 가지 분석 작업을 병렬로 실행
         - 기술적 지표 분석 (~5분)
         - 감정 분석 (독립적, ~20분)
+        
+        참고: Vertex AI 예측은 23:00에 별도로 실행됨
         """
         function_name = "_run_parallel_analysis"
         
@@ -466,33 +471,26 @@ class StockScheduler:
         logger.info(f"[{function_name}] 병렬 분석 작업 시작")
         logger.info("=" * 60)
         if send_slack_notification:
-            send_scheduler_slack_notification(f"🚀 *병렬 분석 작업 시작*\nVertex AI 예측, 기술적 지표, 감정 분석을 병렬로 실행합니다.")
+            send_scheduler_slack_notification(f"🚀 *병렬 분석 작업 시작*\n기술적 지표와 감정 분석을 병렬로 실행합니다.")
         
         try:
             import concurrent.futures
             
-            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-                # 1. Vertex AI 예측 (백그라운드, 2시간 소요)
-                logger.info(f"[{function_name}] Vertex AI 예측 시작...")
-                vertex_future = executor.submit(
-                    self._run_vertex_ai_prediction,
-                    send_slack_notification=send_slack_notification
-                )
-                
-                # 2. 기술적 지표 분석
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                # 1. 기술적 지표 분석
                 logger.info(f"[{function_name}] 기술적 지표 분석 시작...")
                 tech_future = executor.submit(
                     self.recommendation_service.generate_technical_recommendations,
                     send_slack_notification=False  # 개별 알림은 비활성화
                 )
                 
-                # 3. 감정 분석 (독립적)
+                # 2. 감정 분석 (독립적)
                 logger.info(f"[{function_name}] 감정 분석 시작...")
                 sentiment_future = executor.submit(
                     self.recommendation_service.fetch_and_store_sentiment_independent
                 )
                 
-                # 기술적 지표와 감정 분석 결과 대기 (Vertex AI는 백그라운드로 계속 실행)
+                # 기술적 지표와 감정 분석 결과 대기
                 tech_result = tech_future.result()
                 sentiment_result = sentiment_future.result()
                 
@@ -519,11 +517,8 @@ class StockScheduler:
                         f"{sentiment_result.get('message', '')}"
                     )
                 
-                # Vertex AI 예측은 백그라운드로 계속 실행 중
-                logger.info(f"[{function_name}] ⏳ Vertex AI 예측은 백그라운드에서 계속 실행 중입니다...")
-                
             logger.info("=" * 60)
-            logger.info(f"[{function_name}] 병렬 분석 작업 완료 (Vertex AI는 백그라운드 실행 중)")
+            logger.info(f"[{function_name}] 병렬 분석 작업 완료")
             logger.info("=" * 60)
             return True
             
@@ -1186,9 +1181,9 @@ class StockScheduler:
                     pure_ticker = actual_ticker
                 
                 # 이미 보유 중인 종목인지 확인
-                # if pure_ticker in holding_tickers:
-                #     logger.info(f"[{function_name}] {stock_name}({ticker}) - 이미 보유 중인 종목이므로 매수하지 않습니다.")
-                #     continue
+                if pure_ticker in holding_tickers:
+                    logger.info(f"[{function_name}] {stock_name}({ticker}) - 이미 보유 중인 종목이므로 매수하지 않습니다.")
+                    continue
                 
                 # 거래소 코드 변환 (API 요청에 맞게 변환)
                 api_exchange_code = "NAS"

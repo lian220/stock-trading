@@ -1257,7 +1257,6 @@ class StockRecommendationService:
                             "RSI": tech_indicators.get("rsi"),
                             "MACD_매수_신호": tech_indicators.get("macd_buy_signal", False),
                         })
-                    logger.info(f"get_stocks_to_sell: MongoDB stock_recommendations에서 {len(tech_list)}개 조회")
 
             # MongoDB에 데이터가 없으면 빈 리스트
             if not tech_list:
@@ -1282,7 +1281,6 @@ class StockRecommendationService:
                 sentiment_list = list(sentiment_cursor)
                 if sentiment_list:
                     sentiment_data = {item["ticker"]: item for item in sentiment_list}
-                    logger.info(f"get_stocks_to_sell: MongoDB sentiment_analysis에서 {len(sentiment_data)}개 조회")
 
             # MongoDB에 데이터가 없으면 빈 딕셔너리
             if not sentiment_data:
