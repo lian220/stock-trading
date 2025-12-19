@@ -346,6 +346,43 @@ def get_overseas_balance(ovrs_excg_cd="NASD"):
             else:
                 raise
 
+def get_overseas_present_balance():
+    """해외주식 체결기준현재잔고 조회 (외화사용가능금액 포함)"""
+    try:
+        access_token = get_access_token()
+        
+        url = f"{settings.kis_base_url}/uapi/overseas-stock/v1/trading/inquire-present-balance"
+        
+        # 모의투자/실제투자에 따라 TR_ID 설정
+        is_virtual = settings.KIS_USE_MOCK
+        tr_id = "VTRP6504R" if is_virtual else "CTRP6504R"  # 체결기준현재잔고 TR_ID
+        
+        headers = {
+            "Content-Type": "application/json; charset=utf-8",
+            "authorization": f"Bearer {access_token}",
+            "appkey": settings.KIS_APPKEY,
+            "appsecret": settings.KIS_APPSECRET,
+            "tr_id": tr_id
+        }
+        
+        params = {
+            "CANO": settings.KIS_CANO,
+            "ACNT_PRDT_CD": settings.KIS_ACNT_PRDT_CD,
+            "TR_CRCY_CD": "USD",  # 통화코드 USD
+            "CTX_AREA_FK200": "",
+            "CTX_AREA_NK200": ""
+        }
+        
+        _wait_for_api_rate_limit()
+        response = requests.get(url, headers=headers, params=params)
+        result = response.json()
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"체결기준현재잔고 조회 중 오류: {str(e)}")
+        return {"rt_cd": "1", "msg1": str(e)}
+
 def get_overseas_order_possible_amount(exchange_code="NASD", ticker="AAPL"):
     """해외주식 매수주문가능금액 조회 (TTTS3007R)
     
@@ -600,16 +637,160 @@ def get_overseas_nccs(params):
         print(f"미체결내역 조회 중 오류 발생: {str(e)}")
         raise
 
+def check_order_execution(
+    order_no: str,
+    exchange_code: str,
+    ticker: str,
+    max_retries: int = 3,
+    retry_delay: int = 5,
+    order_dt: str = None,
+    order_gno_brno: str = None
+):
+    """
+    주문번호로 체결 여부 확인
+
+    Args:
+        order_no: 주문번호 (ODNO)
+        exchange_code: 거래소 코드 (NASD, NYSE 등)
+        ticker: 티커 심볼
+        max_retries: 최대 재시도 횟수
+        retry_delay: 재시도 간격 (초)
+        order_dt: 주문일자 (YYYYMMDD) - 저장된 값 사용 시 더 빠른 조회 가능
+        order_gno_brno: 주문점번호 - 저장된 값 사용 시 더 빠른 조회 가능
+
+    Returns:
+        dict: 체결 정보 또는 None
+    """
+    from datetime import datetime, timedelta
+    import time
+
+    # 주문체결내역 조회 파라미터
+    today = datetime.now()
+    # order_dt가 있으면 해당 날짜 기준, 없으면 7일 전부터
+    if order_dt:
+        start_date = order_dt
+        end_date = order_dt
+    else:
+        start_date = (today - timedelta(days=7)).strftime("%Y%m%d")
+        end_date = today.strftime("%Y%m%d")
+
+    params = {
+        "CANO": settings.KIS_CANO,
+        "ACNT_PRDT_CD": settings.KIS_ACNT_PRDT_CD,
+        "PDNO": "",  # 종목번호 (공백: 전체)
+        "ORD_STRT_DT": start_date,
+        "ORD_END_DT": end_date,
+        "SLL_BUY_DVSN": "00",  # 매도매수구분 (00: 전체)
+        "CCLD_NCCS_DVSN": "00",  # 체결미체결구분 (00: 전체)
+        "OVRS_EXCG_CD": exchange_code if exchange_code else "",  # 거래소코드 (공백: 전체)
+        "SORT_SQN": "DS",  # 정순
+        "ORD_DT": order_dt if order_dt else "",  # 주문일자 (있으면 사용)
+        "ORD_GNO_BRNO": order_gno_brno if order_gno_brno else "",  # 주문점번호 (있으면 사용)
+        "ODNO": "",  # 주문번호는 조회 결과에서 필터링
+        "CTX_AREA_FK200": "",
+        "CTX_AREA_NK200": ""
+    }
+    
+    for attempt in range(max_retries):
+        try:
+            # 연속조회를 위한 변수 초기화
+            ctx_area_fk200 = ""
+            ctx_area_nk200 = ""
+            max_pages = 10  # 최대 페이지 수 제한
+
+            for page in range(max_pages):
+                # 연속조회 키 설정
+                params["CTX_AREA_FK200"] = ctx_area_fk200
+                params["CTX_AREA_NK200"] = ctx_area_nk200
+
+                # 주문체결내역 조회
+                result = get_overseas_order_detail(params)
+
+                if result.get("rt_cd") != "0":
+                    break
+
+                # output에서 해당 주문번호 찾기
+                output = result.get("output", [])
+                if not isinstance(output, list):
+                    output = [output] if output else []
+
+                for order in output:
+                    # 응답의 주문번호 필드는 소문자 'odno'
+                    if order.get("odno") == order_no:
+                        # 체결 여부 확인 (nccs_qty: 미체결수량이 0이면 체결)
+                        nccs_qty = int(order.get("nccs_qty", 0))
+                        ft_ord_qty = int(order.get("ft_ord_qty", 0))
+                        ft_ccld_qty = int(order.get("ft_ccld_qty", 0))
+
+                        # 체결된 경우 (미체결수량이 0이거나 체결수량이 주문수량과 같으면)
+                        if nccs_qty == 0 or ft_ccld_qty == ft_ord_qty:
+                            return {
+                                "executed": True,
+                                "order": order,
+                                "executed_qty": ft_ccld_qty,
+                                "executed_price": float(order.get("ft_ccld_unpr3", 0))
+                            }
+                        else:
+                            # 아직 미체결
+                            return {
+                                "executed": False,
+                                "order": order,
+                                "pending_qty": nccs_qty
+                            }
+
+                # 연속조회 키 업데이트
+                ctx_area_fk200 = result.get("ctx_area_fk200", "").strip()
+                ctx_area_nk200 = result.get("ctx_area_nk200", "").strip()
+
+                # 더 이상 조회할 데이터가 없으면 종료
+                if not ctx_area_nk200 or not output:
+                    break
+
+                time.sleep(0.5)  # API 호출 간격
+
+            # 주문번호를 찾지 못한 경우 재시도
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                continue
+
+            return None
+
+        except Exception as e:
+            logger.error(f"체결 확인 중 오류 발생: {str(e)}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                continue
+            return None
+
+    return None
+
 def get_overseas_order_detail(params):
-    """해외주식 주문체결내역 조회"""
+    """해외주식 주문체결내역 조회 (v1_해외주식-007)
+
+    한국투자증권 API 문서 기준 파라미터:
+    - CANO: 계좌번호 앞 8자리 (필수)
+    - ACNT_PRDT_CD: 계좌번호 뒤 2자리 (필수)
+    - PDNO: 종목번호 (공백: 전체)
+    - ORD_STRT_DT: 주문시작일자 (필수, YYYYMMDD)
+    - ORD_END_DT: 주문종료일자 (필수, YYYYMMDD)
+    - SLL_BUY_DVSN: 매도매수구분 (00: 전체, 01: 매도, 02: 매수)
+    - CCLD_NCCS_DVSN: 체결미체결구분 (00: 전체, 01: 체결, 02: 미체결)
+    - OVRS_EXCG_CD: 해외거래소코드 (공백: 전체, NASD, NYSE, AMEX 등)
+    - SORT_SQN: 정렬순서 (DS: 정순)
+    - ORD_DT: 주문일자 (연속조회용)
+    - ORD_GNO_BRNO: 주문점번호 (연속조회용)
+    - ODNO: 주문번호 (연속조회용)
+    - CTX_AREA_FK200: 연속조회검색조건200
+    - CTX_AREA_NK200: 연속조회키200
+    """
     try:
         access_token = get_access_token()
-        
+
         # 모의투자/실제투자에 따라 TR_ID 설정
         is_virtual = settings.KIS_USE_MOCK
-        url = f"{settings.kis_base_url}/uapi/overseas-stock/v1/trading/inquire-order"
-        tr_id = "VTTS3035R" if is_virtual else "TTTS3018R"  # 주문체결내역 TR_ID
-        
+        url = f"{settings.kis_base_url}/uapi/overseas-stock/v1/trading/inquire-ccnl"
+        tr_id = "VTTS3035R" if is_virtual else "TTTS3035R"
+
         headers = {
             "Content-Type": "application/json; charset=utf-8",
             "authorization": f"Bearer {access_token}",
@@ -617,17 +798,41 @@ def get_overseas_order_detail(params):
             "appsecret": settings.KIS_APPSECRET,
             "tr_id": tr_id,
         }
+
+        # 파라미터 검증 및 정리
+        validated_params = {
+            "CANO": params.get("CANO", settings.KIS_CANO),
+            "ACNT_PRDT_CD": params.get("ACNT_PRDT_CD", settings.KIS_ACNT_PRDT_CD),
+            "PDNO": params.get("PDNO", ""),  # 종목번호 (공백: 전체)
+            "ORD_STRT_DT": params.get("ORD_STRT_DT", ""),  # 주문시작일자
+            "ORD_END_DT": params.get("ORD_END_DT", ""),  # 주문종료일자
+            "SLL_BUY_DVSN": params.get("SLL_BUY_DVSN", "00"),  # 매도매수구분
+            "CCLD_NCCS_DVSN": params.get("CCLD_NCCS_DVSN", "00"),  # 체결미체결구분
+            "OVRS_EXCG_CD": params.get("OVRS_EXCG_CD", ""),  # 거래소코드 (공백: 전체)
+            "SORT_SQN": params.get("SORT_SQN", "DS"),
+            "ORD_DT": params.get("ORD_DT", ""),
+            "ORD_GNO_BRNO": params.get("ORD_GNO_BRNO", ""),
+            "ODNO": params.get("ODNO", ""),
+            "CTX_AREA_FK200": params.get("CTX_AREA_FK200", ""),
+            "CTX_AREA_NK200": params.get("CTX_AREA_NK200", ""),
+        }
+
+        # 필수 파라미터 검증
+        if not validated_params["CANO"] or not validated_params["ACNT_PRDT_CD"]:
+            raise ValueError("CANO와 ACNT_PRDT_CD는 필수 파라미터입니다.")
+        if not validated_params["ORD_STRT_DT"] or not validated_params["ORD_END_DT"]:
+            raise ValueError("ORD_STRT_DT와 ORD_END_DT는 필수 파라미터입니다.")
         
         # 디버깅 정보
-        print(f"API 요청: {url}")
-        print(f"헤더: {headers}")
-        print(f"파라미터: {params}")
+        logger.debug(f"API 요청: {url}")
+        logger.debug(f"헤더: {headers}")
+        logger.debug(f"파라미터: {validated_params}")
         
-        response = requests.get(url, headers=headers, params=params)
+        response = requests.get(url, headers=headers, params=validated_params)
         
         # 응답 확인
-        print(f"API 응답 상태 코드: {response.status_code}")
-        print(f"API 응답 본문: {response.text[:200] if response.text else '비어있음'}")
+        logger.debug(f"API 응답 상태 코드: {response.status_code}")
+        logger.debug(f"API 응답 본문: {response.text[:200] if response.text else '비어있음'}")
         
         if response.status_code == 404:
             # 404 오류인 경우 빈 결과 반환
@@ -648,9 +853,6 @@ def get_overseas_order_detail(params):
         
         try:
             result = response.json()
-            # 정상적인 결과 처리
-            if 'output' in result and isinstance(result['output'], list):
-                result['output'] = [item for item in result['output'] if int(item.get('nccs_qty', 0)) > 0]
             return result
         except ValueError:
             # JSON 파싱 오류 시 빈 결과 반환
@@ -661,10 +863,10 @@ def get_overseas_order_detail(params):
                 "output": []
             }
     except Exception as e:
-        print(f"주문체결내역 조회 중 오류 발생: {str(e)}")
+        logger.error(f"주문체결내역 조회 중 오류 발생: {str(e)}")
         # 예외 발생 시 빈 결과 반환
         return {
-            "rt_cd": "0", 
+            "rt_cd": "1", 
             "msg_cd": "ERROR",
             "msg1": f"API 호출 오류: {str(e)}",
             "output": []
@@ -980,35 +1182,15 @@ def order_overseas_stock(order_data):
             
             # 주문 정보 추출
             ticker = request_body.get('PDNO', 'N/A')
+            stock_name = request_body.get('stock_name', ticker)  # 종목명이 있으면 사용, 없으면 티커 사용
             quantity = int(request_body.get('ORD_QTY', 0))
             price = float(request_body.get('OVRS_ORD_UNPR', 0))
             exchange_code = request_body.get('OVRS_EXCG_CD', 'N/A')
             
-            # 주문 결과 로깅 및 슬랙 알림
+            # 주문 결과 로깅 (슬랙 알림은 스케줄러에서 체결/실패 시에만 전송)
             if result.get("rt_cd") == "0":
                 logger.info(f"해외주식 {order_type} 주문 성공: {result.get('msg1', '주문이 접수되었습니다.')}")
-                
-                # 슬랙 알림 전송 (매수/매도 모두)
-                if is_buy:
-                    slack_notifier.send_buy_notification(
-                        stock_name=ticker,  # 종목명이 없으면 티커 사용
-                        ticker=ticker,
-                        quantity=quantity,
-                        price=price,
-                        exchange_code=exchange_code,
-                        success=True
-                    )
-                else:
-                    # 매도 알림
-                    slack_notifier.send_sell_notification(
-                        stock_name=ticker,
-                        ticker=ticker,
-                        quantity=quantity,
-                        price=price,
-                        exchange_code=exchange_code,
-                        sell_reasons=["수동 매도"],
-                        success=True
-                    )
+                # 주문 접수 성공 시 Slack 알림은 보내지 않음 (체결 확인 후 스케줄러에서 전송)
             else:
                 error_msg = result.get('msg1', '알 수 없는 오류')
                 error_code = result.get('msg_cd', '')
@@ -1022,7 +1204,7 @@ def order_overseas_stock(order_data):
                     # 슬랙 알림 전송 (실패) - 장외거래시간 에러가 아닌 경우에만
                     if is_buy:
                         slack_notifier.send_buy_notification(
-                            stock_name=ticker,
+                            stock_name=stock_name,  # 종목명 사용
                             ticker=ticker,
                             quantity=quantity,
                             price=price,
@@ -1032,7 +1214,7 @@ def order_overseas_stock(order_data):
                         )
                     else:
                         slack_notifier.send_sell_notification(
-                            stock_name=ticker,
+                            stock_name=stock_name,  # 종목명 사용
                             ticker=ticker,
                             quantity=quantity,
                             price=price,
@@ -1183,5 +1365,141 @@ def create_conditional_orders(params):
             "msg_cd": "ERROR",
             "msg1": f"조건부 주문 생성 중 오류 발생: {str(e)}",
             "output": {}
+        }
+
+def calculate_portfolio_profit():
+    """
+    계좌의 주식 수익율을 계산합니다.
+    
+    Returns:
+        dict: {
+            "success": bool,
+            "holdings": list,  # 각 종목별 수익율 정보
+            "total_cost": float,  # 총 매수금액
+            "total_value": float,  # 총 평가금액
+            "total_profit": float,  # 총 수익
+            "total_profit_percent": float,  # 총 수익율 (%)
+            "error": str (optional)
+        }
+    """
+    try:
+        # 모든 거래소의 잔고 조회
+        balance_result = get_all_overseas_balances()
+        
+        if balance_result.get("rt_cd") != "0":
+            return {
+                "success": False,
+                "holdings": [],
+                "total_cost": 0.0,
+                "total_value": 0.0,
+                "total_profit": 0.0,
+                "total_profit_percent": 0.0,
+                "error": balance_result.get('msg1', '잔고 조회 실패')
+            }
+        
+        holdings_data = balance_result.get("output1", [])
+        
+        if not holdings_data:
+            return {
+                "success": True,
+                "holdings": [],
+                "total_cost": 0.0,
+                "total_value": 0.0,
+                "total_profit": 0.0,
+                "total_profit_percent": 0.0
+            }
+        
+        # MongoDB에서 티커 -> 주식명 매핑 조회
+        ticker_to_name = {}
+        try:
+            from app.db.mongodb import get_db
+            db = get_db()
+            if db is not None:
+                stocks = db.stocks.find({})
+                for stock in stocks:
+                    ticker = stock.get("ticker")
+                    stock_name = stock.get("stock_name")
+                    if ticker and stock_name:
+                        ticker_to_name[ticker] = stock_name
+        except Exception as e:
+            logger.warning(f"주식명 매핑 조회 중 오류: {str(e)}")
+        
+        holdings = []
+        total_cost = 0.0
+        total_value = 0.0
+        
+        for item in holdings_data:
+            try:
+                ticker = item.get("ovrs_pdno", "")
+                if not ticker:
+                    continue
+                
+                # 보유 수량
+                quantity = float(item.get("ovrs_cblc_qty", "0") or "0")
+                if quantity <= 0:
+                    continue
+                
+                # 매수 평균단가
+                avg_price = float(item.get("pchs_avg_pric", "0") or "0")
+                if avg_price <= 0:
+                    continue
+                
+                # 현재가
+                current_price = float(item.get("now_pric2", "0") or "0")
+                if current_price <= 0:
+                    # 현재가가 없으면 평균단가로 대체
+                    current_price = avg_price
+                
+                # 주식명 조회
+                stock_name = ticker_to_name.get(ticker, ticker)
+                
+                # 수익 계산
+                cost = quantity * avg_price  # 매수금액
+                value = quantity * current_price  # 평가금액
+                profit = value - cost  # 수익
+                profit_percent = (profit / cost * 100) if cost > 0 else 0.0  # 수익율
+                
+                holdings.append({
+                    "ticker": ticker,
+                    "stock_name": stock_name,
+                    "quantity": int(quantity),
+                    "avg_price": avg_price,
+                    "current_price": current_price,
+                    "cost": cost,
+                    "value": value,
+                    "profit": profit,
+                    "profit_percent": profit_percent
+                })
+                
+                total_cost += cost
+                total_value += value
+                
+            except (ValueError, TypeError) as e:
+                logger.warning(f"종목 수익율 계산 중 오류 (티커: {item.get('ovrs_pdno', 'N/A')}): {str(e)}")
+                continue
+        
+        # 총 수익 계산
+        total_profit = total_value - total_cost
+        total_profit_percent = (total_profit / total_cost * 100) if total_cost > 0 else 0.0
+        
+        return {
+            "success": True,
+            "holdings": holdings,
+            "total_cost": total_cost,
+            "total_value": total_value,
+            "total_profit": total_profit,
+            "total_profit_percent": total_profit_percent
+        }
+        
+    except Exception as e:
+        logger.error(f"계좌 수익율 계산 중 오류: {str(e)}", exc_info=True)
+        return {
+            "success": False,
+            "holdings": [],
+            "total_cost": 0.0,
+            "total_value": 0.0,
+            "total_profit": 0.0,
+            "total_profit_percent": 0.0,
+            "error": str(e)
         }
     

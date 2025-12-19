@@ -988,6 +988,135 @@ class SlackNotifier:
             logger.error(f"공매도 정보 슬랙 전송 중 오류 발생: {str(e)}")
             return False
     
+    def send_portfolio_profit_notification(
+        self,
+        holdings: list,
+        total_cost: float,
+        total_value: float,
+        total_profit: float,
+        total_profit_percent: float
+    ) -> bool:
+        """
+        계좌 수익율 알림을 전송합니다.
+        
+        Args:
+            holdings: 보유 종목 리스트 (각 항목은 ticker, stock_name, quantity, avg_price, current_price, profit, profit_percent 포함)
+            total_cost: 총 매수금액
+            total_value: 총 평가금액
+            total_profit: 총 수익
+            total_profit_percent: 총 수익율 (%)
+        
+        Returns:
+            bool: 전송 성공 여부
+        """
+        if not self.trading_enabled:
+            return False
+        
+        # 이모지 설정
+        if total_profit >= 0:
+            emoji = "📈"
+            color = "#36a64f"  # 녹색
+        else:
+            emoji = "📉"
+            color = "#ff0000"  # 빨간색
+        
+        title = f"{emoji} 계좌 수익율 리포트"
+        
+        # Slack Block Kit 형식의 메시지 생성
+        blocks = [
+            {
+                "type": "header",
+                "text": {
+                    "type": "plain_text",
+                    "text": title,
+                    "emoji": True
+                }
+            },
+            {
+                "type": "section",
+                "fields": [
+                    {
+                        "type": "mrkdwn",
+                        "text": f"*총 매수금액:*\n${total_cost:,.2f}"
+                    },
+                    {
+                        "type": "mrkdwn",
+                        "text": f"*총 평가금액:*\n${total_value:,.2f}"
+                    },
+                    {
+                        "type": "mrkdwn",
+                        "text": f"*총 수익:*\n${total_profit:+,.2f}"
+                    },
+                    {
+                        "type": "mrkdwn",
+                        "text": f"*총 수익율:*\n{total_profit_percent:+.2f}%"
+                    }
+                ]
+            },
+            {
+                "type": "divider"
+            }
+        ]
+        
+        # 보유 종목별 수익율 정보
+        if holdings and len(holdings) > 0:
+            # 수익율 순으로 정렬 (내림차순)
+            sorted_holdings = sorted(holdings, key=lambda x: x.get('profit_percent', 0), reverse=True)
+            
+            holdings_text = "*📊 보유 종목별 수익율:*\n\n"
+            
+            for i, holding in enumerate(sorted_holdings[:15], 1):  # 상위 15개만 표시
+                ticker = holding.get('ticker', 'N/A')
+                stock_name = holding.get('stock_name', ticker)
+                quantity = holding.get('quantity', 0)
+                avg_price = holding.get('avg_price', 0)
+                current_price = holding.get('current_price', 0)
+                profit = holding.get('profit', 0)
+                profit_percent = holding.get('profit_percent', 0)
+                
+                # 수익/손실 이모지
+                profit_emoji = "🟢" if profit >= 0 else "🔴"
+                
+                holdings_text += f"{profit_emoji} *{i}. {stock_name}* (`{ticker}`)\n"
+                holdings_text += f"   • 보유: {quantity}주 | 평균단가: ${avg_price:.2f} | 현재가: ${current_price:.2f}\n"
+                holdings_text += f"   • 수익: ${profit:+,.2f} ({profit_percent:+.2f}%)\n\n"
+            
+            if len(sorted_holdings) > 15:
+                holdings_text += f"... 외 {len(sorted_holdings) - 15}개 종목\n"
+            
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": holdings_text
+                }
+            })
+            blocks.append({"type": "divider"})
+        else:
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": "*보유 종목이 없습니다.*"
+                }
+            })
+        
+        # 시간 정보
+        blocks.append({
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": f"🕒 리포트 시각: {self._get_current_time()}"
+                }
+            ]
+        })
+        
+        # 간단한 텍스트 메시지 (알림용)
+        text = f"{title}: 총 수익 ${total_profit:+,.2f} ({total_profit_percent:+.2f}%)"
+        
+        return self.send_message(text, blocks, webhook_type='trading')
+    
     def _get_current_time(self) -> str:
         """현재 시각을 포맷팅해서 반환"""
         from datetime import datetime
