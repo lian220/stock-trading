@@ -9,6 +9,18 @@
 
 ---
 
+## 🔒 Security & Secrets (CRITICAL)
+
+> [!CAUTION]
+> **ABSOLUTELY NO SECRETS IN CODE OR COMMITS**
+>
+> 1.  **NEVER** commit `.env` files, API keys, tokens, credentials, or private keys.
+> 2.  Use environment variables for ALL sensitive data.
+> 3.  If you see a secret in the code, **IMMEDIATELY** remove it and rotate the key.
+> 4.  Before committing, verify that no secrets are included in the diff.
+
+---
+
 ## Project Overview
 
 한국투자증권 API 기반 미국 주식 자동매매 시스템. AI 주가 예측, 기술적 지표 분석, 뉴스 감정 분석을 통합한 FastAPI 서버.

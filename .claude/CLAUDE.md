@@ -5,7 +5,8 @@
 ## 📍 기본 참조 파일
 
 - **`.cursorrules`** - 모든 프로젝트 규칙 (아키텍처, 데이터베이스, 커밋 규칙 등) - **자동 참조됨**
-- **`.claude/DEVELOPMENT_PROCESS_GUIDE.md`** - 개발 프로세스 핵심 가이드 (빠른 참조용)
+- **`.ai/guides/PROCESS.md`** - 개발 프로세스 핵심 가이드 (빠른 참조용)
+- **`.ai/PROJECT_RULES.md`** - 프로젝트 공통 규칙
 
 ## ⚠️ 핵심 규칙 요약
 
@@ -17,4 +18,4 @@
 
 ## 빠른 참조
 
-자세한 개발 프로세스는 `.claude/DEVELOPMENT_PROCESS_GUIDE.md`를 참조하세요.
+자세한 개발 프로세스는 `.ai/guides/PROCESS.md`를 참조하세요.

@@ -13,8 +13,8 @@
 - [참고 문서](#참고-문서)
 
 > 📌 **핵심 규칙**: 프로젝트 루트의 [`.cursorrules`](../.cursorrules) 파일 참고
-> 📌 **프로젝트 공통 규칙**: [PROJECT_RULES.md](../PROJECT_RULES.md) 참고
-> 📌 **커밋 규칙**: [conventions/COMMIT_CONVENTION.md](./conventions/COMMIT_CONVENTION.md)
+> 📌 **코딩 컨벤션**: [../.ai/conventions/CODING_CONVENTION.md](../.ai/conventions/CODING_CONVENTION.md)
+> 📌 **커밋 규칙**: [../.ai/conventions/COMMIT_CONVENTION.md](../.ai/conventions/COMMIT_CONVENTION.md)
 
 ---
 
@@ -204,8 +204,13 @@ async def get_recommendations(
 
 ### 컨벤션
 - **핵심 규칙**: [`.cursorrules`](../.cursorrules) - Cursor가 자동으로 읽는 파일
-- **프로젝트 공통 규칙**: [PROJECT_RULES.md](../PROJECT_RULES.md) - 프로젝트 전체 규칙
-- **커밋 규칙**: [conventions/COMMIT_CONVENTION.md](./conventions/COMMIT_CONVENTION.md) - 커밋 메시지 컨벤션
+- **코딩 컨벤션**: [../.ai/conventions/CODING_CONVENTION.md](../.ai/conventions/CODING_CONVENTION.md) - 상세 코딩 규칙
+- **커밋 규칙**: [../.ai/conventions/COMMIT_CONVENTION.md](../.ai/conventions/COMMIT_CONVENTION.md) - 커밋 메시지 컨벤션
+
+### Agent 가이드
+- **테스트 생성 가이드**: [../.ai/guides/TEST_GUIDE.md](../.ai/guides/TEST_GUIDE.md) - 테스트 코드 생성 시 Agent가 따라야 할 규칙
+- **리팩토링 가이드**: [../.ai/guides/REFACTORING_GUIDE.md](../.ai/guides/REFACTORING_GUIDE.md) - 리팩토링 시 Agent가 따라야 할 원칙과 패턴
+- **프롬프트 가이드**: [../.ai/guides/PROMPT_GUIDE.md](../.ai/guides/PROMPT_GUIDE.md) - 요구사항을 구조화된 프롬프트로 변환
 
 ### 프로젝트 문서
 - **README**: [../README.md](../README.md)
