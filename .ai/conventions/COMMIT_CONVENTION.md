@@ -43,8 +43,8 @@ feat: 주식 추천 API에 기술적 지표 분석 기능 추가
 feat: 주식 추천 API에 기술적 지표 분석 기능 추가
 
 - StockRecommendationService에 기술적 지표 계산 로직 추가
-- RSI, MACD, 볼린저 밴드 지표 계산 함수 구현
-- MongoDB에 기술적 지표 데이터 저장 로직 추가
+- RSI, MACD, 볼린더 밴드 지표- [ ] **보안 확인**: `.env`, API 키, 토큰 등 비밀 정보가 포함되지 않았는가?
+- [ ] **데이터 조회**: MongoDB가 아닌 Supabase를 직접 조회하지 않았는가?
 - API 응답에 기술적 지표 필드 추가
 ```
 

@@ -6,13 +6,13 @@ COMMIT_MESSAGE_LANGUAGE: Korean (한글)
 # Cursor 규칙
 
 **⚠️ 중요**: 커밋 메시지와 PR 작성 규칙은 다음 파일들을 참조하세요:
-- `.cursor/conventions/COMMIT_CONVENTION.md`: 커밋 메시지 컨벤션 (모든 커밋 규칙은 여기서 관리)
-- `.cursor/.github/pull_request_template.md`: PR 작성 템플릿
+- `.ai/conventions/COMMIT_CONVENTION.md`: 커밋 메시지 컨벤션 (모든 커밋 규칙은 여기서 관리)
+- `.cursor/pull_request_template.md`: PR 작성 템플릿
 
-**Cursor AI는 커밋 메시지를 생성할 때 반드시 `.cursor/conventions/COMMIT_CONVENTION.md` 파일의 규칙을 따라야 합니다.**
+**Cursor AI는 커밋 메시지를 생성할 때 반드시 `.ai/conventions/COMMIT_CONVENTION.md` 파일의 규칙을 따라야 합니다.**
 
 ---
 
-**프로젝트 공통 규칙은 `PROJECT_RULES.md` 파일을 반드시 참조하세요.**
+**프로젝트 공통 규칙은 `.ai/PROJECT_RULES.md` 파일을 반드시 참조하세요.**
 
-**상세 규칙 및 가이드라인은 `.cursor/rules.md` 파일을 참조하세요.**
+**상세 규칙 및 가이드라인은 `.ai/rules.md` 파일을 참조하세요.**
