@@ -897,14 +897,16 @@ class SlackNotifier:
                     shares_short_prior = short_info.get('sharesShortPriorMonth')
                     short_ratio = short_info.get('shortRatio')
                     short_percent = short_info.get('shortPercentOfFloat')
-                    
+                    short_change_pct = short_info.get('shortChangePct')
+
                     stocks_with_short_data.append({
                         'ticker': ticker,
                         'stock_name': stock_name,
                         'sharesShort': shares_short,
                         'sharesShortPriorMonth': shares_short_prior,
                         'shortRatio': short_ratio,
-                        'shortPercentOfFloat': short_percent
+                        'shortPercentOfFloat': short_percent,
+                        'shortChangePct': short_change_pct
                     })
             
             # 공매도 데이터가 있는 종목이 없으면 전송하지 않음
@@ -951,11 +953,17 @@ class SlackNotifier:
                 short_ratio = stock.get('shortRatio')
                 shares_short = stock.get('sharesShort')
                 
+                short_change_pct = stock.get('shortChangePct')
+
                 stock_text += f"*{i}. {stock_name}* (`{ticker}`)\n"
                 if short_percent is not None:
                     stock_text += f"   • 공매도 비율: {short_percent:.2f}%\n"
                 if short_ratio is not None:
-                    stock_text += f"   • 공매도 비율 (Short Ratio): {short_ratio:.2f}\n"
+                    stock_text += f"   • Days to Cover: {short_ratio:.2f}일\n"
+                if short_change_pct is not None:
+                    # 증감률에 따라 이모지 표시
+                    change_emoji = "📈" if short_change_pct > 0 else "📉" if short_change_pct < 0 else "➖"
+                    stock_text += f"   • 전월 대비 증감: {change_emoji} {short_change_pct:+.2f}%\n"
                 if shares_short is not None:
                     stock_text += f"   • 공매도 주식 수: {shares_short:,.0f}주\n"
                 stock_text += "\n"

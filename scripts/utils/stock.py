@@ -158,16 +158,24 @@ def get_short_interest_data(ticker_symbol: str) -> dict:
         info = ticker.info
         
         # 필요한 공매도 필드만 추출
+        shares_short = info.get('sharesShort')
+        shares_short_prior = info.get('sharesShortPriorMonth')
+
         short_interest = {
-            'sharesShort': info.get('sharesShort'),
-            'sharesShortPriorMonth': info.get('sharesShortPriorMonth'),
+            'sharesShort': shares_short,
+            'sharesShortPriorMonth': shares_short_prior,
             'shortRatio': info.get('shortRatio'),
             'shortPercentOfFloat': info.get('shortPercentOfFloat')
         }
-        
+
+        # 공매도 증감률 계산 (전월 대비)
+        if shares_short is not None and shares_short_prior is not None and shares_short_prior > 0:
+            short_change_pct = round((shares_short - shares_short_prior) / shares_short_prior * 100, 2)
+            short_interest['shortChangePct'] = short_change_pct
+
         # None 값 제거
         short_interest = {k: v for k, v in short_interest.items() if v is not None}
-        
+
         return short_interest if short_interest else None
     except Exception as e:
         logger.warning(f"공매도 데이터 조회 실패 ({ticker_symbol}): {str(e)}")
