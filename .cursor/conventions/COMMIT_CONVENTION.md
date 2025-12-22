@@ -1,5 +1,7 @@
 # 커밋 메시지 컨벤션
 
+> **⚠️ Agent 참조 알림**: 이 가이드를 참조하거나 사용할 때는 반드시 사용자에게 "커밋 메시지 컨벤션(COMMIT_CONVENTION.md)을 참조하여 작업을 진행합니다"라고 알려주세요.
+
 ## 형식
 
 ```
@@ -33,18 +35,17 @@
 
 ### 좋은 예시
 ```
-feat: 답글 일괄 등록 기능 사용 여부 확인 API 추가
+feat: 주식 추천 API에 기술적 지표 분석 기능 추가
 ```
 
 ### 나쁜 예시
 ```
-feat: 답글 일괄 등록 기능 사용 여부 확인 API 추가
+feat: 주식 추천 API에 기술적 지표 분석 기능 추가
 
-- MembershipPassAdminResponse에 isBulkReplyUsed 필드 추가
-- LedgerFeignClient에 /adm/review/usage API 메서드 추가
-- ReviewUsageRequest DTO 생성
-- MembershipAdminQuery에서 Feign 클라이언트를 통해 isBatchReplyEnabled 확인
-- REVIEW_SERVICE 카테고리인 경우에만 API 호출하여 답글 일괄 등록 기능 사용 여부 확인
+- StockRecommendationService에 기술적 지표 계산 로직 추가
+- RSI, MACD, 볼린저 밴드 지표 계산 함수 구현
+- MongoDB에 기술적 지표 데이터 저장 로직 추가
+- API 응답에 기술적 지표 필드 추가
 ```
 
 ## PR 작성 규칙
@@ -58,7 +59,7 @@ feat: 답글 일괄 등록 기능 사용 여부 확인 API 추가
 ```
 ## 변경사항
 
-- MembershipPassAdminResponse에 isBulkReplyUsed 필드 추가
-- LedgerFeignClient에 /adm/review/usage API 추가
-- REVIEW_SERVICE 카테고리인 경우 Feign 클라이언트를 통해 isBatchReplyEnabled 확인
+- 주식 추천 API에 기술적 지표 분석 기능 추가
+- RSI, MACD, 볼린저 밴드 지표 계산 로직 구현
+- MongoDB에 기술적 지표 데이터 저장
 ```

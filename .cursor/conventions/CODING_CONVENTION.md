@@ -1,0 +1,215 @@
+# 코딩 컨벤션
+
+> **⚠️ Agent 참조 알림**: 이 가이드를 참조하거나 사용할 때는 반드시 사용자에게 "코딩 컨벤션(CODING_CONVENTION.md)을 참조하여 작업을 진행합니다"라고 알려주세요.
+
+## Python 스타일
+
+- **PEP 8** 준수
+- **Black** 또는 **autopep8** 사용 권장 (코드 포맷팅)
+- **Type Hints** 사용 권장 (가능한 경우)
+- **Docstring** 작성 권장 (Google 스타일 또는 NumPy 스타일)
+
+## 네이밍 규칙
+
+- **클래스**: PascalCase
+  ```python
+  class StockRepository:
+      pass
+  ```
+- **함수/변수**: snake_case
+  ```python
+  def get_stock_recommendations():
+      pass
+    
+  stock_price = 100.0
+  ```
+- **상수**: UPPER_SNAKE_CASE
+  ```python
+  MAX_RETRY_COUNT = 3
+  DEFAULT_TIMEOUT = 30
+  ```
+- **모듈/패키지**: 소문자, 언더스코어 사용 가능
+  ```python
+  # stock_service.py
+  # auto_trading_service.py
+  ```
+
+## 타입 힌트
+
+가능한 경우 타입 힌트를 사용합니다:
+
+```python
+from typing import List, Optional, Dict
+from app.domain.entities.stock import Stock
+
+def get_stock_by_ticker(ticker: str) -> Optional[Stock]:
+    """티커로 주식 정보를 조회합니다."""
+    pass
+
+def get_all_stocks() -> List[Stock]:
+    """모든 주식 정보를 조회합니다."""
+    pass
+```
+
+## 예외 처리
+
+- 명확한 예외 메시지 작성
+- 커스텀 예외 클래스 사용 권장
+- FastAPI의 `HTTPException` 활용
+
+**예시**:
+```python
+from fastapi import HTTPException, status
+
+class StockNotFoundError(Exception):
+    """주식을 찾을 수 없을 때 발생하는 예외"""
+    pass
+
+def get_stock(ticker: str) -> Stock:
+    stock = repository.find_by_ticker(ticker)
+    if not stock:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"주식을 찾을 수 없습니다: {ticker}"
+        )
+    return stock
+```
+
+## 비동기 처리
+
+- FastAPI는 비동기 처리를 지원하므로 가능한 경우 `async/await` 사용
+- 데이터베이스 작업은 비동기로 처리 (motor, asyncpg 등)
+
+```python
+from motor.motor_asyncio import AsyncIOMotorClient
+
+async def get_stock_data(ticker: str) -> dict:
+    """비동기로 주식 데이터를 조회합니다."""
+    client = AsyncIOMotorClient()
+    db = client.stock_db
+    collection = db.stocks
+    result = await collection.find_one({"ticker": ticker})
+    return result
+```
+
+## 의존성 주입
+
+- FastAPI의 `Depends` 사용
+- Repository는 팩토리 함수를 통해 주입
+
+```python
+from fastapi import Depends
+from app.application.dependencies import get_stock_repository
+from app.domain.repositories.stock_repository import StockRepository
+
+@router.get("/stocks/{ticker}")
+async def get_stock(
+    ticker: str,
+    repository: StockRepository = Depends(get_stock_repository)
+):
+    return await repository.find_by_ticker(ticker)
+```
+
+## Clean Architecture 준수
+
+### 계층 분리
+- **Domain**: 비즈니스 로직, 엔티티 (의존성 없음)
+- **Application**: Use Cases, 비즈니스 로직 조합
+- **Infrastructure**: 외부 시스템 연동 (DB, API 등)
+- **Presentation**: API 라우터
+
+### 의존성 방향
+```
+Presentation → Application → Domain
+                ↓
+           Infrastructure
+```
+
+## 코드 구조 예시
+
+### Repository 인터페이스 (Domain)
+```python
+# app/domain/repositories/stock_repository.py
+from abc import ABC, abstractmethod
+from typing import List, Optional
+from app.domain.entities.stock import Stock
+
+class StockRepository(ABC):
+    @abstractmethod
+    async def find_by_ticker(self, ticker: str) -> Optional[Stock]:
+        pass
+    
+    @abstractmethod
+    async def find_all(self) -> List[Stock]:
+        pass
+```
+
+### Repository 구현 (Infrastructure)
+```python
+# app/infrastructure/repositories/mongodb_stock_repository.py
+from app.domain.repositories.stock_repository import StockRepository
+from app.domain.entities.stock import Stock
+
+class MongoDBStockRepository(StockRepository):
+    def __init__(self, collection):
+        self.collection = collection
+    
+    async def find_by_ticker(self, ticker: str) -> Optional[Stock]:
+        result = await self.collection.find_one({"ticker": ticker})
+        if result:
+            return Stock.from_dict(result)
+        return None
+```
+
+### Use Case (Application)
+```python
+# app/application/use_cases/get_stock_recommendations.py
+from app.domain.repositories.stock_repository import StockRepository
+
+class GetStockRecommendationsUseCase:
+    def __init__(self, repository: StockRepository):
+        self.repository = repository
+    
+    async def execute(self) -> List[Stock]:
+        return await self.repository.find_recommendations()
+```
+
+## 주석 및 Docstring
+
+- 복잡한 로직에는 주석 추가
+- 함수/클래스에는 Docstring 작성 (Google 스타일 권장)
+
+```python
+def calculate_rsi(prices: List[float], period: int = 14) -> float:
+    """
+    RSI (Relative Strength Index)를 계산합니다.
+    
+    Args:
+        prices: 가격 리스트
+        period: 계산 기간 (기본값: 14)
+    
+    Returns:
+        RSI 값 (0-100)
+    
+    Raises:
+        ValueError: prices가 period보다 짧을 때
+    """
+    if len(prices) < period:
+        raise ValueError(f"가격 데이터가 부족합니다: {len(prices)} < {period}")
+    # ... 계산 로직
+```
+
+## 환경변수 접근
+
+모든 환경변수는 `app/core/config.py`의 `settings` 객체를 통해서만 접근:
+
+```python
+from app.core.config import settings
+
+# ✅ 올바른 방법
+mongodb_url = settings.get_mongodb_url()
+
+# ❌ 잘못된 방법
+import os
+mongodb_url = os.getenv("MONGODB_URL")  # 금지
+```

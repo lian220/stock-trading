@@ -65,14 +65,14 @@ class StockScheduler:
         # 한국 시간 기준 밤 11시에 Vertex AI 예측 작업 실행
         schedule.every().day.at("23:00").do(self._run_vertex_ai_prediction)
         
-        # 한국 시간 기준 밤 11시 15분에 병렬 분석 작업 실행
-        schedule.every().day.at("23:15").do(self._run_parallel_analysis)
+        # 한국 시간 기준 밤 11시 5분에 병렬 분석 작업 실행 (충분한 시간 확보)
+        schedule.every().day.at("23:05").do(self._run_parallel_analysis)
 
         # 한국 시간 기준 밤 11시 45분에 통합 분석 작업 실행
         schedule.every().day.at("23:45").do(self._run_combined_analysis)
         
-        # 한국 시간 기준 밤 12시(00:00)에 매수 작업 실행
-        schedule.every().day.at("00:00").do(self._run_auto_buy)
+        # 한국 시간 기준 밤 11시 50분(23:50)에 매수 작업 실행 (장 시작 20분 후)
+        schedule.every().day.at("23:50").do(self._run_auto_buy)
         
         # 한국 시간 기준 새벽 6시 30분에 장 마감 후 미체결 주문 정리 (16:00 ET 이후)
         schedule.every().day.at("06:30").do(self._cleanup_pending_orders)
@@ -91,7 +91,7 @@ class StockScheduler:
         logger.info("주식 자동매매 스케줄러가 시작되었습니다.")
         logger.info("  - 경제 데이터: 매일 06:05, 23:00 (재수집)")
         logger.info("  - Vertex AI 예측: 매일 23:00")
-        logger.info("  - 병렬 분석: 매일 23:15 (기술적 지표 + 감정 분석)")
+        logger.info("  - 병렬 분석: 매일 23:05 (기술적 지표 + 감정 분석)")
         logger.info("  - 통합 분석: 매일 23:45 (AI 예측 + 기술적 지표 + 감정 분석)")
         logger.info("  - 매수: 매일 00:00")
         logger.info("  - 미체결 주문 정리: 매일 06:30 (장 마감 후)")

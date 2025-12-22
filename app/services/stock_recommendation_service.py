@@ -1062,10 +1062,30 @@ class StockRecommendationService:
                 if not sentiment_map:
                     logger.info("MongoDB sentiment_analysis가 비어있음")
 
-                # 4. 데이터 매핑 준비
+                # 4. 공매도 데이터 조회 (MongoDB daily_stock_data의 stocks 필드 활용)
+                short_interest_map = {}
+                if db is not None:
+                    # 가장 최근 날짜의 daily_stock_data 조회
+                    latest_daily_data = db.daily_stock_data.find_one(
+                        sort=[("date", -1)]
+                    )
+                    
+                    if latest_daily_data and "stocks" in latest_daily_data:
+                        # stocks 구조: {ticker: {close_price: ..., short_interest: {...}}}
+                        stocks_data = latest_daily_data["stocks"]
+                        for ticker, data in stocks_data.items():
+                            if isinstance(data, dict):
+                                short_info = data.get("short_interest", {})
+                                if short_info:
+                                    short_percent = short_info.get("shortPercentOfFloat")
+                                    if short_percent:
+                                        short_interest_map[ticker] = float(short_percent)
+                        logger.info(f"MongoDB daily_stock_data에서 {len(short_interest_map)}개 공매도 정보 조회")
+
+                # 5. 데이터 매핑 준비
                 tech_map = {row["종목"]: row.to_dict() for _, row in filtered_tech_df.iterrows()}
                 
-                # 5. 결과 통합
+                # 6. 결과 통합
                 for rec in recommendations:
                     stock_name = rec["Stock"]
                     ticker = get_ticker_from_stock_name(stock_name)
@@ -1076,6 +1096,7 @@ class StockRecommendationService:
                         continue  # 기술적 지표가 없으면 제외
                     
                     sentiment = sentiment_map.get(ticker)
+                    short_percent = short_interest_map.get(ticker)
                     
                     # 통합 데이터 생성
                     combined_data = {
@@ -1090,6 +1111,7 @@ class StockRecommendationService:
                         "sentiment_score": sentiment["average_sentiment_score"] if sentiment else None,
                         "article_count": sentiment["article_count"] if sentiment else None,
                         "sentiment_date": sentiment.get("calculation_date") or sentiment.get("date") if sentiment else None,
+                        "short_percent": short_percent,  # 공매도 비율 추가
                         "technical_date": tech_data["날짜"],
                         "sma20": float(tech_data["SMA20"]),
                         "sma50": float(tech_data["SMA50"]),
@@ -1102,11 +1124,30 @@ class StockRecommendationService:
                     }
                     results.append(combined_data)
                 
-                # 6. 매수 추천 조건에 따른 추가 필터링 후 순위 계산
+                # 7. 매수 추천 조건에 따른 추가 필터링 후 순위 계산
                 for item in results:
                     sentiment_score = item["sentiment_score"]
                     tech_conditions = [item["golden_cross"], item["rsi"] < 50, item["macd_buy_signal"]]
                     
+                    # 공매도 전략 적용
+                    short_score = 0
+                    short_percent = item.get("short_percent")
+                    
+                    if short_percent:
+                        # 시나리오 1: 숏 스퀴즈 유망 (공매도 10% 이상 + 골든 크로스)
+                        if short_percent >= 0.1 and item["golden_cross"]:
+                            short_score += 0.5
+                            if short_percent >= 0.2:  # 공매도 20% 이상이면 가산점 더 부여
+                                short_score += 0.5
+                                
+                        # 시나리오 2: 하락 베팅 심화 (공매도 15% 이상 + 기술적 하락세)
+                        # 기술적 조건이 1개 이하로 충족되면 하락세로 간주
+                        elif short_percent >= 0.15 and sum(tech_conditions) <= 1:
+                            short_score -= 1.0  # 감점
+
+                    item["short_score"] = short_score
+                    
+                    # 필터링 로직
                     if sentiment_score is not None and sentiment_score >= 0.15:
                         if sum(tech_conditions) >= 2:
                             final_results.append(item)
@@ -1114,7 +1155,7 @@ class StockRecommendationService:
                         if sum(tech_conditions) >= 3:
                             final_results.append(item)
 
-                # 7. 종합 점수 계산 및 정렬
+                # 8. 종합 점수 계산 및 정렬
                 for item in final_results:
                     sentiment_score = item["sentiment_score"] if item["sentiment_score"] is not None else 0.0
                     tech_conditions_count = (
@@ -1122,11 +1163,15 @@ class StockRecommendationService:
                         1.0 * (item["rsi"] < 50) +
                         1.0 * item["macd_buy_signal"]
                     )
-                    item["composite_score"] = (
+                    
+                    # 기존 점수 + 공매도 점수
+                    base_score = (
                         0.3 * item["rise_probability"] +
                         0.4 * tech_conditions_count +
                         0.3 * sentiment_score
                     )
+                    
+                    item["composite_score"] = base_score + item.get("short_score", 0)
 
                 final_results.sort(key=lambda x: x["composite_score"], reverse=True)
 
