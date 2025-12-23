@@ -1425,9 +1425,8 @@ def calculate_portfolio_profit():
         except Exception as e:
             logger.warning(f"주식명 매핑 조회 중 오류: {str(e)}")
         
-        holdings = []
-        total_cost = 0.0
-        total_value = 0.0
+        # 티커별로 그룹화하여 중복 제거 (여러 거래소에 상장된 경우 대비)
+        ticker_dict = {}
         
         for item in holdings_data:
             try:
@@ -1454,30 +1453,69 @@ def calculate_portfolio_profit():
                 # 주식명 조회
                 stock_name = ticker_to_name.get(ticker, ticker)
                 
-                # 수익 계산
-                cost = quantity * avg_price  # 매수금액
-                value = quantity * current_price  # 평가금액
-                profit = value - cost  # 수익
-                profit_percent = (profit / cost * 100) if cost > 0 else 0.0  # 수익율
+                # 매수금액 (수량 * 평균단가)
+                cost = quantity * avg_price
                 
-                holdings.append({
-                    "ticker": ticker,
-                    "stock_name": stock_name,
-                    "quantity": int(quantity),
-                    "avg_price": avg_price,
-                    "current_price": current_price,
-                    "cost": cost,
-                    "value": value,
-                    "profit": profit,
-                    "profit_percent": profit_percent
-                })
-                
-                total_cost += cost
-                total_value += value
+                # 같은 티커가 이미 존재하는 경우 통합
+                if ticker in ticker_dict:
+                    existing = ticker_dict[ticker]
+                    # 수량 합산
+                    total_quantity = existing["quantity"] + quantity
+                    # 가중평균단가 계산: (기존 매수금액 + 새 매수금액) / (기존 수량 + 새 수량)
+                    total_cost_combined = existing["cost"] + cost
+                    weighted_avg_price = total_cost_combined / total_quantity if total_quantity > 0 else avg_price
+                    
+                    # 현재가는 마지막 값 사용 (같은 종목이면 동일할 것)
+                    ticker_dict[ticker] = {
+                        "ticker": ticker,
+                        "stock_name": stock_name,  # 주식명은 동일할 것
+                        "quantity": total_quantity,
+                        "avg_price": weighted_avg_price,
+                        "current_price": current_price,  # 마지막 현재가 사용
+                        "cost": total_cost_combined,
+                        "value": total_quantity * current_price,  # 합산된 수량 * 현재가
+                    }
+                else:
+                    # 새로운 티커인 경우
+                    ticker_dict[ticker] = {
+                        "ticker": ticker,
+                        "stock_name": stock_name,
+                        "quantity": quantity,
+                        "avg_price": avg_price,
+                        "current_price": current_price,
+                        "cost": cost,
+                        "value": quantity * current_price,
+                    }
                 
             except (ValueError, TypeError) as e:
                 logger.warning(f"종목 수익율 계산 중 오류 (티커: {item.get('ovrs_pdno', 'N/A')}): {str(e)}")
                 continue
+        
+        # 딕셔너리를 리스트로 변환하고 수익 계산
+        holdings = []
+        total_cost = 0.0
+        total_value = 0.0
+        
+        for ticker, holding_data in ticker_dict.items():
+            cost = holding_data["cost"]
+            value = holding_data["value"]
+            profit = value - cost
+            profit_percent = (profit / cost * 100) if cost > 0 else 0.0
+            
+            holdings.append({
+                "ticker": holding_data["ticker"],
+                "stock_name": holding_data["stock_name"],
+                "quantity": int(holding_data["quantity"]),
+                "avg_price": holding_data["avg_price"],
+                "current_price": holding_data["current_price"],
+                "cost": cost,
+                "value": value,
+                "profit": profit,
+                "profit_percent": profit_percent
+            })
+            
+            total_cost += cost
+            total_value += value
         
         # 총 수익 계산
         total_profit = total_value - total_cost
