@@ -1502,4 +1502,316 @@ def calculate_portfolio_profit():
             "total_profit_percent": 0.0,
             "error": str(e)
         }
+
+
+def calculate_cumulative_profit(user_id: str, days: int = 90, ticker: str = None):
+    """
+    완료된 거래(매수→매도)의 누적 수익률을 계산합니다.
+    FIFO (First In First Out) 방식으로 매수/매도 거래를 매칭합니다.
+    
+    Args:
+        user_id: 사용자 ID (필수)
+        days: 조회 기간 (일, 기본값: 90일)
+        ticker: 특정 티커만 조회 (선택사항, None이면 전체)
+    
+    Returns:
+        dict: {
+            "success": bool,
+            "trades": list,  # 완료된 거래 목록 (매수→매도 매칭)
+            "statistics": dict,  # 통계 정보
+                - total_trades: 총 거래 횟수
+                - winning_trades: 수익 거래 횟수
+                - losing_trades: 손실 거래 횟수
+                - win_rate: 승률 (%)
+                - total_profit: 총 실현 수익 (USD)
+                - total_cost: 총 매수 금액 (USD)
+                - total_profit_percent: 총 수익률 (%)
+                - avg_profit_percent: 평균 수익률 (%)
+                - avg_winning_profit_percent: 평균 수익 거래 수익률 (%)
+                - avg_losing_profit_percent: 평균 손실 거래 손실률 (%)
+            "by_ticker": dict,  # 티커별 통계
+            "error": str (optional)
+        }
+    """
+    try:
+        from datetime import datetime, timedelta
+        
+        if not user_id:
+            return {
+                "success": False,
+                "trades": [],
+                "statistics": {},
+                "by_ticker": {},
+                "error": "user_id는 필수입니다"
+            }
+        
+        db = get_db()
+        if db is None:
+            return {
+                "success": False,
+                "trades": [],
+                "statistics": {},
+                "by_ticker": {},
+                "error": "MongoDB 연결 실패"
+            }
+        
+        # 조회 기간 설정
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=days)
+        
+        # 거래 로그 조회 (user_id 필터 추가)
+        query = {
+            "user_id": user_id,  # 사용자별 필터링
+            "created_at": {"$gte": start_date, "$lte": end_date},
+            "status": {"$in": ["executed", "success"]}  # 체결된 거래만
+        }
+        
+        if ticker:
+            query["ticker"] = ticker
+        
+        # 매수 거래 조회
+        buy_orders = list(db.trading_logs.find({
+            **query,
+            "order_type": "buy"
+        }).sort("created_at", 1))  # 시간순 정렬
+        
+        # 매도 거래 조회
+        sell_orders = list(db.trading_logs.find({
+            **query,
+            "order_type": "sell"
+        }).sort("created_at", 1))  # 시간순 정렬
+        
+        if not buy_orders or not sell_orders:
+            return {
+                "success": True,
+                "trades": [],
+                "statistics": {
+                    "total_trades": 0,
+                    "winning_trades": 0,
+                    "losing_trades": 0,
+                    "win_rate": 0.0,
+                    "total_profit": 0.0,
+                    "total_cost": 0.0,
+                    "total_profit_percent": 0.0,
+                    "avg_profit_percent": 0.0,
+                    "avg_winning_profit_percent": 0.0,
+                    "avg_losing_profit_percent": 0.0
+                },
+                "by_ticker": {}
+            }
+        
+        # FIFO 방식으로 매수/매도 매칭
+        completed_trades = []
+        
+        # 티커별로 그룹화
+        buy_by_ticker = {}
+        for buy in buy_orders:
+            ticker_key = buy.get("ticker", "")
+            if ticker_key not in buy_by_ticker:
+                buy_by_ticker[ticker_key] = []
+            buy_by_ticker[ticker_key].append(buy)
+        
+        sell_by_ticker = {}
+        for sell in sell_orders:
+            ticker_key = sell.get("ticker", "")
+            if ticker_key not in sell_by_ticker:
+                sell_by_ticker[ticker_key] = []
+            sell_by_ticker[ticker_key].append(sell)
+        
+        # 각 티커별로 매칭
+        for ticker_key in set(list(buy_by_ticker.keys()) + list(sell_by_ticker.keys())):
+            buys = buy_by_ticker.get(ticker_key, [])
+            sells = sell_by_ticker.get(ticker_key, [])
+            
+            if not buys or not sells:
+                continue
+            
+            # FIFO 매칭: 매수 큐와 매도 큐를 사용
+            buy_queue = []
+            sell_queue = []
+            
+            all_orders = sorted(
+                buys + sells,
+                key=lambda x: x.get("created_at", datetime.min)
+            )
+            
+            for order in all_orders:
+                if order.get("order_type") == "buy":
+                    buy_queue.append(order)
+                elif order.get("order_type") == "sell":
+                    sell_queue.append(order)
+                    
+                    # 매도가 있으면 가장 오래된 매수와 매칭
+                    while buy_queue and sell_queue:
+                        buy_order = buy_queue[0]
+                        sell_order = sell_queue[0]
+                        
+                        buy_price = buy_order.get("price", 0)
+                        buy_qty = buy_order.get("quantity", 0)
+                        sell_price = sell_order.get("price", 0)
+                        sell_qty = sell_order.get("quantity", 0)
+                        
+                        if buy_price <= 0 or buy_qty <= 0 or sell_price <= 0 or sell_qty <= 0:
+                            # 유효하지 않은 거래는 스킵
+                            if buy_price <= 0 or buy_qty <= 0:
+                                buy_queue.pop(0)
+                            if sell_price <= 0 or sell_qty <= 0:
+                                sell_queue.pop(0)
+                            continue
+                        
+                        # 매칭 수량 결정
+                        matched_qty = min(buy_qty, sell_qty)
+                        
+                        # 수익 계산
+                        cost = buy_price * matched_qty
+                        revenue = sell_price * matched_qty
+                        profit = revenue - cost
+                        profit_percent = (profit / cost * 100) if cost > 0 else 0.0
+                        
+                        # 거래 기간 계산
+                        buy_date = buy_order.get("created_at")
+                        sell_date = sell_order.get("created_at")
+                        if isinstance(buy_date, str):
+                            buy_date = datetime.fromisoformat(buy_date.replace('Z', '+00:00'))
+                        if isinstance(sell_date, str):
+                            sell_date = datetime.fromisoformat(sell_date.replace('Z', '+00:00'))
+                        
+                        holding_days = (sell_date - buy_date).days if buy_date and sell_date else 0
+                        
+                        completed_trades.append({
+                            "ticker": ticker_key,
+                            "stock_name": buy_order.get("stock_name", ticker_key),
+                            "buy_date": buy_date.isoformat() if buy_date else None,
+                            "sell_date": sell_date.isoformat() if sell_date else None,
+                            "holding_days": holding_days,
+                            "buy_price": buy_price,
+                            "sell_price": sell_price,
+                            "quantity": matched_qty,
+                            "cost": cost,
+                            "revenue": revenue,
+                            "profit": profit,
+                            "profit_percent": profit_percent,
+                            "sell_reasons": sell_order.get("sell_reasons", [])
+                        })
+                        
+                        # 사용된 수량만큼 차감
+                        buy_qty -= matched_qty
+                        sell_qty -= matched_qty
+                        
+                        if buy_qty <= 0:
+                            buy_queue.pop(0)
+                        else:
+                            buy_queue[0]["quantity"] = buy_qty
+                        
+                        if sell_qty <= 0:
+                            sell_queue.pop(0)
+                        else:
+                            sell_queue[0]["quantity"] = sell_qty
+        
+        # 통계 계산
+        if not completed_trades:
+            return {
+                "success": True,
+                "trades": [],
+                "statistics": {
+                    "total_trades": 0,
+                    "winning_trades": 0,
+                    "losing_trades": 0,
+                    "win_rate": 0.0,
+                    "total_profit": 0.0,
+                    "total_cost": 0.0,
+                    "total_profit_percent": 0.0,
+                    "avg_profit_percent": 0.0,
+                    "avg_winning_profit_percent": 0.0,
+                    "avg_losing_profit_percent": 0.0
+                },
+                "by_ticker": {}
+            }
+        
+        total_trades = len(completed_trades)
+        winning_trades = [t for t in completed_trades if t["profit"] > 0]
+        losing_trades = [t for t in completed_trades if t["profit"] < 0]
+        
+        total_cost = sum(t["cost"] for t in completed_trades)
+        total_profit = sum(t["profit"] for t in completed_trades)
+        total_profit_percent = (total_profit / total_cost * 100) if total_cost > 0 else 0.0
+        
+        avg_profit_percent = (sum(t["profit_percent"] for t in completed_trades) / total_trades) if total_trades > 0 else 0.0
+        
+        avg_winning_profit_percent = (
+            sum(t["profit_percent"] for t in winning_trades) / len(winning_trades)
+        ) if winning_trades else 0.0
+        
+        avg_losing_profit_percent = (
+            sum(t["profit_percent"] for t in losing_trades) / len(losing_trades)
+        ) if losing_trades else 0.0
+        
+        win_rate = (len(winning_trades) / total_trades * 100) if total_trades > 0 else 0.0
+        
+        # 티커별 통계
+        by_ticker = {}
+        for trade in completed_trades:
+            ticker_key = trade["ticker"]
+            if ticker_key not in by_ticker:
+                by_ticker[ticker_key] = {
+                    "ticker": ticker_key,
+                    "stock_name": trade["stock_name"],
+                    "trades": 0,
+                    "winning_trades": 0,
+                    "losing_trades": 0,
+                    "win_rate": 0.0,
+                    "total_profit": 0.0,
+                    "total_cost": 0.0,
+                    "total_profit_percent": 0.0,
+                    "avg_profit_percent": 0.0
+                }
+            
+            by_ticker[ticker_key]["trades"] += 1
+            by_ticker[ticker_key]["total_profit"] += trade["profit"]
+            by_ticker[ticker_key]["total_cost"] += trade["cost"]
+            
+            if trade["profit"] > 0:
+                by_ticker[ticker_key]["winning_trades"] += 1
+            elif trade["profit"] < 0:
+                by_ticker[ticker_key]["losing_trades"] += 1
+        
+        # 티커별 통계 계산
+        for ticker_key in by_ticker:
+            stats = by_ticker[ticker_key]
+            stats["win_rate"] = (stats["winning_trades"] / stats["trades"] * 100) if stats["trades"] > 0 else 0.0
+            stats["total_profit_percent"] = (stats["total_profit"] / stats["total_cost"] * 100) if stats["total_cost"] > 0 else 0.0
+            
+            # 티커별 평균 수익률 계산
+            ticker_trades = [t for t in completed_trades if t["ticker"] == ticker_key]
+            stats["avg_profit_percent"] = (
+                sum(t["profit_percent"] for t in ticker_trades) / len(ticker_trades)
+            ) if ticker_trades else 0.0
+        
+        return {
+            "success": True,
+            "trades": completed_trades,
+            "statistics": {
+                "total_trades": total_trades,
+                "winning_trades": len(winning_trades),
+                "losing_trades": len(losing_trades),
+                "win_rate": round(win_rate, 2),
+                "total_profit": round(total_profit, 2),
+                "total_cost": round(total_cost, 2),
+                "total_profit_percent": round(total_profit_percent, 2),
+                "avg_profit_percent": round(avg_profit_percent, 2),
+                "avg_winning_profit_percent": round(avg_winning_profit_percent, 2),
+                "avg_losing_profit_percent": round(avg_losing_profit_percent, 2)
+            },
+            "by_ticker": list(by_ticker.values())
+        }
+        
+    except Exception as e:
+        logger.error(f"누적 수익률 계산 중 오류: {str(e)}", exc_info=True)
+        return {
+            "success": False,
+            "trades": [],
+            "statistics": {},
+            "by_ticker": {},
+            "error": str(e)
+        }
     

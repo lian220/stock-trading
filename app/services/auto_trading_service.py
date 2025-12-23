@@ -34,6 +34,7 @@ class AutoTradingService:
             "min_composite_score": 2.0,  # 최소 종합 점수 (기존 70점에서 실제 점수 분포 2~3점에 맞춰 하향 조정)
             "max_stocks_to_buy": 5,  # 최대 매수 종목 수
             "max_amount_per_stock": 10000.0,  # 종목당 최대 매수 금액 (USD)
+            "max_portfolio_weight_per_stock": 20.0,  # 단일 종목 최대 투자 비중 (%)
             "stop_loss_percent": -7.0,  # 손절 기준 (%)
             "take_profit_percent": 5.0,  # 익절 기준 (%)
             "use_sentiment": True,  # 감정 분석 사용 여부

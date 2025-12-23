@@ -1346,15 +1346,40 @@ class StockRecommendationService:
                 # 가격 변동률 계산
                 price_change_percent = ((current_price - purchase_price) / purchase_price) * 100 if purchase_price > 0 else 0
                 
-                # 매도 근거와 신호 수를 추적할 변수들
+                # 매도 근거와 우선순위를 추적할 변수들
                 sell_reasons = []
                 technical_sell_signals = 0
+                priority = 3  # 기본값: Priority 3 (기술적 매도)
+                sell_type = None  # "stop_loss_urgent", "stop_loss", "take_profit", "technical_strong", "technical_moderate"
                 
-                # 조건 1: 가격 기반 매도 (익절/손절)
-                if price_change_percent >= 5:
-                    sell_reasons.append(f"익절 조건 충족: 구매가 대비 {price_change_percent:.2f}% 상승")
+                # 조건 1: 가격 기반 매도 (익절/손절) - Priority 1, 2
+                # 레버리지 ETF 여부 확인 (종목명에 키워드 포함 여부)
+                is_leveraged = False
+                leverage_keywords = ["2X", "3X", "Leverage", "Ultra", "레버리지", "2배", "3배"]
+                for keyword in leverage_keywords:
+                    if keyword.lower() in stock_name.lower():
+                        is_leveraged = True
+                        break
+                
+                # 목표 수익률 설정 (레버리지는 10%, 일반은 5%)
+                target_profit_percent = 10 if is_leveraged else 5
+                
+                # Priority 1: 손절 조건 (최우선)
+                if price_change_percent <= -10:
+                    # 긴급 손절: -10% 이하
+                    priority = 1
+                    sell_type = "stop_loss_urgent"
+                    sell_reasons.append(f"긴급 손절 조건 충족: 구매가 대비 {price_change_percent:.2f}% 하락 (최우선 매도)")
                 elif price_change_percent <= -7:
+                    # 일반 손절: -7% 이하
+                    priority = 1
+                    sell_type = "stop_loss"
                     sell_reasons.append(f"손절 조건 충족: 구매가 대비 {price_change_percent:.2f}% 하락")
+                # Priority 2: 익절 조건
+                elif price_change_percent >= target_profit_percent:
+                    priority = 2
+                    sell_type = "take_profit"
+                    sell_reasons.append(f"익절 조건 충족({'레버리지' if is_leveraged else '일반'}): 구매가 대비 {price_change_percent:.2f}% 상승 (목표: {target_profit_percent}%)")
                 
                 # 기술적 지표 확인
                 tech_record = None
@@ -1383,14 +1408,18 @@ class StockRecommendationService:
                 if ticker in sentiment_data:
                     sentiment_score = sentiment_data[ticker].get("average_sentiment_score")
                 
-                # 조건 3: 기술적 지표 중 3개 이상 매도 신호 (가장 강력한 매도 신호부터 체크)
-                if technical_sell_signals >= 3:
-                    sell_reasons.append(f"모든 기술적 지표가 매도 신호: {', '.join(tech_sell_signals_details)}")
-                # 조건 2: 감성 점수 < -0.15이고 기술적 지표 중 2개 이상 매도 신호
-                elif sentiment_score is not None and sentiment_score < -0.15 and technical_sell_signals >= 2:
-                    sell_reasons.append(f"부정적 감성({sentiment_score:.2f})과 기술적 매도 신호({technical_sell_signals}개): {', '.join(tech_sell_signals_details)}")
+                # Priority 3: 기술적 매도 조건 (익절/손절 조건이 없을 때만 적용)
+                if priority == 3:  # 익절/손절 조건이 없을 때만 기술적 매도 체크
+                    # 조건 3: 기술적 지표 중 3개 이상 매도 신호 (강력한 매도 신호)
+                    if technical_sell_signals >= 3:
+                        sell_type = "technical_strong"
+                        sell_reasons.append(f"모든 기술적 지표가 매도 신호: {', '.join(tech_sell_signals_details)}")
+                    # 조건 2: 감성 점수 < -0.15이고 기술적 지표 중 2개 이상 매도 신호 (보통 매도 신호)
+                    elif sentiment_score is not None and sentiment_score < -0.15 and technical_sell_signals >= 2:
+                        sell_type = "technical_moderate"
+                        sell_reasons.append(f"부정적 감성({sentiment_score:.2f})과 기술적 매도 신호({technical_sell_signals}개): {', '.join(tech_sell_signals_details)}")
                 
-                # 매도 대상 판단
+                # 매도 대상 판단 (익절/손절이 있으면 무조건 매도, 기술적 매도는 조건 충족 시만)
                 if sell_reasons:
                     sell_candidates.append({
                         "ticker": ticker,
@@ -1401,14 +1430,17 @@ class StockRecommendationService:
                         "quantity": quantity,
                         "exchange_code": exchange_code,
                         "sell_reasons": sell_reasons,
+                        "priority": priority,  # 우선순위 추가 (1: 손절, 2: 익절, 3: 기술적 매도)
+                        "sell_type": sell_type,  # 매도 유형 추가
                         "technical_sell_signals": technical_sell_signals,
                         "technical_sell_details": tech_sell_signals_details if tech_sell_signals_details else None,
                         "sentiment_score": sentiment_score,
                         "technical_data": tech_record
                     })
             
-            # 가격 변동률이 큰 순서로 정렬 (절대값 기준)
-            sell_candidates.sort(key=lambda x: abs(x["price_change_percent"]), reverse=True)
+            # 우선순위별 정렬: Priority 1 (손절) → Priority 2 (익절) → Priority 3 (기술적 매도)
+            # 같은 우선순위 내에서는 가격 변동률이 큰 순서로 정렬 (절대값 기준)
+            sell_candidates.sort(key=lambda x: (x["priority"], -abs(x["price_change_percent"])))
             
             return {
                 "message": f"{len(sell_candidates)}개의 매도 대상 종목을 식별했습니다",

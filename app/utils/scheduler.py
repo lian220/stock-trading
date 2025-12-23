@@ -676,13 +676,38 @@ class StockScheduler:
         if not sell_candidates:
             return
         
-        # 각 종목에 대해 매도 주문 실행
+        # 우선순위별 통계 추적
+        priority_stats = {
+            1: {"count": 0, "success": 0, "failed": 0, "name": "손절 (Priority 1)"},
+            2: {"count": 0, "success": 0, "failed": 0, "name": "익절 (Priority 2)"},
+            3: {"count": 0, "success": 0, "failed": 0, "name": "기술적 매도 (Priority 3)"}
+        }
+        
+        # 우선순위별로 그룹화하여 로깅
+        priority_groups = {1: [], 2: [], 3: []}
         for candidate in sell_candidates:
-            try:
-                ticker = candidate["ticker"]
-                stock_name = candidate["stock_name"]
-                exchange_code = candidate["exchange_code"]
-                quantity = candidate["quantity"]
+            priority = candidate.get("priority", 3)  # 기본값 3
+            if priority in priority_groups:
+                priority_groups[priority].append(candidate)
+        
+        logger.info(f"[{function_name}] 매도 대상 종목 {len(sell_candidates)}개 발견")
+        logger.info(f"[{function_name}] 우선순위별 분류: Priority 1 (손절) {len(priority_groups[1])}개, Priority 2 (익절) {len(priority_groups[2])}개, Priority 3 (기술적 매도) {len(priority_groups[3])}개")
+        
+        # 우선순위 순서대로 처리 (Priority 1 → 2 → 3)
+        for priority in [1, 2, 3]:
+            if not priority_groups[priority]:
+                continue
+            
+            priority_name = priority_stats[priority]["name"]
+            logger.info(f"[{function_name}] ========== {priority_name} 처리 시작 ({len(priority_groups[priority])}개) ==========")
+            
+            # 각 종목에 대해 매도 주문 실행
+            for candidate in priority_groups[priority]:
+                try:
+                    ticker = candidate["ticker"]
+                    stock_name = candidate["stock_name"]
+                    exchange_code = candidate["exchange_code"]
+                    quantity = candidate["quantity"]
                 
                 # 매도 근거
                 sell_reasons = candidate.get("sell_reasons", [])
@@ -934,13 +959,20 @@ class StockScheduler:
                     # 일반 주문 API 사용
                     order_result = order_overseas_stock(order_data)
                 
+                # 우선순위 통계 업데이트
+                priority_stats[priority]["count"] += 1
+                
                 if order_result.get("rt_cd") == "0":
                     # 주문 성공: 실패 기록 제거 (있었다면)
                     if ticker in self.order_failures:
                         del self.order_failures[ticker]
                     
+                    # 우선순위별 성공 통계 업데이트
+                    priority_stats[priority]["success"] += 1
+                    
                     order_type = "시장가" if order_data["ORD_DVSN"] == "02" else "지정가"
-                    logger.info(f"[{function_name}] {stock_name}({ticker}) 매도 주문 성공 ({order_type}): {order_result.get('msg1', '주문이 접수되었습니다.')}")
+                    sell_type_name = candidate.get("sell_type", "unknown")
+                    logger.info(f"[{function_name}] ✅ {stock_name}({ticker}) 매도 주문 성공 ({order_type}, {sell_type_name}): {order_result.get('msg1', '주문이 접수되었습니다.')}")
                     
                     # 매도 성공 기록을 MongoDB에 저장
                     save_success = self._save_trading_log(
@@ -979,16 +1011,42 @@ class StockScheduler:
                         continue  # 실패 기록 없이 다음 종목으로 (재시도 안 함)
                     
                     # 다른 에러인 경우: 실패 기록
-                    logger.error(f"[{function_name}] {stock_name}({ticker}) 매도 주문 실패: {error_msg}")
+                    priority_stats[priority]["failed"] += 1
+                    sell_type_name = candidate.get("sell_type", "unknown")
+                    logger.error(f"[{function_name}] ❌ {stock_name}({ticker}) 매도 주문 실패 ({sell_type_name}): {error_msg}")
                     self.order_failures[ticker] = now
                     logger.warning(f"[{function_name}] {stock_name}({ticker}) 주문 실패로 {ORDER_FAILURE_EXCLUDE_MINUTES}분 동안 제외합니다.")
                 
-                # 요청 간 지연 (API 요청 제한 방지)
-                await asyncio.sleep(2)  # 1초에서 2초로 증가
-                
-            except Exception as e:
-                logger.error(f"[{function_name}] {candidate['stock_name']}({candidate['ticker']}) 매도 처리 중 오류: {str(e)}", exc_info=True)
-                await asyncio.sleep(1)  # 오류 발생 시에도 잠시 대기
+                    # 요청 간 지연 (API 요청 제한 방지)
+                    await asyncio.sleep(2)  # 1초에서 2초로 증가
+                    
+                except Exception as e:
+                    priority_stats[priority]["failed"] += 1
+                    logger.error(f"[{function_name}] ❌ {candidate['stock_name']}({candidate['ticker']}) 매도 처리 중 오류: {str(e)}", exc_info=True)
+                    await asyncio.sleep(1)  # 오류 발생 시에도 잠시 대기
+            
+            # 우선순위별 처리 완료 로깅
+            stats = priority_stats[priority]
+            if stats["count"] > 0:
+                logger.info(f"[{function_name}] {priority_name} 처리 완료: 총 {stats['count']}개, 성공 {stats['success']}개, 실패 {stats['failed']}개")
+        
+        # 전체 매도 작업 요약 로깅
+        total_count = sum(s["count"] for s in priority_stats.values())
+        total_success = sum(s["success"] for s in priority_stats.values())
+        total_failed = sum(s["failed"] for s in priority_stats.values())
+        
+        logger.info("=" * 80)
+        logger.info(f"[{function_name}] 📊 매도 작업 요약")
+        logger.info(f"  총 매도 대상: {total_count}개")
+        logger.info(f"  ✅ 주문 성공: {total_success}개")
+        logger.info(f"  ❌ 주문 실패: {total_failed}개")
+        logger.info("")
+        logger.info("  우선순위별 상세:")
+        for priority in [1, 2, 3]:
+            stats = priority_stats[priority]
+            if stats["count"] > 0:
+                logger.info(f"    {stats['name']}: {stats['count']}개 (성공: {stats['success']}개, 실패: {stats['failed']}개)")
+        logger.info("=" * 80)
     
     async def _execute_auto_buy(self, send_slack_notification: bool = True):
         """자동 매수 실행 로직"""
@@ -1054,14 +1112,29 @@ class StockScheduler:
             holdings = balance_result.get("output1", [])
             holding_tickers = set()
             holding_quantities = {}  # ticker -> quantity (체결 확인용)
+            holding_values = {}  # ticker -> current_value (포트폴리오 비중 계산용)
+            portfolio_total_value = 0.0  # 포트폴리오 총 가치
             
             for item in holdings:
                 ticker = item.get("ovrs_pdno")
                 if ticker:
                     holding_tickers.add(ticker)
-                    holding_quantities[ticker] = int(item.get("ovrs_cblc_qty", 0))
+                    quantity = int(item.get("ovrs_cblc_qty", 0))
+                    holding_quantities[ticker] = quantity
+                    
+                    # 평가 금액 계산 (포트폴리오 비중 계산용)
+                    try:
+                        current_price = float(item.get("now_pric2", "0") or "0")
+                        if current_price > 0 and quantity > 0:
+                            current_value = quantity * current_price
+                            holding_values[ticker] = current_value
+                            portfolio_total_value += current_value
+                    except (ValueError, TypeError):
+                        # 가격 정보가 없거나 변환 실패 시 0으로 처리
+                        holding_values[ticker] = 0.0
             
             logger.info(f"[{function_name}] 현재 보유 중인 종목 수: {len(holding_tickers)}")
+            logger.info(f"[{function_name}] 📊 포트폴리오 총 가치: ${portfolio_total_value:,.2f}")
             
             # 2. 주문가능금액 조회 - TTTS3007R API 사용
             order_psbl_result = get_overseas_order_possible_amount("NASD", "AAPL")
@@ -1121,7 +1194,19 @@ class StockScheduler:
             logger.info(f"[{function_name}] 함수 실행 완료")
             return
         
-        buy_candidates = recommendations.get("results", [])
+        raw_candidates = recommendations.get("results", [])
+        
+        # 중복 제거 (티커 기준)
+        buy_candidates = []
+        seen_tickers = set()
+        
+        for candidate in raw_candidates:
+            ticker = candidate.get("ticker")
+            if ticker and ticker not in seen_tickers:
+                buy_candidates.append(candidate)
+                seen_tickers.add(ticker)
+            elif ticker:
+                logger.warning(f"[{function_name}] 중복된 티커 발견 및 제외: {ticker}")
         
         if not buy_candidates:
             logger.info(f"[{function_name}] 매수 조건을 만족하는 종목이 없습니다.")
@@ -1139,7 +1224,9 @@ class StockScheduler:
         # 자동매매 설정 조회 (보유 중인 종목 매수 허용 여부 확인)
         trading_config = self.auto_trading_service.get_auto_trading_config()
         allow_buy_existing_stocks = trading_config.get("allow_buy_existing_stocks", True)  # 기본값: True
+        max_portfolio_weight = trading_config.get("max_portfolio_weight_per_stock", 20.0)  # 기본값: 20%
         logger.info(f"[{function_name}] 보유 중인 종목 매수 허용: {allow_buy_existing_stocks}")
+        logger.info(f"[{function_name}] 단일 종목 최대 투자 비중: {max_portfolio_weight}%")
         
         # MongoDB에서 사용자 정보 조회 (레버리지 설정 확인용)
         user_leverage_map = {}  # ticker -> use_leverage (leverage_ticker는 stocks 컬렉션에서 조회)
@@ -1177,6 +1264,7 @@ class StockScheduler:
         skipped_already_holding = 0
         skipped_price_fetch_failed = 0
         skipped_invalid_price = 0
+        skipped_portfolio_weight = 0  # 포트폴리오 비중 초과로 스킵된 건수
         failed_orders = 0
         
         # 체결 확인 태스크 추적 (요약 로그 출력 전 모든 체결 확인 완료 대기용)
@@ -1253,16 +1341,49 @@ class StockScheduler:
                     skipped_invalid_price += 1
                     continue
                 
-                # 매수 가능 여부 확인
-                estimated_cost = current_price  # 1주 기준
+                # 포트폴리오 비중 체크
+                current_holding_value = holding_values.get(pure_ticker, 0.0)
+                current_weight = (current_holding_value / portfolio_total_value * 100) if portfolio_total_value > 0 else 0.0
                 
-                if available_cash < estimated_cost:
-                    logger.warning(f"[{function_name}] ⏭️ {stock_name}({ticker}) - 잔고 부족으로 매수 건너뜀. 필요금액: ${estimated_cost:.2f}, 잔고: ${available_cash:.2f}")
+                # 매수 예정 금액 (1주 기준)
+                buy_amount = current_price
+                new_total_value = portfolio_total_value + buy_amount
+                new_holding_value = current_holding_value + buy_amount
+                new_weight = (new_holding_value / new_total_value * 100) if new_total_value > 0 else 0.0
+                
+                # 최대 비중 초과 체크
+                if new_weight > max_portfolio_weight:
+                    # 현재 보유 비중이 이미 최대 비중을 초과하는 경우
+                    if current_weight >= max_portfolio_weight:
+                        logger.warning(f"[{function_name}] ⏭️ {stock_name}({ticker}) - 현재 보유 비중({current_weight:.2f}%)이 이미 최대 비중({max_portfolio_weight}%)을 초과하여 매수하지 않습니다.")
+                        skipped_portfolio_weight += 1
+                        continue
+                    else:
+                        # 최대 비중을 초과하지 않도록 매수 금액 조정
+                        max_allowed_value = (new_total_value * max_portfolio_weight / 100) - current_holding_value
+                        if max_allowed_value <= 0:
+                            logger.warning(f"[{function_name}] ⏭️ {stock_name}({ticker}) - 최대 비중 제한으로 인해 추가 매수 불가. 현재 비중: {current_weight:.2f}%, 최대 비중: {max_portfolio_weight}%")
+                            skipped_portfolio_weight += 1
+                            continue
+                        
+                        # 조정된 매수 금액으로 수량 재계산
+                        adjusted_quantity = max(1, int(max_allowed_value / current_price))
+                        buy_amount = adjusted_quantity * current_price
+                        new_holding_value = current_holding_value + buy_amount
+                        new_total_value = portfolio_total_value + buy_amount
+                        new_weight = (new_holding_value / new_total_value * 100) if new_total_value > 0 else 0.0
+                        
+                        logger.info(f"[{function_name}] ⚖️ {stock_name}({ticker}) - 포트폴리오 비중 제한 적용: 최대 비중({max_portfolio_weight}%)을 초과하지 않도록 매수 금액 조정")
+                        logger.info(f"[{function_name}]    현재 비중: {current_weight:.2f}% → 예상 비중: {new_weight:.2f}% (매수 금액: ${buy_amount:.2f})")
+                
+                # 매수 가능 여부 확인 (조정된 금액 기준)
+                if available_cash < buy_amount:
+                    logger.warning(f"[{function_name}] ⏭️ {stock_name}({ticker}) - 잔고 부족으로 매수 건너뜀. 필요금액: ${buy_amount:.2f}, 잔고: ${available_cash:.2f}")
                     skipped_no_cash += 1
                     continue
                 
-                # 매수 수량 계산: 기본 1주
-                quantity = 1
+                # 매수 수량 계산
+                quantity = max(1, int(buy_amount / current_price))
                 
                 # 가격을 소수점 2자리로 반올림 (API 요구사항)
                 rounded_price = round(current_price, 2)
@@ -1341,6 +1462,11 @@ class StockScheduler:
                     
                     # 주문 접수 성공으로 카운트 (체결은 별도로 확인)
                     successful_purchases += 1
+                    
+                    # 포트폴리오 총 가치 업데이트 (다음 종목 비중 계산을 위해)
+                    actual_buy_amount = quantity * current_price
+                    portfolio_total_value += actual_buy_amount
+                    holding_values[pure_ticker] = holding_values.get(pure_ticker, 0.0) + actual_buy_amount
                 else:
                     error_msg = order_result.get('msg1', '알 수 없는 오류')
                     error_code = order_result.get('msg_cd', 'N/A')
@@ -1410,6 +1536,7 @@ class StockScheduler:
         logger.info(f"    - 현재가 조회 실패: {skipped_price_fetch_failed}개")
         logger.info(f"    - 유효하지 않은 가격: {skipped_invalid_price}개")
         logger.info(f"    - 잔고 부족: {skipped_no_cash}개")
+        logger.info(f"    - 포트폴리오 비중 초과: {skipped_portfolio_weight}개")
         logger.info(f"  💰 남은 잔고: ${available_cash:,.2f}")
         logger.info("=" * 80)
         
@@ -1422,7 +1549,7 @@ class StockScheduler:
                 summary_msg += f"• 체결 완료: {executed_count}개\n"
             if failed_orders > 0:
                 summary_msg += f"• 주문 실패: {failed_orders}개\n"
-            if skipped_already_holding > 0 or skipped_price_fetch_failed > 0 or skipped_invalid_price > 0 or skipped_no_cash > 0:
+            if skipped_already_holding > 0 or skipped_price_fetch_failed > 0 or skipped_invalid_price > 0 or skipped_no_cash > 0 or skipped_portfolio_weight > 0:
                 summary_msg += f"• 건너뛴 종목: {total_candidates - successful_purchases - failed_orders}개\n"
                 if skipped_already_holding > 0:
                     summary_msg += f"  - 이미 보유 중: {skipped_already_holding}개\n"
@@ -1432,6 +1559,8 @@ class StockScheduler:
                     summary_msg += f"  - 유효하지 않은 가격: {skipped_invalid_price}개\n"
                 if skipped_no_cash > 0:
                     summary_msg += f"  - 잔고 부족: {skipped_no_cash}개\n"
+                if skipped_portfolio_weight > 0:
+                    summary_msg += f"  - 포트폴리오 비중 초과: {skipped_portfolio_weight}개\n"
             summary_msg += f"• 남은 잔고: ${available_cash:,.2f}"
             send_scheduler_slack_notification(summary_msg)
     
@@ -1693,7 +1822,7 @@ class StockScheduler:
             logger.error(f"[{function_name}] ❌ {stock_name}({ticker}) 체결 확인 중 오류: {str(e)}", exc_info=True)
     
     def _cleanup_pending_orders(self, send_slack_notification: bool = True):
-        """장 마감 후 미체결 주문 일괄 정리 (실패 상태로 변경)"""
+        """장 마감 후 어제 주문한 주식 체결 확인 및 미체결 주문 재주문"""
         function_name = "_cleanup_pending_orders"
         logger.info(f"[{function_name}] 함수 실행 시작")
         
@@ -1721,29 +1850,63 @@ class StockScheduler:
                 logger.error(f"[{function_name}] ❌ MongoDB 연결 실패 - 미체결 주문 정리 불가")
                 return
             
-            # 어제부터 오늘까지의 미체결 주문 조회
+            # 어제 날짜 기준으로 주문 조회 (어제 00:00:00 ~ 23:59:59)
             yesterday = datetime.now() - timedelta(days=1)
             yesterday_start = yesterday.replace(hour=0, minute=0, second=0, microsecond=0)
+            yesterday_end = yesterday.replace(hour=23, minute=59, second=59, microsecond=999999)
             
-            # pending 또는 accepted 상태인 주문 조회 (executed가 아닌 것들)
-            pending_orders = list(db.trading_logs.find({
-                "status": {"$in": ["pending", "accepted"]},
-                "created_at": {"$gte": yesterday_start}
+            # 어제 주문한 매수 주문 조회 (pending, accepted, executed 상태 모두 확인)
+            yesterday_orders = list(db.trading_logs.find({
+                "order_type": "buy",
+                "created_at": {
+                    "$gte": yesterday_start,
+                    "$lte": yesterday_end
+                },
+                "status": {"$in": ["pending", "accepted", "executed"]}
             }))
             
-            if not pending_orders:
-                logger.info(f"[{function_name}] 정리할 미체결 주문이 없습니다.")
+            if not yesterday_orders:
+                logger.info(f"[{function_name}] 어제 주문한 주문이 없습니다.")
                 if send_slack_notification:
-                    send_scheduler_slack_notification("✅ *미체결 주문 정리 완료*\n정리할 미체결 주문이 없습니다.")
+                    send_scheduler_slack_notification("✅ *어제 주문 체결 확인 완료*\n어제 주문한 주문이 없습니다.")
                 return
             
-            logger.info(f"[{function_name}] 미체결 주문 {len(pending_orders)}개 발견")
+            logger.info(f"[{function_name}] 어제 주문 조회: {len(yesterday_orders)}개")
             
-            # 각 주문을 실패 상태로 변경
-            failed_count = 0
-            failed_orders = []
+            # 체결 확인 및 재주문 통계
+            executed_count = 0
+            pending_count = 0
+            retry_success_count = 0
+            retry_failed_count = 0
+            retry_orders = []
+            retry_failed_orders = []
             
-            for order in pending_orders:
+            # 보유 종목 조회 (중복 매수 방지용)
+            holding_tickers = set()
+            try:
+                balance_result = get_all_overseas_balances()
+                if balance_result.get("rt_cd") == "0":
+                    holdings = balance_result.get("output1", [])
+                    for item in holdings:
+                        ticker = item.get("ovrs_pdno")
+                        if ticker:
+                            holding_tickers.add(ticker)
+            except Exception as e:
+                logger.warning(f"[{function_name}] 보유 종목 조회 실패 (중복 매수 체크 건너뜀): {str(e)}")
+            
+            # 주문가능금액 조회
+            available_cash = 0.0
+            try:
+                order_psbl_result = get_overseas_order_possible_amount("NASD", "AAPL")
+                if order_psbl_result.get("rt_cd") == "0":
+                    output = order_psbl_result.get("output", {})
+                    if output:
+                        cash_str = output.get("ord_psbl_frcr_amt") or output.get("ovrs_ord_psbl_amt") or "0"
+                        available_cash = float(cash_str)
+            except Exception as e:
+                logger.warning(f"[{function_name}] 주문가능금액 조회 실패: {str(e)}")
+            
+            for order in yesterday_orders:
                 try:
                     ticker = order.get("ticker", "N/A")
                     stock_name = order.get("stock_name", ticker)
@@ -1751,74 +1914,307 @@ class StockScheduler:
                     quantity = order.get("quantity", 0)
                     price = order.get("price", 0)
                     order_no = order.get("order_no")
+                    exchange_code = order.get("exchange_code", "NASD")
+                    order_ticker = order.get("order_ticker", ticker)  # 실제 주문 티커
+                    current_status = order.get("status")
                     
-                    # 상태를 failed로 변경
-                    update_result = db.trading_logs.update_one(
-                        {"_id": order["_id"]},
-                        {
-                            "$set": {
-                                "status": "failed",
-                                "failed_at": datetime.now(),
-                                "failure_reason": "장 마감 후 미체결로 인한 자동 취소"
-                            }
-                        }
-                    )
+                    # 이미 executed 상태인 주문은 체결 확인만 수행
+                    if current_status == "executed":
+                        executed_count += 1
+                        logger.info(f"[{function_name}] ✅ {stock_name}({ticker}) 이미 체결 완료 상태")
+                        continue
                     
-                    if update_result.modified_count > 0:
-                        failed_count += 1
-                        failed_orders.append({
-                            "ticker": ticker,
-                            "stock_name": stock_name,
-                            "quantity": quantity,
-                            "price": price
-                        })
-                        logger.info(f"[{function_name}] ✅ {stock_name}({ticker}) 미체결 주문 실패 처리 완료")
+                    # 체결 확인 (주문번호가 있는 경우)
+                    is_executed = False
+                    if order_no:
+                        logger.info(f"[{function_name}] {stock_name}({ticker}) 주문(주문번호: {order_no}) 체결 확인 중...")
+                        try:
+                            execution_result = check_order_execution(
+                                order_no=order_no,
+                                exchange_code=exchange_code,
+                                ticker=order_ticker,
+                                max_retries=2,
+                                retry_delay=2,
+                                order_dt=order.get("order_dt"),
+                                order_gno_brno=order.get("order_gno_brno")
+                            )
+                            
+                            if execution_result and execution_result.get("executed"):
+                                # 체결된 것으로 확인됨 -> 상태 업데이트
+                                executed_qty = execution_result.get("executed_qty", quantity)
+                                executed_price = execution_result.get("executed_price", price)
+                                
+                                logger.info(f"[{function_name}] ✅ {stock_name}({ticker}) 체결 확인됨! (수량: {executed_qty}, 가격: {executed_price})")
+                                
+                                db.trading_logs.update_one(
+                                    {"_id": order["_id"]},
+                                    {
+                                        "$set": {
+                                            "status": "executed",
+                                            "executed_at": datetime.now(),
+                                            "quantity": executed_qty,
+                                            "price": executed_price,
+                                            "execution_check_method": "cleanup_job",
+                                            "execution_result": execution_result.get("order", {})
+                                        }
+                                    }
+                                )
+                                
+                                executed_count += 1
+                                is_executed = True
+                                
+                                # 체결 성공 알림 전송 (지연된 알림)
+                                slack_notifier.send_buy_notification(
+                                    stock_name=stock_name,
+                                    ticker=ticker,
+                                    quantity=executed_qty,
+                                    price=executed_price,
+                                    exchange_code=exchange_code,
+                                    success=True
+                                )
+                                logger.info(f"[{function_name}] 📨 {stock_name}({ticker}) 체결 확인 알림 전송 완료")
+                        except Exception as e:
+                            logger.error(f"[{function_name}] ❌ {stock_name}({ticker}) 체결 확인 중 오류: {str(e)}")
+                    
+                    # 체결되지 않은 경우 재주문 시도
+                    if not is_executed and order_type == "buy":
+                        pending_count += 1
+                        logger.info(f"[{function_name}] ⚠️ {stock_name}({ticker}) 미체결 주문 발견, 재주문 시도 중...")
                         
-                        # Slack 알림 전송 (개별 주문)
-                        if order_type == "buy":
-                            slack_notifier.send_buy_notification(
-                                stock_name=stock_name,
-                                ticker=ticker,
-                                quantity=quantity,
-                                price=price,
-                                exchange_code=order.get("exchange_code", "NASD"),
-                                success=False,
-                                error_message=f"장 마감 후 미체결로 인한 자동 취소 (주문번호: {order_no or 'N/A'})"
-                            )
-                        else:
-                            slack_notifier.send_sell_notification(
-                                stock_name=stock_name,
-                                ticker=ticker,
-                                quantity=quantity,
-                                price=price,
-                                exchange_code=order.get("exchange_code", "NASD"),
-                                sell_reasons=["장 마감 후 미체결"],
-                                success=False,
-                                error_message=f"장 마감 후 미체결로 인한 자동 취소 (주문번호: {order_no or 'N/A'})"
-                            )
+                        # 재주문 시도 횟수 확인 (최대 1회)
+                        retry_count = order.get("retry_count", 0)
+                        if retry_count >= 1:
+                            logger.info(f"[{function_name}] ⏭️ {stock_name}({ticker}) 재주문 시도 횟수 초과 (이미 {retry_count}회 시도), 건너뜀")
+                            retry_failed_count += 1
+                            retry_failed_orders.append({
+                                "ticker": ticker,
+                                "stock_name": stock_name,
+                                "quantity": quantity,
+                                "price": price,
+                                "reason": "재주문 시도 횟수 초과"
+                            })
+                            continue
+                        
+                        # 이미 보유 중인 종목인지 확인
+                        if ticker in holding_tickers:
+                            logger.info(f"[{function_name}] ⏭️ {stock_name}({ticker}) 이미 보유 중, 재주문 건너뜀")
+                            retry_failed_count += 1
+                            retry_failed_orders.append({
+                                "ticker": ticker,
+                                "stock_name": stock_name,
+                                "quantity": quantity,
+                                "price": price,
+                                "reason": "이미 보유 중"
+                            })
+                            continue
+                        
+                        # 현재가 조회
+                        try:
+                            current_price_params = {
+                                "AUTH": "",
+                                "EXCD": exchange_code,
+                                "SYMB": order_ticker
+                            }
+                            current_price_result = get_current_price(current_price_params)
+                            
+                            if current_price_result.get("rt_cd") != "0":
+                                error_msg = current_price_result.get("msg1", "현재가 조회 실패")
+                                logger.warning(f"[{function_name}] ❌ {stock_name}({ticker}) 현재가 조회 실패: {error_msg}")
+                                retry_failed_count += 1
+                                retry_failed_orders.append({
+                                    "ticker": ticker,
+                                    "stock_name": stock_name,
+                                    "quantity": quantity,
+                                    "price": price,
+                                    "reason": f"현재가 조회 실패: {error_msg}"
+                                })
+                                continue
+                            
+                            output = current_price_result.get("output", {})
+                            current_price = float(output.get("last", "0") or "0")
+                            
+                            if current_price <= 0:
+                                logger.warning(f"[{function_name}] ❌ {stock_name}({ticker}) 유효하지 않은 현재가: {current_price}")
+                                retry_failed_count += 1
+                                retry_failed_orders.append({
+                                    "ticker": ticker,
+                                    "stock_name": stock_name,
+                                    "quantity": quantity,
+                                    "price": price,
+                                    "reason": "유효하지 않은 현재가"
+                                })
+                                continue
+                            
+                            # 주문 금액 계산
+                            order_amount = current_price * quantity
+                            
+                            # 잔고 확인
+                            if order_amount > available_cash:
+                                logger.warning(f"[{function_name}] ❌ {stock_name}({ticker}) 잔고 부족 (필요: ${order_amount:,.2f}, 보유: ${available_cash:,.2f})")
+                                retry_failed_count += 1
+                                retry_failed_orders.append({
+                                    "ticker": ticker,
+                                    "stock_name": stock_name,
+                                    "quantity": quantity,
+                                    "price": current_price,
+                                    "reason": "잔고 부족"
+                                })
+                                continue
+                            
+                            # 재주문 실행
+                            logger.info(f"[{function_name}] 🔄 {stock_name}({ticker}) 재주문 실행 중... (수량: {quantity}, 가격: ${current_price:.2f})")
+                            
+                            order_data = {
+                                "CANO": settings.KIS_CANO,
+                                "ACNT_PRDT_CD": settings.KIS_ACNT_PRDT_CD,
+                                "OVRS_EXCG_CD": exchange_code,
+                                "PDNO": order_ticker,
+                                "ORD_DVSN": "00",  # 지정가
+                                "ORD_QTY": str(quantity),
+                                "OVRS_ORD_UNPR": str(current_price),
+                                "ORD_SVR_DVSN_CD": "0",
+                                "is_buy": True
+                            }
+                            
+                            order_result = order_overseas_stock(order_data)
+                            
+                            if order_result.get("rt_cd") == "0":
+                                # 재주문 성공
+                                output = order_result.get("output", {})
+                                new_order_no = output.get("ODNO", "")
+                                
+                                logger.info(f"[{function_name}] ✅ {stock_name}({ticker}) 재주문 성공! (주문번호: {new_order_no})")
+                                
+                                # 새 주문 레코드 저장
+                                new_order_log = {
+                                    "order_type": "buy",
+                                    "ticker": ticker,
+                                    "stock_name": stock_name,
+                                    "price": current_price,
+                                    "quantity": quantity,
+                                    "status": "accepted",
+                                    "order_no": new_order_no,
+                                    "exchange_code": exchange_code,
+                                    "order_ticker": order_ticker,
+                                    "order_dt": output.get("ORD_DT", ""),
+                                    "order_gno_brno": output.get("ORD_GNO_BRNO", ""),
+                                    "original_order_id": str(order["_id"]),
+                                    "retry_count": retry_count + 1,
+                                    "retry_at": datetime.now(),
+                                    "created_at": datetime.now()
+                                }
+                                db.trading_logs.insert_one(new_order_log)
+                                
+                                # 기존 주문 레코드 업데이트
+                                db.trading_logs.update_one(
+                                    {"_id": order["_id"]},
+                                    {
+                                        "$set": {
+                                            "status": "retry",
+                                            "retry_at": datetime.now(),
+                                            "retry_count": retry_count + 1,
+                                            "retry_order_id": str(new_order_log.get("_id", ""))
+                                        }
+                                    }
+                                )
+                                
+                                retry_success_count += 1
+                                retry_orders.append({
+                                    "ticker": ticker,
+                                    "stock_name": stock_name,
+                                    "quantity": quantity,
+                                    "price": current_price,
+                                    "order_no": new_order_no
+                                })
+                                
+                                # Slack 알림 전송
+                                slack_notifier.send_buy_notification(
+                                    stock_name=stock_name,
+                                    ticker=ticker,
+                                    quantity=quantity,
+                                    price=current_price,
+                                    exchange_code=exchange_code,
+                                    success=True
+                                )
+                            else:
+                                # 재주문 실패
+                                error_msg = order_result.get("msg1", "알 수 없는 오류")
+                                logger.error(f"[{function_name}] ❌ {stock_name}({ticker}) 재주문 실패: {error_msg}")
+                                retry_failed_count += 1
+                                retry_failed_orders.append({
+                                    "ticker": ticker,
+                                    "stock_name": stock_name,
+                                    "quantity": quantity,
+                                    "price": current_price,
+                                    "reason": f"주문 실패: {error_msg}"
+                                })
+                                
+                                # Slack 알림 전송
+                                slack_notifier.send_buy_notification(
+                                    stock_name=stock_name,
+                                    ticker=ticker,
+                                    quantity=quantity,
+                                    price=current_price,
+                                    exchange_code=exchange_code,
+                                    success=False,
+                                    error_message=f"재주문 실패: {error_msg}"
+                                )
+                        
+                        except Exception as e:
+                            logger.error(f"[{function_name}] ❌ {stock_name}({ticker}) 재주문 처리 중 오류: {str(e)}", exc_info=True)
+                            retry_failed_count += 1
+                            retry_failed_orders.append({
+                                "ticker": ticker,
+                                "stock_name": stock_name,
+                                "quantity": quantity,
+                                "price": price,
+                                "reason": f"오류: {str(e)}"
+                            })
                     
                 except Exception as e:
-                    logger.error(f"[{function_name}] ❌ 주문 {order.get('_id')} 실패 처리 중 오류: {str(e)}")
+                    logger.error(f"[{function_name}] ❌ 주문 {order.get('_id')} 처리 중 오류: {str(e)}", exc_info=True)
+            
+            # 요약 로깅
+            logger.info("=" * 80)
+            logger.info(f"[{function_name}] 📊 어제 주문 체결 확인 및 재주문 요약")
+            logger.info(f"  어제 주문 수: {len(yesterday_orders)}개")
+            logger.info(f"  ✅ 체결 완료: {executed_count}개")
+            logger.info(f"  ⚠️ 미체결 주문: {pending_count}개")
+            logger.info(f"    - 재주문 성공: {retry_success_count}개")
+            logger.info(f"    - 재주문 실패: {retry_failed_count}개")
+            logger.info("=" * 80)
             
             # 요약 Slack 알림
-            if send_slack_notification and failed_count > 0:
-                summary_msg = f"🔴 *장 마감 후 미체결 주문 정리 완료*\n"
-                summary_msg += f"• 총 미체결 주문: {len(pending_orders)}개\n"
-                summary_msg += f"• 실패 처리 완료: {failed_count}개\n\n"
-                summary_msg += f"*실패 처리된 주문:*\n"
-                for order_info in failed_orders[:10]:  # 최대 10개만 표시
-                    summary_msg += f"  - {order_info['stock_name']}({order_info['ticker']}): {order_info['quantity']}주 @ ${order_info['price']:.2f}\n"
-                if len(failed_orders) > 10:
-                    summary_msg += f"  ... 외 {len(failed_orders) - 10}개\n"
+            if send_slack_notification:
+                summary_msg = f"🔄 *어제 주문 체결 확인 및 재주문 완료*\n\n"
+                summary_msg += f"• 어제 주문 수: {len(yesterday_orders)}개\n"
+                summary_msg += f"• 체결 완료: {executed_count}개\n"
+                summary_msg += f"• 미체결 주문: {pending_count}개\n"
+                summary_msg += f"  - 재주문 성공: {retry_success_count}개\n"
+                summary_msg += f"  - 재주문 실패: {retry_failed_count}개\n"
+                
+                if retry_orders:
+                    summary_msg += f"\n*재주문 성공:*\n"
+                    for order_info in retry_orders[:10]:  # 최대 10개만 표시
+                        summary_msg += f"  - {order_info['stock_name']}({order_info['ticker']}): {order_info['quantity']}주 @ ${order_info['price']:.2f} (주문번호: {order_info.get('order_no', 'N/A')})\n"
+                    if len(retry_orders) > 10:
+                        summary_msg += f"  ... 외 {len(retry_orders) - 10}개\n"
+                
+                if retry_failed_orders:
+                    summary_msg += f"\n*재주문 실패:*\n"
+                    for order_info in retry_failed_orders[:10]:  # 최대 10개만 표시
+                        summary_msg += f"  - {order_info['stock_name']}({order_info['ticker']}): {order_info['quantity']}주 @ ${order_info.get('price', 0):.2f} ({order_info.get('reason', '알 수 없음')})\n"
+                    if len(retry_failed_orders) > 10:
+                        summary_msg += f"  ... 외 {len(retry_failed_orders) - 10}개\n"
                 
                 send_scheduler_slack_notification(summary_msg)
             
-            logger.info(f"[{function_name}] 함수 실행 완료: {failed_count}개 주문 실패 처리")
+            logger.info(f"[{function_name}] 함수 실행 완료")
             
         except Exception as e:
-            logger.error(f"[{function_name}] ❌ 미체결 주문 정리 중 오류: {str(e)}", exc_info=True)
+            logger.error(f"[{function_name}] ❌ 어제 주문 체결 확인 및 재주문 중 오류: {str(e)}", exc_info=True)
             if send_slack_notification:
-                send_scheduler_slack_notification(f"❌ *미체결 주문 정리 실패*\n오류 발생: {str(e)}")
+                send_scheduler_slack_notification(f"❌ *어제 주문 체결 확인 및 재주문 실패*\n오류 발생: {str(e)}")
     
     def _run_portfolio_profit_report(self, send_slack_notification: bool = True):
         """계좌 수익율 리포트 전송"""
