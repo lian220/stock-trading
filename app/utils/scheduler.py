@@ -6,6 +6,14 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import threading
 from typing import Callable
+from app.core.enums import (
+    OrderStatus, 
+    OrderType, 
+    SellPriority, 
+    ExchangeCode,
+    EXCHANGE_CODE_MAP,
+    get_exchange_code_for_api
+)
 from app.services.stock_recommendation_service import StockRecommendationService
 from app.services.balance_service import get_current_price, order_overseas_stock, order_overseas_stock_daytime, get_all_overseas_balances, get_overseas_balance, get_overseas_order_possible_amount, check_order_execution, calculate_portfolio_profit
 from app.services.auto_trading_service import AutoTradingService
@@ -15,6 +23,41 @@ from app.services.economic_service import update_economic_data_in_background
 from app.utils.slack_notifier import slack_notifier
 from app.db.mongodb import get_db
 import httpx
+
+# ============= 상수 정의 =============
+class SchedulerConfig:
+    """스케줄러 설정 상수"""
+    # 현재가 조회 실패 관련
+    MAX_PRICE_FETCH_FAILURES = 3  # 최대 실패 횟수
+    PRICE_FETCH_EXCLUDE_MINUTES = 30  # 제외 시간 (분)
+    PRICE_FETCH_RATE_LIMIT_SLEEP_SECONDS = 3  # API 속도 제한 오류 시 대기 시간 (초)
+    
+    # 주문 실패 관련
+    ORDER_FAILURE_EXCLUDE_MINUTES = 60  # 주문 실패 후 제외 시간 (분)
+    
+    # API 요청 간 지연
+    ORDER_DELAY_SECONDS = 2  # 주문 간 지연 시간 (초)
+    EXECUTION_CHECK_DELAY_SECONDS = 5  # 체결 확인 대기 시간 (초)
+    EXECUTION_CHECK_TIMEOUT_SECONDS = 60  # 체결 확인 타임아웃 (초)
+    
+    
+    # 스케줄 시간
+    SCHEDULE_ECONOMIC_DATA_UPDATE_1 = "06:05"
+    SCHEDULE_ECONOMIC_DATA_UPDATE_2 = "23:00"
+    SCHEDULE_VERTEX_AI_PREDICTION = "23:00"
+    SCHEDULE_PARALLEL_ANALYSIS = "23:05"
+    SCHEDULE_COMBINED_ANALYSIS = "23:45"
+    SCHEDULE_AUTO_BUY = "23:50"
+    SCHEDULE_CLEANUP_ORDERS = "06:30"
+    SCHEDULE_PORTFOLIO_PROFIT_REPORT = "07:00"
+    
+    # 시장 시간
+    MARKET_OPEN_HOUR = 9
+    MARKET_OPEN_MINUTE = 30
+    MARKET_CLOSE_HOUR = 16
+    MARKET_CLOSE_MINUTE = 0
+    DAYTIME_TRADING_START_HOUR = 10  # 한국시간 기준 주간거래 시작 시간
+    DAYTIME_TRADING_END_HOUR = 18  # 한국시간 기준 주간거래 종료 시간
 
 class StockScheduler:
     """주식 자동매매 스케줄러 클래스"""
@@ -57,28 +100,28 @@ class StockScheduler:
                 schedule.cancel_job(job)
         
         # 한국 시간 기준 새벽 6시 5분에 경제 데이터 업데이트 작업 실행
-        schedule.every().day.at("06:05").do(self._run_economic_data_update)
+        schedule.every().day.at(SchedulerConfig.SCHEDULE_ECONOMIC_DATA_UPDATE_1).do(self._run_economic_data_update)
         
         # 한국 시간 기준 밤 11시에 경제 데이터 재수집 (최신 지표 반영)
-        schedule.every().day.at("23:00").do(self._run_economic_data_update)
+        schedule.every().day.at(SchedulerConfig.SCHEDULE_ECONOMIC_DATA_UPDATE_2).do(self._run_economic_data_update)
         
         # 한국 시간 기준 밤 11시에 Vertex AI 예측 작업 실행
-        schedule.every().day.at("23:00").do(self._run_vertex_ai_prediction)
+        schedule.every().day.at(SchedulerConfig.SCHEDULE_VERTEX_AI_PREDICTION).do(self._run_vertex_ai_prediction)
         
         # 한국 시간 기준 밤 11시 5분에 병렬 분석 작업 실행 (충분한 시간 확보)
-        schedule.every().day.at("23:05").do(self._run_parallel_analysis)
+        schedule.every().day.at(SchedulerConfig.SCHEDULE_PARALLEL_ANALYSIS).do(self._run_parallel_analysis)
 
         # 한국 시간 기준 밤 11시 45분에 통합 분석 작업 실행
-        schedule.every().day.at("23:45").do(self._run_combined_analysis)
+        schedule.every().day.at(SchedulerConfig.SCHEDULE_COMBINED_ANALYSIS).do(self._run_combined_analysis)
         
         # 한국 시간 기준 밤 11시 50분(23:50)에 매수 작업 실행 (장 시작 20분 후)
-        schedule.every().day.at("23:50").do(self._run_auto_buy)
+        schedule.every().day.at(SchedulerConfig.SCHEDULE_AUTO_BUY).do(self._run_auto_buy)
         
         # 한국 시간 기준 새벽 6시 30분에 장 마감 후 미체결 주문 정리 (16:00 ET 이후)
-        schedule.every().day.at("06:30").do(self._cleanup_pending_orders)
+        schedule.every().day.at(SchedulerConfig.SCHEDULE_CLEANUP_ORDERS).do(self._cleanup_pending_orders)
         
         # 한국 시간 기준 오전 7시에 계좌 수익율 리포트 전송
-        schedule.every().day.at("07:00").do(self._run_portfolio_profit_report)
+        schedule.every().day.at(SchedulerConfig.SCHEDULE_PORTFOLIO_PROFIT_REPORT).do(self._run_portfolio_profit_report)
         
         # 별도 스레드에서 스케줄러 실행
         self.running = True
@@ -678,15 +721,19 @@ class StockScheduler:
         
         # 우선순위별 통계 추적
         priority_stats = {
-            1: {"count": 0, "success": 0, "failed": 0, "name": "손절 (Priority 1)"},
-            2: {"count": 0, "success": 0, "failed": 0, "name": "익절 (Priority 2)"},
-            3: {"count": 0, "success": 0, "failed": 0, "name": "기술적 매도 (Priority 3)"}
+            SellPriority.STOP_LOSS: {"count": 0, "success": 0, "failed": 0, "name": "손절 (Priority 1)"},
+            SellPriority.TAKE_PROFIT: {"count": 0, "success": 0, "failed": 0, "name": "익절 (Priority 2)"},
+            SellPriority.TECHNICAL: {"count": 0, "success": 0, "failed": 0, "name": "기술적 매도 (Priority 3)"}
         }
         
         # 우선순위별로 그룹화하여 로깅
-        priority_groups = {1: [], 2: [], 3: []}
+        priority_groups = {
+            SellPriority.STOP_LOSS: [],
+            SellPriority.TAKE_PROFIT: [],
+            SellPriority.TECHNICAL: []
+        }
         for candidate in sell_candidates:
-            priority = candidate.get("priority", 3)  # 기본값 3
+            priority = candidate.get("priority", SellPriority.TECHNICAL)  # 기본값 3
             if priority in priority_groups:
                 priority_groups[priority].append(candidate)
         
@@ -694,7 +741,7 @@ class StockScheduler:
         logger.info(f"[{function_name}] 우선순위별 분류: Priority 1 (손절) {len(priority_groups[1])}개, Priority 2 (익절) {len(priority_groups[2])}개, Priority 3 (기술적 매도) {len(priority_groups[3])}개")
         
         # 우선순위 순서대로 처리 (Priority 1 → 2 → 3)
-        for priority in [1, 2, 3]:
+        for priority in [SellPriority.STOP_LOSS, SellPriority.TAKE_PROFIT, SellPriority.TECHNICAL]:
             if not priority_groups[priority]:
                 continue
             
@@ -713,15 +760,11 @@ class StockScheduler:
                     sell_reasons = candidate.get("sell_reasons", [])
                     
                     # 거래소 코드 변환 (API 요청에 맞게 변환)
-                    api_exchange_code = exchange_code
-                    if exchange_code == "NASD":
-                        api_exchange_code = "NAS"
-                    elif exchange_code == "NYSE":
-                        api_exchange_code = "NYS"
+                    api_exchange_code = get_exchange_code_for_api(exchange_code)
                     
                     # 현재가 조회 실패 추적: 일정 횟수 이상 실패한 종목은 일정 시간 동안 제외
-                    MAX_PRICE_FETCH_FAILURES = 3  # 최대 실패 횟수
-                    PRICE_FETCH_EXCLUDE_MINUTES = 30  # 제외 시간 (분)
+                    MAX_PRICE_FETCH_FAILURES = SchedulerConfig.MAX_PRICE_FETCH_FAILURES
+                    PRICE_FETCH_EXCLUDE_MINUTES = SchedulerConfig.PRICE_FETCH_EXCLUDE_MINUTES
                     
                     now = datetime.now()
                     
@@ -805,7 +848,7 @@ class StockScheduler:
                         
                         # API 속도 제한에 도달했을 때 더 오래 대기
                         if price_result and "초당" in error_msg:
-                            await asyncio.sleep(3)  # 속도 제한 오류 시 3초 대기
+                            await asyncio.sleep(SchedulerConfig.PRICE_FETCH_RATE_LIMIT_SLEEP_SECONDS)
                         continue
                     
                     # 현재가 추출 (안전하게 처리) - last 우선, 없으면 base(전일 종가) 사용
@@ -927,7 +970,7 @@ class StockScheduler:
                         "ACNT_PRDT_CD": settings.KIS_ACNT_PRDT_CD,
                         "OVRS_EXCG_CD": exchange_code,  # 원래 거래소 코드 사용 (NASD, NYSE, AMEX 등)
                         "PDNO": ticker,  # 레버리지 티커로 주문
-                        "ORD_DVSN": "00",  # 지정가
+                        "ORD_DVSN": OrderType.LIMIT.value,  # 지정가
                         "ORD_QTY": str(quantity),
                         "OVRS_ORD_UNPR": f"{order_price:.2f}",  # 소수점 2자리로 포맷팅
                         "is_buy": False,  # 매도
@@ -935,7 +978,7 @@ class StockScheduler:
                     }
                     
                     # 주문 실패 추적: 일정 시간 동안 실패한 종목은 제외
-                    ORDER_FAILURE_EXCLUDE_MINUTES = 60  # 주문 실패 후 60분 동안 제외
+                    ORDER_FAILURE_EXCLUDE_MINUTES = SchedulerConfig.ORDER_FAILURE_EXCLUDE_MINUTES
                     now = datetime.now()
                     
                     # 이전에 주문 실패한 적이 있는 종목인지 확인
@@ -951,7 +994,7 @@ class StockScheduler:
                     # 주간거래 시간 체크 (10:00 ~ 18:00 한국시간)
                     now_in_korea = datetime.now(pytz.timezone('Asia/Seoul'))
                     korea_hour = now_in_korea.hour
-                    is_daytime_trading = 10 <= korea_hour < 18
+                    is_daytime_trading = SchedulerConfig.DAYTIME_TRADING_START_HOUR <= korea_hour < SchedulerConfig.DAYTIME_TRADING_END_HOUR
                     
                     # 주간거래 시간이고 미국 주식인 경우 주간주문 API 사용
                     if is_daytime_trading and exchange_code in ["NASD", "NYSE", "AMEX"]:
@@ -972,7 +1015,7 @@ class StockScheduler:
                         # 우선순위별 성공 통계 업데이트
                         priority_stats[priority]["success"] += 1
                         
-                        order_type = "시장가" if order_data["ORD_DVSN"] == "02" else "지정가"
+                        order_type = "시장가" if order_data["ORD_DVSN"] == OrderType.MARKET.value else "지정가"
                         sell_type_name = candidate.get("sell_type", "unknown")
                         logger.info(f"[{function_name}] ✅ {stock_name}({ticker}) 매도 주문 성공 ({order_type}, {sell_type_name}): {order_result.get('msg1', '주문이 접수되었습니다.')}")
                         
@@ -983,7 +1026,7 @@ class StockScheduler:
                             stock_name=stock_name,
                             price=order_price,
                             quantity=quantity,
-                            status="success",
+                            status=OrderStatus.EXECUTED.value,  # 매도 성공은 executed로 처리
                             price_change_percent=candidate.get("price_change_percent"),
                             sell_reasons=sell_reasons,
                             order_result=order_result,
@@ -998,7 +1041,7 @@ class StockScheduler:
                             stock_name=stock_name,
                             ticker=ticker,
                             quantity=quantity,
-                            price=order_price if order_data["ORD_DVSN"] == "00" else None,  # 시장가는 가격 없음
+                            price=order_price if order_data["ORD_DVSN"] == OrderType.LIMIT.value else None,  # 시장가는 가격 없음
                             exchange_code=exchange_code,
                             sell_reasons=sell_reasons,
                             success=True
@@ -1020,7 +1063,7 @@ class StockScheduler:
                         logger.warning(f"[{function_name}] {stock_name}({ticker}) 주문 실패로 {ORDER_FAILURE_EXCLUDE_MINUTES}분 동안 제외합니다.")
                     
                     # 요청 간 지연 (API 요청 제한 방지)
-                    await asyncio.sleep(2)  # 1초에서 2초로 증가
+                    await asyncio.sleep(SchedulerConfig.ORDER_DELAY_SECONDS)
                     
                 except Exception as e:
                     priority_stats[priority]["failed"] += 1
@@ -1044,7 +1087,7 @@ class StockScheduler:
         logger.info(f"  ❌ 주문 실패: {total_failed}개")
         logger.info("")
         logger.info("  우선순위별 상세:")
-        for priority in [1, 2, 3]:
+        for priority in [SellPriority.STOP_LOSS, SellPriority.TAKE_PROFIT, SellPriority.TECHNICAL]:
             stats = priority_stats[priority]
             if stats["count"] > 0:
                 logger.info(f"    {stats['name']}: {stats['count']}개 (성공: {stats['success']}개, 실패: {stats['failed']}개)")
@@ -1427,7 +1470,7 @@ class StockScheduler:
                         stock_name=stock_name,
                         price=current_price,
                         quantity=quantity,
-                        status="accepted",  # 주문 접수 상태
+                        status=OrderStatus.ACCEPTED.value,  # 주문 접수 상태
                         composite_score=candidate.get("composite_score"),
                         order_result=order_result,
                         exchange_code=exchange_code,
@@ -1499,14 +1542,14 @@ class StockScheduler:
         if execution_tasks:
             logger.info(f"[{function_name}] ⏳ 체결 확인 완료를 기다리는 중... (최대 60초, {len(execution_tasks)}개 주문)")
             try:
-                # 모든 체결 확인 태스크가 완료될 때까지 대기 (최대 60초)
+                # 모든 체결 확인 태스크가 완료될 때까지 대기
                 await asyncio.wait_for(
                     asyncio.gather(*execution_tasks, return_exceptions=True),
-                    timeout=60.0
+                    timeout=SchedulerConfig.EXECUTION_CHECK_TIMEOUT_SECONDS
                 )
                 logger.info(f"[{function_name}] ✅ 모든 체결 확인 완료")
             except asyncio.TimeoutError:
-                logger.warning(f"[{function_name}] ⚠️ 체결 확인 대기 시간 초과 (60초), 일부 체결 확인이 완료되지 않았을 수 있습니다.")
+                logger.warning(f"[{function_name}] ⚠️ 체결 확인 대기 시간 초과 ({SchedulerConfig.EXECUTION_CHECK_TIMEOUT_SECONDS}초), 일부 체결 확인이 완료되지 않았을 수 있습니다.")
         
         # 체결 완료된 종목 수 확인
         executed_count = 0
@@ -1587,8 +1630,8 @@ class StockScheduler:
             order_quantity: 주문 수량
         """
         try:
-            # 5초 대기 후 체결 확인 (주문 접수 후 체결까지 시간 필요)
-            await asyncio.sleep(5)
+            # 체결 확인 대기 (주문 접수 후 체결까지 시간 필요)
+            await asyncio.sleep(SchedulerConfig.EXECUTION_CHECK_DELAY_SECONDS)
             
             logger.info(f"[{function_name}] 🔍 {stock_name}({ticker}) 주문번호 {order_no} 체결 여부 확인 중...")
             
@@ -1797,7 +1840,7 @@ class StockScheduler:
                     {"_id": log_record["_id"]},
                     {
                         "$set": {
-                            "status": "pending",
+                            "status": OrderStatus.PENDING.value,
                             "pending_qty": pending_qty,
                             "execution_result": execution_order_detail,  # 주문체결내역 상세 정보 저장 (미체결 상태 포함)
                             "execution_check_method": "order_detail_api"  # 체결 확인 방법 기록
@@ -1864,7 +1907,7 @@ class StockScheduler:
                     "$gte": yesterday_start,
                     "$lte": yesterday_end
                 },
-                "status": {"$in": ["pending", "accepted", "executed"]}
+                "status": {"$in": [OrderStatus.PENDING.value, OrderStatus.ACCEPTED.value, OrderStatus.EXECUTED.value]}
             }))
             
             if not yesterday_orders:
@@ -1921,7 +1964,7 @@ class StockScheduler:
                     current_status = order.get("status")
                     
                     # 이미 executed 상태인 주문은 체결 확인만 수행
-                    if current_status == "executed":
+                    if current_status == OrderStatus.EXECUTED.value:
                         executed_count += 1
                         logger.info(f"[{function_name}] ✅ {stock_name}({ticker}) 이미 체결 완료 상태")
                         continue
@@ -1952,7 +1995,7 @@ class StockScheduler:
                                     {"_id": order["_id"]},
                                     {
                                         "$set": {
-                                            "status": "executed",
+                                            "status": OrderStatus.EXECUTED.value,
                                             "executed_at": datetime.now(),
                                             "quantity": executed_qty,
                                             "price": executed_price,
@@ -2094,7 +2137,7 @@ class StockScheduler:
                                     "stock_name": stock_name,
                                     "price": current_price,
                                     "quantity": quantity,
-                                    "status": "accepted",
+                                    "status": OrderStatus.ACCEPTED.value,
                                     "order_no": new_order_no,
                                     "exchange_code": exchange_code,
                                     "order_ticker": order_ticker,
@@ -2112,7 +2155,7 @@ class StockScheduler:
                                     {"_id": order["_id"]},
                                     {
                                         "$set": {
-                                            "status": "retry",
+                                            "status": OrderStatus.RETRY.value,
                                             "retry_at": datetime.now(),
                                             "retry_count": retry_count + 1,
                                             "retry_order_id": str(new_order_log.get("_id", ""))
@@ -2302,7 +2345,7 @@ class StockScheduler:
                 "stock_name": stock_name,
                 "price": price,
                 "quantity": quantity,
-                "status": status,  # "accepted" | "executed" | "pending" | "failed"
+                "status": status,  # OrderStatus enum value
                 "created_at": datetime.now()
             }
 

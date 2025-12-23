@@ -4,6 +4,7 @@ import time
 from datetime import datetime, timedelta
 import pytz
 from app.core.config import settings
+from app.core.enums import OrderStatus
 from app.db.mongodb import get_db
 from threading import Lock
 from app.services.auth_service import parse_expiration_date
@@ -1563,7 +1564,7 @@ def calculate_cumulative_profit(user_id: str, days: int = 90, ticker: str = None
         query = {
             "user_id": user_id,  # 사용자별 필터링
             "created_at": {"$gte": start_date, "$lte": end_date},
-            "status": {"$in": ["executed", "success"]}  # 체결된 거래만
+            "status": {"$in": [OrderStatus.EXECUTED.value, OrderStatus.SUCCESS.value]}  # 체결된 거래만
         }
         
         if ticker:

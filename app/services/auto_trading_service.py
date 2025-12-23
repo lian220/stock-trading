@@ -10,6 +10,7 @@ import time
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 import logging
+from app.core.enums import OrderStatus, OrderType
 from app.db.mongodb import get_db
 from app.services.stock_recommendation_service import StockRecommendationService
 from app.services.balance_service import (
@@ -39,7 +40,7 @@ class AutoTradingService:
             "take_profit_percent": 5.0,  # 익절 기준 (%)
             "use_sentiment": True,  # 감정 분석 사용 여부
             "min_sentiment_score": 0.15,  # 최소 감정 점수
-            "order_type": "00",  # 주문 구분 (00: 지정가)
+            "order_type": OrderType.LIMIT.value,  # 주문 구분 (00: 지정가)
             "allow_buy_existing_stocks": True,  # 보유 중인 종목도 매수 허용 여부
         }
     
@@ -386,7 +387,7 @@ class AutoTradingService:
                     "quantity": quantity,
                     "estimated_amount": quantity * current_price,
                     "composite_score": candidate.get("composite_score"),
-                    "status": "success" if order_result.get("rt_cd") == "0" else "failed",
+                    "status": OrderStatus.SUCCESS.value if order_result.get("rt_cd") == "0" else OrderStatus.FAILED.value,
                     "order_result": order_result
                 }
                 
@@ -470,7 +471,7 @@ class AutoTradingService:
                     "quantity": quantity,
                     "price_change_percent": candidate.get("price_change_percent"),
                     "sell_reasons": candidate.get("sell_reasons"),
-                    "status": "success" if order_result.get("rt_cd") == "0" else "failed",
+                    "status": OrderStatus.SUCCESS.value if order_result.get("rt_cd") == "0" else OrderStatus.FAILED.value,
                     "order_result": order_result
                 }
                 
