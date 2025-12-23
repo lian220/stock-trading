@@ -1449,8 +1449,17 @@ def save_analysis_to_db(result_df):
                         stock_name = stock.get("stock_name")
                         ticker = stock.get("ticker")
                         if stock_name and ticker:
+                            # 정확한 매칭
                             stock_to_ticker_map[stock_name] = ticker
-                    print(f"주식명 -> 티커 매핑 {len(stock_to_ticker_map)}개 생성 완료")
+                            # 대소문자 무시 매칭 (추가)
+                            stock_to_ticker_map[stock_name.lower()] = ticker
+                            stock_to_ticker_map[stock_name.upper()] = ticker
+                            # 공백 제거 매칭 (추가)
+                            stock_name_no_space = stock_name.replace(" ", "")
+                            if stock_name_no_space != stock_name:
+                                stock_to_ticker_map[stock_name_no_space] = ticker
+                    unique_tickers = len(set(stock_to_ticker_map.values()))
+                    print(f"주식명 -> 티커 매핑 {unique_tickers}개 종목, {len(stock_to_ticker_map)}개 변형 매핑 생성 완료")
                 except Exception as map_error:
                     print(f"⚠️ 주식명 -> 티커 매핑 생성 실패: {str(map_error)}")
                 
@@ -1463,6 +1472,7 @@ def save_analysis_to_db(result_df):
                 stock_analysis_updates = []
                 
                 skipped_no_ticker = 0
+                skipped_stocks = []  # 티커를 찾을 수 없는 종목 목록
                 for record in records:
                     stock_name = record.get('Stock')
                     if not stock_name:
@@ -1470,9 +1480,11 @@ def save_analysis_to_db(result_df):
 
                     ticker = stock_to_ticker_map.get(stock_name)
                     if not ticker:
-                        # 티커 매핑이 없으면 주식명을 티커로 사용
-                        ticker = stock_name
+                        # 티커 매핑이 없으면 저장하지 않고 건너뜀
                         skipped_no_ticker += 1
+                        skipped_stocks.append(stock_name)
+                        print(f"⚠️ 티커를 찾을 수 없어 저장 건너뜀: {stock_name} (MongoDB stocks 컬렉션에 해당 종목이 없거나 티커 매핑이 없습니다)")
+                        continue
 
                     try:
                         # 분석 데이터 구조화
@@ -1520,7 +1532,9 @@ def save_analysis_to_db(result_df):
                 # Bulk write 실행 (배치로 나누어 처리)
                 print(f"stock_analysis_updates 개수: {len(stock_analysis_updates)}")
                 if skipped_no_ticker > 0:
-                    print(f"⚠️ 티커 매핑 없이 주식명을 티커로 사용한 종목: {skipped_no_ticker}개")
+                    print(f"⚠️ 티커를 찾을 수 없어 저장하지 않은 종목: {skipped_no_ticker}개")
+                    if skipped_stocks:
+                        print(f"   건너뛴 종목 목록: {', '.join(skipped_stocks[:10])}" + (f" 외 {len(skipped_stocks) - 10}개" if len(skipped_stocks) > 10 else ""))
                 
                 if stock_analysis_updates:
                     batch_size = 1000
@@ -1562,8 +1576,8 @@ def save_analysis_to_db(result_df):
                     
                     ticker = stock_to_ticker_map.get(stock_name)
                     if not ticker:
-                        # 티커 매핑이 없으면 주식명을 티커로 사용
-                        ticker = stock_name
+                        # 티커 매핑이 없으면 저장하지 않고 건너뜀
+                        continue
                     
                     try:
                         analysis_data[ticker] = {
