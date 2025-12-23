@@ -1,0 +1,54 @@
+---
+description: 프로젝트 개요 및 기술 스택
+globs: []
+alwaysApply: true
+---
+
+# Stock Trading 프로젝트 개요
+
+한국투자증권 API 기반 미국 주식 자동매매 시스템. AI 주가 예측, 기술적 지표 분석, 뉴스 감정 분석을 통합한 FastAPI 서버.
+
+## 기술 스택
+
+- **언어**: Python 3.9+
+- **프레임워크**: FastAPI
+- **데이터베이스**: MongoDB (주), Supabase PostgreSQL (레거시 호환)
+- **인프라**: Docker, GCP (Vertex AI, Colab)
+
+## 빌드 및 실행 명령
+
+```bash
+# 로컬 실행
+python scripts/run/run.py
+
+# Docker 실행
+docker-compose up --build -d
+
+# 개발 모드 (auto-reload)
+APP_ENV=development python scripts/run/run.py
+
+# 로그 확인
+docker-compose logs -f
+```
+
+## 주요 파일
+
+- `app/main.py`: FastAPI 앱 진입점, lifespan 이벤트로 스케줄러 관리
+- `app/core/config.py`: 환경변수 설정 (Settings 클래스)
+- `app/utils/scheduler.py`: 매수/매도 스케줄러
+- `scripts/run/run.py`: uvicorn 서버 실행 스크립트
+
+## 언어 설정
+
+- **언어**: 한국어
+- **커밋 메시지**: 한글 (Conventional Commit 규칙 준수)
+
+## 참고 문서
+
+**⚠️ 공통 규칙**: 프로젝트 루트의 `AGENTS.md` 파일을 참조하세요. 이 파일은 모든 AI 에이전트 툴이 공통으로 읽습니다.
+
+상세 규칙:
+- `.ai/rules.md` - 프로젝트 상세 규칙 및 가이드라인
+- `.ai/PROJECT_RULES.md` - 프로젝트 공통 규칙 및 체크리스트
+- `.ai/conventions/COMMIT_CONVENTION.md` - 커밋 메시지 규칙
+- `.ai/conventions/CODING_CONVENTION.md` - Python 코딩 스타일 가이드

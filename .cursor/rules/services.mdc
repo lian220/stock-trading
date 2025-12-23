@@ -1,0 +1,153 @@
+---
+description: 서비스 레이어 규칙 및 비즈니스 로직 작성 가이드
+globs:
+  - "app/services/**/*.py"
+alwaysApply: false
+---
+
+# 서비스 레이어 규칙
+
+## 서비스 레이어 역할
+
+`app/services/` 디렉토리는 비즈니스 로직을 담당하는 서비스 클래스를 포함합니다.
+
+## 서비스 작성 규칙
+
+### 1. 서비스 클래스 구조
+
+```python
+import logging
+from app.core.config import settings
+
+logger = logging.getLogger(__name__)
+
+class StockService:
+    """주식 관련 비즈니스 로직을 처리하는 서비스"""
+    
+    def __init__(self):
+        """서비스 초기화"""
+        # 의존성 주입 또는 설정 초기화
+        pass
+    
+    async def get_stock_data(self, ticker: str) -> dict:
+        """
+        주식 데이터를 조회합니다.
+        
+        Args:
+            ticker: 주식 티커 심볼
+        
+        Returns:
+            주식 데이터 딕셔너리
+        
+        Raises:
+            ValueError: 티커가 유효하지 않을 때
+        """
+        # 비즈니스 로직 구현
+        pass
+```
+
+### 2. 로깅 사용
+
+모든 서비스는 적절한 로깅을 포함해야 합니다:
+
+```python
+import logging
+
+logger = logging.getLogger(__name__)
+
+class StockService:
+    async def process_stock(self, ticker: str):
+        try:
+            logger.info(f"주식 처리 시작: {ticker}")
+            # 처리 로직
+            logger.info(f"주식 처리 완료: {ticker}")
+        except Exception as e:
+            logger.error(f"주식 처리 중 오류 발생: {ticker}, {str(e)}", exc_info=True)
+            raise
+```
+
+### 3. 예외 처리
+
+서비스 레이어에서는 명확한 예외를 발생시켜야 합니다:
+
+```python
+from fastapi import HTTPException, status
+
+class StockService:
+    async def get_stock(self, ticker: str):
+        stock = await repository.find_by_ticker(ticker)
+        if not stock:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"주식을 찾을 수 없습니다: {ticker}"
+            )
+        return stock
+```
+
+### 4. 환경변수 접근
+
+모든 환경변수는 `app/core/config.py`의 `settings` 객체를 통해서만 접근:
+
+```python
+from app.core.config import settings
+
+class StockService:
+    def __init__(self):
+        self.api_key = settings.kis_api_key  # ✅
+        # os.getenv() 직접 사용 금지 ❌
+```
+
+### 5. Repository 사용
+
+서비스는 Repository를 통해 데이터에 접근합니다:
+
+```python
+from app.application.dependencies import get_stock_repository
+from app.domain.repositories.stock_repository import StockRepository
+
+class StockService:
+    def __init__(self):
+        self.repository: StockRepository = get_stock_repository()
+    
+    async def get_stock(self, ticker: str):
+        return await self.repository.find_by_ticker(ticker)
+```
+
+### 6. 비동기 처리
+
+가능한 경우 비동기 처리를 사용합니다:
+
+```python
+async def fetch_stock_data(self, ticker: str) -> dict:
+    """비동기로 주식 데이터를 조회합니다."""
+    data = await self.repository.find_by_ticker(ticker)
+    return data
+```
+
+## 주요 서비스 파일
+
+- `stock_service.py`: 주식 조회 유틸리티
+- `stock_recommendation_service.py`: 주식 추천 로직
+- `auto_trading_service.py`: 자동매매 로직
+- `balance_service.py`: 잔액 조회 및 주문 처리
+- `economic_service.py`: 경제 데이터 수집 및 분석
+- `auth_service.py`: 인증 관련 로직
+
+## 서비스 간 의존성
+
+서비스 간 의존성이 필요한 경우:
+
+```python
+from app.services.stock_service import get_ticker_from_stock_name
+
+class RecommendationService:
+    def get_recommendation(self, stock_name: str):
+        ticker = get_ticker_from_stock_name(stock_name)
+        # 추천 로직
+```
+
+## 참고
+
+- **Clean Architecture**: 서비스는 Application Layer의 Use Case와 유사하지만, 더 구체적인 비즈니스 로직을 담당
+- **재사용성**: 공통 로직은 서비스로 분리하여 재사용
+- **단일 책임**: 각 서비스는 하나의 도메인 영역만 담당

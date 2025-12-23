@@ -1,0 +1,252 @@
+---
+description: 테스트 규칙 및 테스트 작성 가이드
+globs:
+  - "tests/**/*.py"
+alwaysApply: false
+---
+
+# 테스트 규칙
+
+## 테스트 구조
+
+### 1. 테스트 디렉토리 구조
+
+```
+tests/
+├── __init__.py
+├── test_api/
+│   ├── test_stocks.py
+│   └── test_users.py
+├── test_services/
+│   └── test_stock_service.py
+└── test_repositories/
+    └── test_stock_repository.py
+```
+
+### 2. 테스트 파일 네이밍
+
+- 테스트 파일은 `test_`로 시작
+- 테스트 함수는 `test_`로 시작
+
+```python
+# tests/test_services/test_stock_service.py
+def test_get_stock_by_ticker():
+    """티커로 주식 조회 테스트"""
+    pass
+```
+
+## 테스트 작성 규칙
+
+### 1. pytest 사용
+
+프로젝트는 `pytest`를 테스트 프레임워크로 사용합니다:
+
+```python
+import pytest
+from app.services.stock_service import StockService
+
+def test_get_stock_by_ticker():
+    """티커로 주식 조회 테스트"""
+    service = StockService()
+    result = service.get_stock_by_ticker("AAPL")
+    assert result is not None
+    assert result["ticker"] == "AAPL"
+```
+
+### 2. Fixture 사용
+
+공통 설정은 fixture로 분리:
+
+```python
+import pytest
+from app.db.mongodb import get_db
+
+@pytest.fixture
+def db():
+    """테스트용 DB fixture"""
+    db = get_db()
+    yield db
+    # 테스트 후 정리
+    db.stocks.delete_many({})
+
+@pytest.fixture
+def stock_service():
+    """StockService fixture"""
+    return StockService()
+```
+
+### 3. 비동기 테스트
+
+비동기 함수 테스트는 `pytest-asyncio` 사용:
+
+```python
+import pytest
+
+@pytest.mark.asyncio
+async def test_async_get_stock():
+    """비동기 주식 조회 테스트"""
+    service = StockService()
+    result = await service.get_stock_async("AAPL")
+    assert result is not None
+```
+
+### 4. Mock 사용
+
+외부 API 호출은 mock으로 대체:
+
+```python
+from unittest.mock import patch, MagicMock
+
+@patch('app.services.stock_service.httpx.get')
+def test_fetch_stock_data(mock_get):
+    """주식 데이터 조회 테스트 (Mock 사용)"""
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"ticker": "AAPL", "price": 150.0}
+    mock_get.return_value = mock_response
+    
+    service = StockService()
+    result = service.fetch_stock_data("AAPL")
+    
+    assert result["ticker"] == "AAPL"
+    assert result["price"] == 150.0
+```
+
+### 5. 테스트 격리
+
+각 테스트는 독립적으로 실행되어야 합니다:
+
+```python
+@pytest.fixture(autouse=True)
+def clean_db():
+    """각 테스트 전후로 DB 정리"""
+    db = get_db()
+    yield
+    db.stocks.delete_many({})
+```
+
+## 테스트 커버리지
+
+### 1. 커버리지 측정
+
+```bash
+pytest --cov=app --cov-report=html
+```
+
+### 2. 목표 커버리지
+
+- **최소**: 70%
+- **권장**: 80% 이상
+- **핵심 로직**: 90% 이상
+
+## 테스트 실행
+
+### 1. 모든 테스트 실행
+
+```bash
+pytest
+```
+
+### 2. 특정 테스트 실행
+
+```bash
+pytest tests/test_services/test_stock_service.py
+```
+
+### 3. 특정 함수 테스트
+
+```bash
+pytest tests/test_services/test_stock_service.py::test_get_stock_by_ticker
+```
+
+### 4. 커버리지 포함 실행
+
+```bash
+pytest --cov=app --cov-report=term-missing
+```
+
+## 테스트 작성 가이드
+
+### 1. AAA 패턴
+
+Arrange-Act-Assert 패턴 사용:
+
+```python
+def test_get_stock_by_ticker():
+    # Arrange (준비)
+    service = StockService()
+    ticker = "AAPL"
+    
+    # Act (실행)
+    result = service.get_stock_by_ticker(ticker)
+    
+    # Assert (검증)
+    assert result is not None
+    assert result["ticker"] == ticker
+```
+
+### 2. 테스트 케이스
+
+다양한 케이스를 테스트:
+
+```python
+@pytest.mark.parametrize("ticker,expected", [
+    ("AAPL", True),
+    ("MSFT", True),
+    ("INVALID", False),
+])
+def test_stock_exists(ticker, expected):
+    """주식 존재 여부 테스트"""
+    service = StockService()
+    result = service.stock_exists(ticker)
+    assert result == expected
+```
+
+### 3. 예외 테스트
+
+예외 상황도 테스트:
+
+```python
+def test_get_stock_not_found():
+    """존재하지 않는 주식 조회 테스트"""
+    service = StockService()
+    with pytest.raises(HTTPException) as exc_info:
+        service.get_stock_by_ticker("INVALID")
+    assert exc_info.value.status_code == 404
+```
+
+## 통합 테스트
+
+### 1. API 테스트
+
+FastAPI의 `TestClient` 사용:
+
+```python
+from fastapi.testclient import TestClient
+from app.main import app
+
+client = TestClient(app)
+
+def test_get_stock_endpoint():
+    """주식 조회 엔드포인트 테스트"""
+    response = client.get("/api/stocks/AAPL")
+    assert response.status_code == 200
+    assert response.json()["ticker"] == "AAPL"
+```
+
+### 2. 데이터베이스 테스트
+
+테스트용 DB 사용:
+
+```python
+@pytest.fixture
+def test_db():
+    """테스트용 MongoDB 연결"""
+    # 테스트용 DB 설정
+    pass
+```
+
+## 참고
+
+- **테스트 데이터**: 테스트 후 정리 필수
+- **독립성**: 각 테스트는 다른 테스트에 의존하지 않아야 함
+- **명확성**: 테스트 이름과 주석으로 의도 명확히 표현

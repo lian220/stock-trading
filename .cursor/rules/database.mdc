@@ -1,0 +1,85 @@
+---
+description: 데이터베이스 규칙 및 MongoDB/Supabase 사용 가이드
+globs:
+  - "app/db/**/*.py"
+  - "app/infrastructure/database/**/*.py"
+  - "app/infrastructure/repositories/**/*.py"
+  - "app/application/use_cases/**/*.py"
+alwaysApply: false
+---
+
+# 데이터베이스 규칙
+
+## ⚠️ CRITICAL: 데이터 조회 규칙
+
+- **모든 데이터 조회는 MongoDB에서 수행해야 합니다**
+- Supabase는 저장용으로만 사용 (레거시 호환성)
+- 새로운 조회 기능은 반드시 MongoDB Repository 사용
+- `get_stock_repository()` 또는 `get_economic_repository()` 사용 시 MongoDB 구현체가 반환되도록 확인
+
+## 데이터베이스 접근 패턴
+
+```python
+# ✅ 올바른 방법
+from app.application.dependencies import get_stock_repository
+repository = get_stock_repository()  # MongoDB Repository
+data = await repository.find_by_ticker("AAPL")
+
+# ❌ 잘못된 방법
+# Supabase에서 직접 조회 금지
+```
+
+## MongoDB 컬렉션 네이밍
+
+MongoDB 컬렉션명과 Supabase 테이블명이 다를 수 있음. 반드시 실제 저장하는 코드 확인 필요:
+
+| 용도 | MongoDB 컬렉션 | Supabase 테이블 | 비고 |
+|------|---------------|-----------------|------|
+| AI 주가 예측 결과 | `stock_analysis` | `stock_analysis_results` | 필드 구조도 다름 |
+| 기술적 지표 추천 | `stock_recommendations` | `stock_recommendations` | 동일 |
+| 감정 분석 | `sentiment_analysis` | `ticker_sentiment_analysis` | 다름 |
+| 일별 통합 데이터 | `daily_stock_data` | - | MongoDB 전용 |
+| 주식 마스터 | `stocks` | `stocks` | 동일 |
+
+## MongoDB 필드 구조 예시 (`stock_analysis`)
+
+```javascript
+{
+  "date": ISODate(),
+  "ticker": "AAPL",
+  "stock_name": "애플",
+  "metrics": { "accuracy": 85.5, "mae": ..., "mse": ... },
+  "predictions": { "rise_probability": 5.2, "last_actual_price": ..., "predicted_future_price": ... },
+  "recommendation": "Buy",
+  "analysis": "..."
+}
+```
+
+## Supabase 필드 구조 (`stock_analysis_results`)
+
+```json
+{
+  "Stock": "애플",
+  "Accuracy (%)": 85.5,
+  "Rise Probability (%)": 5.2,
+  "Last Actual Price": 150.0,
+  "Predicted Future Price": 155.0,
+  "Recommendation": "Buy"
+}
+```
+
+## 환경변수 접근
+
+모든 환경변수는 `app/core/config.py`의 `settings` 객체를 통해서만 접근:
+
+```python
+from app.core.config import settings
+url = settings.get_mongodb_url()  # ✅
+# os.getenv() 직접 사용 금지 ❌
+```
+
+## 자주 사용하는 함수
+
+- `get_stock_repository()`: 주식 Repository 가져오기 (MongoDB)
+- `get_economic_repository()`: 경제 데이터 Repository 가져오기 (MongoDB)
+- `settings.get_mongodb_url()`: MongoDB URL 가져오기
