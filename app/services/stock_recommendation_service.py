@@ -28,8 +28,18 @@ class StockRecommendationService:
         self.lookback_days = 180  # 6개월 데이터
 
     def calculate_sma(self, series, period):
-        """단순 이동평균(SMA) 계산"""
-        return series.rolling(window=period).mean()
+        """단순 이동평균(SMA) 계산
+        
+        Args:
+            series: 가격 시계열 데이터 (pandas Series)
+            period: 이동평균 기간
+            
+        Returns:
+            pandas Series: SMA 값 (최소 period개의 유효한 데이터가 있을 때만 계산)
+        """
+        # NaN 값이 포함된 경우에도 최소 period개의 유효한 값으로 계산하도록 설정
+        # min_periods를 period로 설정하면 정확히 period개의 값이 있어야 계산됨
+        return series.rolling(window=period, min_periods=period).mean()
 
     def calculate_ema(self, series, period):
         """지수 이동평균(EMA) 계산"""
@@ -216,17 +226,28 @@ class StockRecommendationService:
                 logger.warning(f"⚠️ {stock}의 가격 데이터가 없습니다. 건너뜁니다.")
                 continue
 
-            # 데이터가 충분한지 확인 (SMA50 계산을 위해 최소 50일 필요)
-            if len(prices) < 50:
-                logger.warning(f"⚠️ {stock}: 지표 계산을 위해 최소 50일 데이터가 필요합니다. 현재 {len(prices)}일 데이터만 있습니다.")
+            # NaN 값 처리: forward fill (앞의 값으로 채우기) 후 backward fill (뒤의 값으로 채우기)
+            # 이렇게 하면 중간에 누락된 데이터를 보간할 수 있습니다.
+            prices_filled = prices.ffill().bfill()
+            
+            # forward fill과 backward fill 후에도 모두 NaN이면 건너뜀
+            if prices_filled.isna().all():
+                logger.warning(f"⚠️ {stock}: NaN 값 처리 후에도 유효한 데이터가 없습니다. 건너뜁니다.")
                 continue
 
-            # 지표 계산
-            sma20 = self.calculate_sma(prices, 20)
-            sma50 = self.calculate_sma(prices, 50)
+            # 데이터가 충분한지 확인 (SMA50 계산을 위해 최소 50일 필요)
+            # NaN 제거 후 유효한 데이터 개수 확인
+            valid_prices = prices_filled.dropna()
+            if len(valid_prices) < 50:
+                logger.warning(f"⚠️ {stock}: 지표 계산을 위해 최소 50일의 유효한 데이터가 필요합니다. 현재 {len(valid_prices)}일 데이터만 있습니다.")
+                continue
+
+            # 지표 계산 (NaN 처리된 데이터 사용)
+            sma20 = self.calculate_sma(prices_filled, 20)
+            sma50 = self.calculate_sma(prices_filled, 50)
             golden_cross = sma20 > sma50
-            rsi = self.calculate_rsi(prices)
-            macd, signal = self.calculate_macd(prices)
+            rsi = self.calculate_rsi(prices_filled)
+            macd, signal = self.calculate_macd(prices_filled)
             macd_buy_signal = macd > signal
             recommended = golden_cross & (rsi < 50) & macd_buy_signal
 
@@ -429,6 +450,12 @@ class StockRecommendationService:
         """
         Accuracy가 80% 이상이고 상승 확률이 3% 이상인 추천 주식 목록을 반환합니다.
         상승 확률 기준으로 내림차순 정렬됩니다.
+        종목별로 가장 최근 날짜의 데이터만 반환합니다.
+        
+        **분석 전략**:
+        - 일일 매수 결정을 위한 실시간 추천이므로 최신 데이터 사용이 적합합니다.
+        - 매일 23:00에 새로운 AI 예측이 생성되므로, 최신 예측 결과를 반영하는 것이 중요합니다.
+        - 같은 종목이 여러 날짜에 분석되어도, 가장 최근 분석 결과만 사용하여 중복을 방지합니다.
 
         MongoDB stock_analysis 컬렉션에서 조회합니다.
         """
@@ -438,20 +465,47 @@ class StockRecommendationService:
                 logger.error("MongoDB 연결 실패")
                 return {"message": "MongoDB 연결 실패", "recommendations": []}
 
-            # MongoDB stock_analysis 컬렉션에서 조회 (필터 조건 적용)
+            # MongoDB stock_analysis 컬렉션에서 조회 (필터 조건 적용, 날짜 내림차순)
+            # 날짜 내림차순 정렬로 최신 데이터를 먼저 가져옴
             cursor = db.stock_analysis.find({
                 "metrics.accuracy": {"$gte": 80},
-                "predictions.rise_probability": {"$gte": 3}
-            }).sort("predictions.rise_probability", -1)
+                "predictions.rise_probability": {"$gte": 3},
+                "user_id": None  # 전역 분석만
+            }).sort("date", -1).sort("predictions.rise_probability", -1)
             data = list(cursor)
 
             if not data:
                 logger.info("MongoDB stock_analysis에서 조건을 만족하는 데이터가 없음")
                 return {"message": "분석 결과를 찾을 수 없습니다", "recommendations": []}
 
+            # 종목별로 가장 최근 날짜의 데이터만 선택 (중복 제거)
+            # 이유: 같은 종목이 여러 날짜에 분석되어도, 최신 예측 결과만 사용
+            # ticker 기준으로 중복 제거 (티커가 없는 경우는 제외)
+            ticker_to_latest = {}
+            
+            for doc in data:
+                ticker = doc.get("ticker")
+                if not ticker:
+                    # 티커가 없으면 건너뜀 (이미 저장 시 티커가 없으면 저장하지 않도록 수정했으므로, 이 경우는 레거시 데이터일 수 있음)
+                    logger.warning(f"stock_analysis에 ticker가 없는 데이터 발견: {doc.get('stock_name', 'N/A')} (날짜: {doc.get('date')})")
+                    continue
+                
+                # ticker 기준으로 가장 최근 데이터만 유지
+                if ticker not in ticker_to_latest:
+                    ticker_to_latest[ticker] = doc
+                else:
+                    # 날짜 비교 (더 최근 데이터로 교체)
+                    existing_date = ticker_to_latest[ticker].get("date")
+                    current_date = doc.get("date")
+                    if current_date and existing_date:
+                        if current_date > existing_date:
+                            ticker_to_latest[ticker] = doc
+                    elif current_date:
+                        ticker_to_latest[ticker] = doc
+
             # MongoDB 구조를 API 응답 형식으로 변환
             recommendations = []
-            for doc in data:
+            for doc in ticker_to_latest.values():
                 metrics = doc.get("metrics", {})
                 predictions = doc.get("predictions", {})
 
@@ -464,8 +518,11 @@ class StockRecommendationService:
                     "Recommendation": doc.get("recommendation"),
                     "Analysis": doc.get("analysis")
                 })
+            
+            # 상승 확률 기준으로 내림차순 정렬
+            recommendations.sort(key=lambda x: x.get("Rise Probability (%)", 0), reverse=True)
 
-            logger.info(f"MongoDB stock_analysis에서 {len(recommendations)}개 추천 종목 조회")
+            logger.info(f"MongoDB stock_analysis에서 {len(recommendations)}개 추천 종목 조회 (종목별 최신 데이터만)")
             return {
                 "message": f"{len(recommendations)}개의 추천 주식을 찾았습니다",
                 "recommendations": recommendations
@@ -819,27 +876,10 @@ class StockRecommendationService:
     def fetch_and_store_sentiment_independent(self):
         """
         AI 예측 결과에 의존하지 않고 독립적으로 감정 분석 수행
-        - 활성화된 주식 목록 (MongoDB stocks 컬렉션)
-        - 보유 주식 목록 (get_overseas_balance)
+        - 활성화된 주식 목록만 사용 (MongoDB stocks 컬렉션)
         """
-        # 1. 활성화된 주식 목록 가져오기 (MongoDB에서 직접 조회)
+        # 활성화된 주식 목록 가져오기 (MongoDB에서 직접 조회)
         all_tickers = get_active_tickers(exclude_etf=True)
-        
-        # 2. 보유 주식 추가
-        balance_result = get_overseas_balance()
-        holdings = []
-        
-        if balance_result.get("rt_cd") == "0" and "output1" in balance_result:
-            holdings = balance_result.get("output1", [])
-            print(f"보유 주식 정보를 성공적으로 가져왔습니다. 총 {len(holdings)}개 종목 보유 중")
-        else:
-            print(f"보유 주식 정보를 가져오는데 실패했습니다: {balance_result.get('msg1', '알 수 없는 오류')}")
-        
-        # 보유 주식의 티커 목록 생성
-        holding_tickers = [item.get("ovrs_pdno") for item in holdings if item.get("ovrs_pdno")]
-        
-        # 활성화된 주식과 보유 주식의 티커를 합치고 중복 제거
-        all_tickers = list(set(all_tickers + holding_tickers))
         
         if not all_tickers:
             return {"message": "분석할 티커가 없습니다", "results": []}
@@ -863,9 +903,6 @@ class StockRecommendationService:
 
         # MongoDB에서 ticker_to_stock 매핑 생성
         ticker_to_stock = get_ticker_to_stock_mapping(exclude_etf=False)
-        
-        # 보유 주식 정보를 ticker로 매핑
-        holdings_by_ticker = {item.get("ovrs_pdno"): item for item in holdings if item.get("ovrs_pdno")}
 
         # MongoDB 연결
         db = get_db()
@@ -884,9 +921,7 @@ class StockRecommendationService:
                     "ticker": ticker,
                     "stock_name": ticker_to_stock.get(ticker, ticker),
                     "message": "API 호출 실패",
-                    "is_active": ticker in all_tickers,
-                    "is_holding": ticker in holding_tickers,
-                    "holding_info": holdings_by_ticker.get(ticker, {})
+                    "is_active": True
                 })
                 time.sleep(sleep_interval)
                 continue
@@ -906,9 +941,7 @@ class StockRecommendationService:
                     "ticker": ticker,
                     "stock_name": ticker_to_stock.get(ticker, ticker),
                     "message": "관련 기사 없음",
-                    "is_active": ticker in all_tickers,
-                    "is_holding": ticker in holding_tickers,
-                    "holding_info": holdings_by_ticker.get(ticker, {})
+                    "is_active": True
                 })
                 time.sleep(sleep_interval)
                 continue
@@ -939,17 +972,12 @@ class StockRecommendationService:
                 "stock_name": ticker_to_stock.get(ticker, ticker),
                 "average_sentiment_score": average_sentiment,
                 "article_count": article_count,
-                "is_active": ticker in all_tickers,
-                "is_holding": ticker in holding_tickers,
-                "holding_info": holdings_by_ticker.get(ticker, {})
+                "is_active": True
             })
             time.sleep(sleep_interval)
 
-        # 활성화된 주식 수 계산 (MongoDB에서 조회한 주식 수)
-        active_tickers_from_db = get_active_tickers(exclude_etf=True)
-        active_count = len([t for t in all_tickers if t in active_tickers_from_db])
         return {
-            "message": f"{len(results)}개의 티커(활성화된 주식: {active_count}개, 보유 주식: {len(holding_tickers)}개)를 분석했습니다",
+            "message": f"{len(results)}개의 티커(활성화된 주식: {len(all_tickers)}개)를 분석했습니다",
             "results": results
         }
 
@@ -1035,9 +1063,36 @@ class StockRecommendationService:
             combined_mask = np.logical_or.reduce([mask_golden, mask_macd, mask_rsi])
             filtered_tech_df = tech_df[combined_mask]
             
+            # 종목별로 최신 날짜만 남기기 (중복 제거)
+            if not filtered_tech_df.empty:
+                # 날짜를 datetime으로 변환 (아직 변환되지 않은 경우)
+                if not pd.api.types.is_datetime64_any_dtype(filtered_tech_df["날짜"]):
+                    filtered_tech_df["날짜"] = pd.to_datetime(filtered_tech_df["날짜"])
+                # 날짜 내림차순 정렬 후 종목별로 첫 번째(최신)만 남기기
+                filtered_tech_df = filtered_tech_df.sort_values("날짜", ascending=False)
+                filtered_tech_df = filtered_tech_df.drop_duplicates(subset=["종목"], keep="first")
+                logger.info(f"종목별 최신 데이터만 필터링: {len(filtered_tech_df)}개 종목")
+            
             # 2. 주가 예측 데이터 조회
             stock_recs = self.get_stock_recommendations()
-            recommendations = stock_recs.get("recommendations", [])
+            raw_recommendations = stock_recs.get("recommendations", [])
+            
+            # recommendations에서도 중복 제거 (종목명 기준)
+            seen_stock_names = set()
+            recommendations = []
+            for rec in raw_recommendations:
+                stock_name = rec.get("Stock")
+                if not stock_name:
+                    continue
+                
+                if stock_name in seen_stock_names:
+                    logger.warning(f"get_stock_recommendations에서 중복된 종목 발견 및 제외: {stock_name}")
+                    continue
+                
+                seen_stock_names.add(stock_name)
+                recommendations.append(rec)
+            
+            logger.info(f"AI 예측 추천 종목 수 (중복 제거 후): {len(recommendations)}개")
             
             # 초기값 설정 (슬랙 알림을 위해)
             results = []
@@ -1085,12 +1140,20 @@ class StockRecommendationService:
                 # 5. 데이터 매핑 준비
                 tech_map = {row["종목"]: row.to_dict() for _, row in filtered_tech_df.iterrows()}
                 
-                # 6. 결과 통합
+                # 6. 결과 통합 (중복 제거를 위해 seen_tickers 사용)
+                seen_tickers = set()
                 for rec in recommendations:
                     stock_name = rec["Stock"]
                     ticker = get_ticker_from_stock_name(stock_name)
                     if not ticker:
                         continue
+                    
+                    # 티커 기준 중복 제거
+                    if ticker in seen_tickers:
+                        logger.warning(f"중복된 추천 종목 발견 및 제외: {stock_name} ({ticker})")
+                        continue
+                    seen_tickers.add(ticker)
+                    
                     tech_data = tech_map.get(stock_name)
                     if tech_data is None:
                         continue  # 기술적 지표가 없으면 제외
@@ -1174,13 +1237,40 @@ class StockRecommendationService:
                     item["composite_score"] = base_score + item.get("short_score", 0)
 
                 final_results.sort(key=lambda x: x["composite_score"], reverse=True)
+                
+                # 최종 결과에서도 티커 기준 중복 제거 (이중 안전장치)
+                seen_final_tickers = set()
+                deduplicated_final_results = []
+                for item in final_results:
+                    ticker = item.get("ticker")
+                    if ticker and ticker not in seen_final_tickers:
+                        deduplicated_final_results.append(item)
+                        seen_final_tickers.add(ticker)
+                    elif ticker:
+                        logger.warning(f"최종 결과에서 중복된 티커 발견 및 제외: {item.get('stock_name')} ({ticker})")
+                
+                final_results = deduplicated_final_results
+                logger.info(f"최종 추천 종목 수 (중복 제거 후): {len(final_results)}개")
 
             # 8. 슬랙 알림 - 통합 분석 완료 (4가지 분석 결과 포함)
             if send_slack_notification:
                 try:
-                    # 상위 5개 추천 종목 정보 준비
-                    top_recommendations = [
-                        {
+                    # 상위 5개 추천 종목 정보 준비 (중복 제거 확인)
+                    seen_tickers_for_slack = set()
+                    top_recommendations = []
+                    
+                    for item in final_results:
+                        ticker = item.get('ticker')
+                        if not ticker:
+                            continue
+                        
+                        # 티커 기준 중복 제거 (슬랙 알림용 이중 안전장치)
+                        if ticker in seen_tickers_for_slack:
+                            logger.warning(f"슬랙 알림 준비 중 중복된 티커 발견 및 제외: {item.get('stock_name')} ({ticker})")
+                            continue
+                        
+                        seen_tickers_for_slack.add(ticker)
+                        top_recommendations.append({
                             'stock_name': item['stock_name'],
                             'ticker': item['ticker'],
                             'recommendation_score': item['composite_score'],
@@ -1189,9 +1279,11 @@ class StockRecommendationService:
                             'golden_cross': item['golden_cross'],
                             'rsi': item['rsi'],
                             'macd_buy_signal': item['macd_buy_signal']
-                        }
-                        for item in final_results[:5]
-                    ]
+                        })
+                        
+                        # 최대 5개만
+                        if len(top_recommendations) >= 5:
+                            break
                     
                     # 각 분석 통계 계산
                     technical_count = sum(1 for item in final_results if item['technical_recommended'])
@@ -1353,30 +1445,57 @@ class StockRecommendationService:
                 sell_type = None  # "stop_loss_urgent", "stop_loss", "take_profit", "technical_strong", "technical_moderate"
                 
                 # 조건 1: 가격 기반 매도 (익절/손절) - Priority 1, 2
-                # 레버리지 ETF 여부 확인 (종목명에 키워드 포함 여부)
+                # 레버리지 ETF 여부 확인 (MongoDB에서 티커 기준으로 확인, 종목명 키워드는 보조 확인)
                 is_leveraged = False
-                leverage_keywords = ["2X", "3X", "Leverage", "Ultra", "레버리지", "2배", "3배"]
-                for keyword in leverage_keywords:
-                    if keyword.lower() in stock_name.lower():
-                        is_leveraged = True
-                        break
+                
+                # 1순위: MongoDB에서 레버리지 티커인지 확인 (leverage_ticker 필드로 역매핑)
+                if db is not None:
+                    try:
+                        base_stock = db.stocks.find_one({"leverage_ticker": ticker})
+                        if base_stock:
+                            is_leveraged = True
+                            logger.debug(f"get_stocks_to_sell: {stock_name}({ticker})는 MongoDB에서 레버리지 티커로 확인됨 (본주: {base_stock.get('ticker')})")
+                    except Exception as e:
+                        logger.warning(f"get_stocks_to_sell: 레버리지 티커 확인 중 오류 (계속 진행): {str(e)}")
+                
+                # 2순위: MongoDB에서 확인 실패 시 종목명 키워드로 확인 (보조 확인)
+                if not is_leveraged:
+                    leverage_keywords = ["2X", "3X", "Leverage", "Ultra", "레버리지", "2배", "3배"]
+                    for keyword in leverage_keywords:
+                        if keyword.lower() in stock_name.lower():
+                            is_leveraged = True
+                            logger.debug(f"get_stocks_to_sell: {stock_name}({ticker})는 종목명 키워드로 레버리지로 확인됨 (키워드: {keyword})")
+                            break
                 
                 # 목표 수익률 설정 (레버리지는 10%, 일반은 5%)
                 target_profit_percent = 10 if is_leveraged else 5
                 
+                # 레버리지 감지 결과 로깅 (디버깅용)
+                if is_leveraged:
+                    logger.info(f"get_stocks_to_sell: {stock_name}({ticker})는 레버리지 주식입니다. 손절 조건: -10% 이하만 매도, 익절 조건: +{target_profit_percent}% 이상")
+                
                 # Priority 1: 손절 조건 (최우선)
-                if price_change_percent <= -10:
-                    # 긴급 손절: -10% 이하
-                    priority = 1
-                    sell_type = "stop_loss_urgent"
-                    sell_reasons.append(f"긴급 손절 조건 충족: 구매가 대비 {price_change_percent:.2f}% 하락 (최우선 매도)")
-                elif price_change_percent <= -7:
-                    # 일반 손절: -7% 이하
-                    priority = 1
-                    sell_type = "stop_loss"
-                    sell_reasons.append(f"손절 조건 충족: 구매가 대비 {price_change_percent:.2f}% 하락")
-                # Priority 2: 익절 조건
-                elif price_change_percent >= target_profit_percent:
+                if is_leveraged:
+                    # 레버리지 주식: -10% 이하일 때만 손절 (일반 손절 조건 없음)
+                    if price_change_percent <= -10:
+                        priority = 1
+                        sell_type = "stop_loss_urgent"
+                        sell_reasons.append(f"레버리지 긴급 손절 조건 충족: 구매가 대비 {price_change_percent:.2f}% 하락 (최우선 매도)")
+                else:
+                    # 일반 주식: -10% 이하 (긴급 손절), -7% 이하 (일반 손절)
+                    if price_change_percent <= -10:
+                        # 긴급 손절: -10% 이하
+                        priority = 1
+                        sell_type = "stop_loss_urgent"
+                        sell_reasons.append(f"긴급 손절 조건 충족: 구매가 대비 {price_change_percent:.2f}% 하락 (최우선 매도)")
+                    elif price_change_percent <= -7:
+                        # 일반 손절: -7% 이하
+                        priority = 1
+                        sell_type = "stop_loss"
+                        sell_reasons.append(f"손절 조건 충족: 구매가 대비 {price_change_percent:.2f}% 하락")
+                
+                # Priority 2: 익절 조건 (손절 조건이 없을 때만 체크)
+                if priority == 3 and price_change_percent >= target_profit_percent:
                     priority = 2
                     sell_type = "take_profit"
                     sell_reasons.append(f"익절 조건 충족({'레버리지' if is_leveraged else '일반'}): 구매가 대비 {price_change_percent:.2f}% 상승 (목표: {target_profit_percent}%)")

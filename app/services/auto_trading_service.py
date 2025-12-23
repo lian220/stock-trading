@@ -160,13 +160,25 @@ class AutoTradingService:
                 except Exception as e:
                     logger.error(f"레버리지 설정 조회 실패: {str(e)}")
 
+                # 중복 제거를 위한 set (티커 기준)
+                seen_tickers = set()
+                
                 for stock in recommendations["results"]:
+                    # 티커 기준 중복 제거
+                    original_ticker = stock.get("ticker")
+                    if not original_ticker:
+                        continue
+                    
+                    if original_ticker in seen_tickers:
+                        logger.warning(f"중복된 추천 종목 발견 및 제외: {stock.get('stock_name')} ({original_ticker})")
+                        continue
+                    seen_tickers.add(original_ticker)
+                    
                     # 종합 점수 필터링
                     if stock.get("composite_score", 0) < config.get("min_composite_score", 2.0):
                         continue
                     
                     # 레버리지 설정 적용 (leverage_ticker는 stocks 컬렉션에서 조회)
-                    original_ticker = stock.get("ticker")
                     actual_ticker = original_ticker
                     is_leverage = False
                     
@@ -272,6 +284,20 @@ class AutoTradingService:
             
             orders = []
             max_amount = config.get("max_amount_per_stock", 10000.0)
+            
+            # 중복 제거 (티커 기준) - 이중 안전장치
+            seen_tickers = set()
+            deduplicated_candidates = []
+            for candidate in candidates:
+                ticker = candidate.get("ticker")
+                if ticker and ticker not in seen_tickers:
+                    deduplicated_candidates.append(candidate)
+                    seen_tickers.add(ticker)
+                elif ticker:
+                    logger.warning(f"매수 실행 시 중복된 티커 발견 및 제외: {candidate.get('stock_name')} ({ticker})")
+            
+            candidates = deduplicated_candidates
+            logger.info(f"매수 후보 종목 수 (중복 제거 후): {len(candidates)}개")
             
             for candidate in candidates:
                 ticker = candidate.get("ticker")

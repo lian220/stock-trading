@@ -1240,18 +1240,27 @@ class StockScheduler:
             return
         
         raw_candidates = recommendations.get("results", [])
+        logger.info(f"[{function_name}] 추천 종목 수 (중복 제거 전): {len(raw_candidates)}개")
         
-        # 중복 제거 (티커 기준)
+        # 중복 제거 (티커 기준) - 이중 안전장치
         buy_candidates = []
         seen_tickers = set()
         
         for candidate in raw_candidates:
             ticker = candidate.get("ticker")
-            if ticker and ticker not in seen_tickers:
+            stock_name = candidate.get("stock_name", "N/A")
+            
+            if not ticker:
+                logger.warning(f"[{function_name}] 티커가 없는 추천 종목 발견 및 제외: {stock_name}")
+                continue
+            
+            if ticker not in seen_tickers:
                 buy_candidates.append(candidate)
                 seen_tickers.add(ticker)
-            elif ticker:
-                logger.warning(f"[{function_name}] 중복된 티커 발견 및 제외: {ticker}")
+            else:
+                logger.warning(f"[{function_name}] 중복된 티커 발견 및 제외: {stock_name} ({ticker})")
+        
+        logger.info(f"[{function_name}] 매수 후보 종목 수 (중복 제거 후): {len(buy_candidates)}개")
         
         if not buy_candidates:
             logger.info(f"[{function_name}] 매수 조건을 만족하는 종목이 없습니다.")
