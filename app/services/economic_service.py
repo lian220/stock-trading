@@ -121,19 +121,12 @@ def fetch_economic_data(start_date: str = None, end_date: str = None):
                 # Yahoo Finance 지표
                 for key, value in prev_doc.get("yfinance_indicators", {}).items():
                     previous_data[key] = value
-                # 주가 데이터 (티커를 그대로 사용 - categorize_data_for_mongodb에서 티커도 인식함)
-                stocks_count = 0
-                for ticker, stock_data in prev_doc.get("stocks", {}).items():
+                # 주가 데이터
+                for stock_name, stock_data in prev_doc.get("stocks", {}).items():
                     if isinstance(stock_data, dict):
-                        previous_data[ticker] = stock_data.get("close_price")
+                        previous_data[stock_name] = stock_data.get("close_price")
                     else:
-                        previous_data[ticker] = stock_data
-                    stocks_count += 1
-                
-                if stocks_count > 0:
-                    logger.debug(f"이전 데이터({previous_date})에서 주식 {stocks_count}개 로드 완료")
-                else:
-                    logger.warning(f"이전 데이터({previous_date})에 stocks 필드가 없거나 비어있음")
+                        previous_data[stock_name] = stock_data
     except Exception as e:
         logger.warning(f"이전 데이터 조회 중 오류 발생: {str(e)}")
     
@@ -212,15 +205,10 @@ def categorize_data_for_mongodb(data_dict):
             if doc.get("name"):
                 yfinance_names.add(doc["name"])
         
-        # 주식 이름 (한글 주식명)
+        # 주식 이름
         for doc in db.stocks.find({"is_active": True}):
             if doc.get("stock_name"):
                 stock_names.add(doc["stock_name"])
-        
-        # 티커 -> 한글 주식명 매핑 생성 (티커도 stocks로 분류하기 위해)
-        ticker_to_stock = get_ticker_to_stock_mapping(exclude_etf=False)
-        # 티커 목록 생성
-        tickers = set(ticker_to_stock.keys())
         
         # 데이터 분류
         categorized = {
@@ -229,41 +217,16 @@ def categorize_data_for_mongodb(data_dict):
             'stocks': {}
         }
         
-        # 디버깅: 분류되지 않은 주식 데이터 추적
-        unclassified_stocks = []
-        classified_stocks = []
-        classified_by_ticker = []
-        classified_by_stock_name = []
-        
         for key, value in data_dict.items():
             if key in fred_names:
                 categorized['fred_indicators'][key] = value
             elif key in yfinance_names:
                 categorized['yfinance_indicators'][key] = value
-            elif key in tickers:
-                # 티커인 경우를 먼저 확인 (티커와 주식명이 겹칠 수 있으므로)
-                categorized['stocks'][key] = value
-                classified_stocks.append(key)
-                classified_by_ticker.append(key)
             elif key in stock_names:
-                # 한글 주식명인 경우 (티커가 아닌 경우만)
                 categorized['stocks'][key] = value
-                classified_stocks.append(key)
-                classified_by_stock_name.append(key)
             # 분류되지 않은 데이터는 무시 (로그만 남김)
             else:
-                # 주식으로 보이는 데이터는 별도로 추적
-                if key not in ['날짜']:  # 날짜는 제외
-                    unclassified_stocks.append(key)
                 logger.debug(f"분류되지 않은 데이터: {key}")
-        
-        # 분류되지 않은 데이터가 있으면 경고 로그만 출력
-        if unclassified_stocks:
-            logger.warning(f"분류되지 않은 주식 데이터 {len(unclassified_stocks)}개 발견: {unclassified_stocks[:10]}")
-        
-        logger.debug(f"데이터 분류 완료: FRED {len(categorized['fred_indicators'])}개, "
-                    f"Yahoo Finance {len(categorized['yfinance_indicators'])}개, "
-                    f"Stocks {len(categorized['stocks'])}개")
         
         return categorized
     except Exception as e:
@@ -313,52 +276,22 @@ def save_economic_data(new_data, start_date, storage_end_date, stock_columns, pr
                 # 데이터 분류
                 categorized = categorize_data_for_mongodb(data_dict)
                 
-                # 분류 결과 로깅 (디버그 레벨)
-                logger.debug(f"{date_str} 데이터 분류: FRED {len(categorized['fred_indicators'])}개, "
-                           f"Yahoo Finance {len(categorized['yfinance_indicators'])}개, "
-                           f"Stocks {len(categorized['stocks'])}개")
-                
                 # stocks 필드에 공매도 데이터 통합
-                # 티커 <-> 한글 주식명 매핑 생성
+                # 주식명(한글) -> 티커 변환 매핑 생성
                 stock_to_ticker = get_stock_to_ticker_mapping(exclude_etf=False)
-                ticker_to_stock = get_ticker_to_stock_mapping(exclude_etf=False)
                 
-                # stocks 필드를 티커 기반으로 변환 (None 값 필터링)
+                # stocks 필드를 티커 기반으로 변환
                 stocks_with_short_interest = {}
-                ticker_not_found_stocks = []
-                none_price_count = 0
-                
-                for key, price in categorized['stocks'].items():
-                    # None 값은 저장하지 않음
-                    if price is None:
-                        none_price_count += 1
-                        continue
-                    
-                    # key가 티커인지 한글 주식명인지 확인
-                    if key in ticker_to_stock:
-                        # 이미 티커인 경우
-                        ticker = key
-                    else:
-                        # 한글 주식명인 경우 티커로 변환
-                        ticker = stock_to_ticker.get(key)
-                    
+                for stock_name, price in categorized['stocks'].items():
+                    ticker = stock_to_ticker.get(stock_name)
                     if ticker:
                         # 티커를 키로 사용
                         stocks_with_short_interest[ticker] = {
                             'close_price': price
                         }
-                    else:
-                        ticker_not_found_stocks.append(key)
-                
-                if none_price_count > 0:
-                    logger.warning(f"{date_str}: None 값 가격 {none_price_count}개는 저장하지 않습니다.")
-                
-                if ticker_not_found_stocks:
-                    logger.warning(f"{date_str}: 티커를 찾을 수 없는 주식명 {len(ticker_not_found_stocks)}개: {ticker_not_found_stocks[:5]}")
                 
                 # 공매도 데이터 통합 (티커 기반)
                 if short_interest_data_for_date:
-                    logger.debug(f"{date_str}: 공매도 데이터 {len(short_interest_data_for_date)}개 티커 통합")
                     for ticker, stock_data in short_interest_data_for_date.items():
                         if ticker in stocks_with_short_interest:
                             # 기존 close_price 가격과 공매도 데이터 통합
@@ -366,8 +299,6 @@ def save_economic_data(new_data, start_date, storage_end_date, stock_columns, pr
                         else:
                             # 가격 데이터가 없어도 공매도 데이터만 저장
                             stocks_with_short_interest[ticker] = stock_data
-                
-                logger.debug(f"{date_str}: 최종 저장될 Stocks 수: {len(stocks_with_short_interest)}개")
                 
                 # MongoDB에 upsert (구조화된 형태로)
                 mongo_doc = {
@@ -430,49 +361,6 @@ def save_economic_data(new_data, start_date, storage_end_date, stock_columns, pr
             for col_name, value in previous_data.items():
                 if col_name != "날짜" and col_name not in data_dict and value is not None:
                     data_dict[col_name] = value
-            
-            # 중요: 이전 데이터에 주식이 없거나 적은 경우, 더 이전 날짜의 데이터에서 가격을 찾아서 추가
-            from app.services.stock_service import get_active_tickers
-            active_tickers = get_active_tickers(exclude_etf=False)
-            ticker_to_stock = get_ticker_to_stock_mapping(exclude_etf=False)
-            
-            # data_dict에 없는 티커들을 확인하고 이전 날짜 데이터에서 가격 찾기
-            missing_tickers = [ticker for ticker in active_tickers if ticker not in data_dict]
-            if missing_tickers:
-                logger.debug(f"{date_str}: 활성화된 주식 중 data_dict에 없는 티커 {len(missing_tickers)}개 발견")
-                
-                # 더 이전 날짜의 데이터에서 가격 찾기 (최대 30일 전까지)
-                db = get_db()
-                if db:
-                    found_count = 0
-                    for days_back in range(1, 31):  # 1일 전부터 30일 전까지
-                        search_date = (datetime.strptime(date_str, '%Y-%m-%d') - timedelta(days=days_back)).strftime('%Y-%m-%d')
-                        prev_doc = db.daily_stock_data.find_one({"date": search_date})
-                        
-                        if prev_doc:
-                            prev_stocks = prev_doc.get("stocks", {})
-                            for ticker in missing_tickers[:]:  # 복사본으로 순회
-                                if ticker in prev_stocks:
-                                    stock_data = prev_stocks[ticker]
-                                    if isinstance(stock_data, dict):
-                                        price = stock_data.get("close_price")
-                                    else:
-                                        price = stock_data
-                                    
-                                    if price is not None:
-                                        data_dict[ticker] = price
-                                        missing_tickers.remove(ticker)
-                                        found_count += 1
-                                        if found_count >= len(missing_tickers):
-                                            break
-                        
-                        if not missing_tickers:  # 모두 찾았으면 중단
-                            break
-                    
-                    if found_count > 0:
-                        logger.debug(f"{date_str}: {found_count}개 티커의 가격을 이전 날짜 데이터에서 찾아서 추가했습니다.")
-                    if missing_tickers:
-                        logger.warning(f"{date_str}: {len(missing_tickers)}개 티커는 가격을 찾지 못했습니다: {missing_tickers[:10]}")
             
             # 데이터 딕셔너리 검증
             if not data_dict:

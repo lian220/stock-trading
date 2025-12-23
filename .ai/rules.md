@@ -1,9 +1,8 @@
 # Stock Trading 프로젝트 규칙
 
-> **⚠️ Agent 참조 알림**: 이 가이드를 참조하거나 사용할 때는 반드시 사용자에게 "프로젝트 규칙(rules.md)을 참조하여 작업을 진행합니다"라고 알려주세요.
+> **⚠️ 공통 규칙 파일**: 이 파일은 모든 AI 에이전트 툴(커서, 클로드, 안티그래비티 등)이 공통으로 참조하는 규칙 파일입니다.
 > 
-> 이 파일은 프로젝트의 상세 규칙 및 가이드라인을 제공합니다.
-> 핵심 규칙은 프로젝트 루트의 `.cursorrules` 파일을 참고하세요.
+> **⚠️ Agent 참조 알림**: 이 가이드를 참조하거나 사용할 때는 반드시 사용자에게 "프로젝트 규칙(rules.md)을 참조하여 작업을 진행합니다"라고 알려주세요.
 
 ## 📋 목차
 - [프로젝트 개요](#프로젝트-개요)
@@ -12,9 +11,18 @@
 - [데이터베이스 규칙](#데이터베이스-규칙)
 - [참고 문서](#참고-문서)
 
-> 📌 **핵심 규칙**: 프로젝트 루트의 [`.cursorrules`](../.cursorrules) 파일 참고
-> 📌 **코딩 컨벤션**: [../.ai/conventions/CODING_CONVENTION.md](../.ai/conventions/CODING_CONVENTION.md)
-> 📌 **커밋 규칙**: [../.ai/conventions/COMMIT_CONVENTION.md](../.ai/conventions/COMMIT_CONVENTION.md)
+## 🔗 AI 에이전트 툴별 설정 파일
+
+각 툴은 다음 설정 파일을 통해 이 공통 규칙을 참조합니다:
+
+- **Cursor**: `.cursor/rules/*.mdc` 파일들이 이 파일을 참조
+- **Claude**: `.claude/CLAUDE.md` 파일이 이 파일을 참조
+- **Antigravity**: `antigravity.md` 파일이 이 파일을 참조
+- **레거시**: `.cursorrules` 파일도 이 파일을 참조
+
+> 📌 **코딩 컨벤션**: [./conventions/CODING_CONVENTION.md](./conventions/CODING_CONVENTION.md)
+> 📌 **커밋 규칙**: [./conventions/COMMIT_CONVENTION.md](./conventions/COMMIT_CONVENTION.md)
+> 📌 **프로젝트 공통 규칙**: [./PROJECT_RULES.md](./PROJECT_RULES.md)
 
 ---
 
@@ -293,15 +301,21 @@ async def get_recommendations(
 
 ## 참고 문서
 
-### 컨벤션
-- **핵심 규칙**: [`.cursorrules`](../.cursorrules) - Cursor가 자동으로 읽는 파일
-- **코딩 컨벤션**: [../.ai/conventions/CODING_CONVENTION.md](../.ai/conventions/CODING_CONVENTION.md) - 상세 코딩 규칙
-- **커밋 규칙**: [../.ai/conventions/COMMIT_CONVENTION.md](../.ai/conventions/COMMIT_CONVENTION.md) - 커밋 메시지 컨벤션
+### 공통 규칙 파일 (모든 AI 에이전트 툴이 참조)
+- **프로젝트 공통 규칙**: [./PROJECT_RULES.md](./PROJECT_RULES.md) - 프로젝트 공통 규칙 및 체크리스트
+- **코딩 컨벤션**: [./conventions/CODING_CONVENTION.md](./conventions/CODING_CONVENTION.md) - 상세 코딩 규칙
+- **커밋 규칙**: [./conventions/COMMIT_CONVENTION.md](./conventions/COMMIT_CONVENTION.md) - 커밋 메시지 컨벤션
+
+### AI 에이전트 툴별 설정 파일
+- **Cursor**: `.cursor/rules/*.mdc` - Cursor 전용 규칙 파일들
+- **Claude**: `.claude/CLAUDE.md` - Claude Code 전용 설정
+- **Antigravity**: `antigravity.md` - Antigravity 전용 설정
+- **레거시**: `.cursorrules` - Cursor 레거시 설정 (참고용)
 
 ### Agent 가이드
-- **테스트 생성 가이드**: [../.ai/guides/TEST_GUIDE.md](../.ai/guides/TEST_GUIDE.md) - 테스트 코드 생성 시 Agent가 따라야 할 규칙
-- **리팩토링 가이드**: [../.ai/guides/REFACTORING_GUIDE.md](../.ai/guides/REFACTORING_GUIDE.md) - 리팩토링 시 Agent가 따라야 할 원칙과 패턴
-- **프롬프트 가이드**: [../.ai/guides/PROMPT_GUIDE.md](../.ai/guides/PROMPT_GUIDE.md) - 요구사항을 구조화된 프롬프트로 변환
+- **테스트 생성 가이드**: [./guides/TEST_GUIDE.md](./guides/TEST_GUIDE.md) - 테스트 코드 생성 시 Agent가 따라야 할 규칙
+- **리팩토링 가이드**: [./guides/REFACTORING_GUIDE.md](./guides/REFACTORING_GUIDE.md) - 리팩토링 시 Agent가 따라야 할 원칙과 패턴
+- **프롬프트 가이드**: [./guides/PROMPT_GUIDE.md](./guides/PROMPT_GUIDE.md) - 요구사항을 구조화된 프롬프트로 변환
 
 ### 프로젝트 문서
 - **README**: [../README.md](../README.md)

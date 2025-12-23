@@ -5,16 +5,27 @@ COMMIT_MESSAGE_LANGUAGE: Korean (한글)
 
 # Cursor 규칙
 
-**⚠️ 중요**: 커밋 메시지와 PR 작성 규칙은 다음 파일들을 참조하세요:
-- `.ai/conventions/COMMIT_CONVENTION.md`: 커밋 메시지 컨벤션 (모든 커밋 규칙은 여기서 관리)
-- `.cursor/pull_request_template.md`: PR 작성 템플릿
+> **⚠️ 중요**: 이 파일은 레거시 파일입니다. 새로운 규칙은 `.cursor/rules/` 디렉토리의 `.mdc` 파일들을 참조하세요.
+> 
+> **공통 규칙**: 프로젝트 루트의 `AGENTS.md` 파일을 참조하세요. 이 파일은 모든 AI 에이전트 툴이 공통으로 읽습니다.
+
+## 공통 규칙 파일
+
+**⚠️ 필수**: 다음 공통 규칙 파일들을 반드시 참조하세요:
+
+- **`AGENTS.md`** (프로젝트 루트) - 모든 AI 에이전트 툴이 공통으로 읽는 규칙
+- **`.ai/PROJECT_RULES.md`** - 프로젝트 공통 규칙 및 체크리스트
+- **`.ai/rules.md`** - 프로젝트 상세 규칙 및 가이드라인
+- **`.ai/conventions/COMMIT_CONVENTION.md`** - 커밋 메시지 컨벤션
+- **`.ai/conventions/CODING_CONVENTION.md`** - Python 코딩 스타일 가이드
+
+## Cursor 전용 규칙
+
+- **규칙 파일**: `.cursor/rules/*.mdc` - Cursor 전용 규칙 파일들
+- **PR 템플릿**: `.cursor/pull_request_template.md` - PR 작성 템플릿
+
+## 커밋 메시지 규칙
 
 **Cursor AI는 커밋 메시지를 생성할 때 반드시 `.ai/conventions/COMMIT_CONVENTION.md` 파일의 규칙을 따라야 합니다.**
 
 **⚠️ 커밋 전 필수**: 코드를 커밋하기 전에 반드시 실행 테스트를 수행해야 합니다. 실행 오류가 있으면 커밋하지 않고 오류를 먼저 수정합니다.
-
----
-
-**프로젝트 공통 규칙은 `.ai/PROJECT_RULES.md` 파일을 반드시 참조하세요.**
-
-**상세 규칙 및 가이드라인은 `.ai/rules.md` 파일을 참조하세요.**
