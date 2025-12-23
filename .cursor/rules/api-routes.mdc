@@ -1,0 +1,76 @@
+---
+description: API 라우터 구조 및 등록 규칙
+globs:
+  - "app/api/**/*.py"
+alwaysApply: false
+---
+
+# API 구조 및 라우터 규칙
+
+## API 라우터 등록
+
+`app/api/api.py`에서 모든 라우터 중앙 등록:
+
+- `/stocks`: 주식 추천, 주식 조회
+- `/economic`: 경제 데이터
+- `/balance`: 잔액 조회
+- `/auto-trading`: 자동매매
+- `/colab`: Colab/Vertex AI 연동
+- `/gcs`: GCS 업로드
+
+## 라우터 작성 규칙
+
+### 1. 의존성 주입 사용
+
+```python
+from fastapi import APIRouter, Depends
+from app.application.dependencies import get_stock_repository
+from app.domain.repositories.stock_repository import StockRepository
+
+router = APIRouter(prefix="/stocks", tags=["stocks"])
+
+@router.get("/{ticker}")
+async def get_stock(
+    ticker: str,
+    repository: StockRepository = Depends(get_stock_repository)
+):
+    return await repository.find_by_ticker(ticker)
+```
+
+### 2. 스키마 사용
+
+```python
+from app.schemas.stock import StockCreate, StockResponse
+
+@router.post("", response_model=StockResponse)
+async def create_stock(stock: StockCreate):
+    # schemas 사용
+    pass
+```
+
+### 3. 예외 처리
+
+```python
+from fastapi import HTTPException, status
+
+@router.get("/{ticker}")
+async def get_stock(ticker: str):
+    stock = await repository.find_by_ticker(ticker)
+    if not stock:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"주식을 찾을 수 없습니다: {ticker}"
+        )
+    return stock
+```
+
+## 비동기 처리
+
+FastAPI는 비동기 처리를 지원하므로 가능한 경우 `async/await` 사용:
+
+```python
+@router.get("/recommendations")
+async def get_recommendations():
+    # 비동기 처리
+    return await use_case.execute()
+```

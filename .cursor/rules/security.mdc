@@ -1,0 +1,35 @@
+---
+description: 보안 규칙 및 비밀 정보 관리
+globs: []
+alwaysApply: true
+---
+
+# 보안 규칙
+
+## 🔒 Security & Secrets (CRITICAL)
+
+> [!CAUTION]
+> **ABSOLUTELY NO SECRETS IN CODE OR COMMITS**
+>
+> 1.  **NEVER** commit `.env` files, API keys, tokens, credentials, or private keys.
+> 2.  Use environment variables for ALL sensitive data.
+> 3.  If you see a secret in the code, **IMMEDIATELY** remove it and rotate the key.
+> 4.  Before committing, verify that no secrets are included in the diff.
+
+## 환경변수 사용
+
+모든 비밀 정보는 환경변수로 관리:
+
+```python
+# ✅ 올바른 방법
+from app.core.config import settings
+api_key = settings.kis_api_key
+
+# ❌ 잘못된 방법
+api_key = "sk-1234567890abcdef"  # 절대 금지
+```
+
+## 커밋 전 체크리스트
+
+- [ ] **보안 확인**: `.env`, API 키, 토큰 등 비밀 정보가 포함되지 않았는가?
+- [ ] **환경변수 사용**: 모든 비밀 정보가 환경변수로 관리되는가?

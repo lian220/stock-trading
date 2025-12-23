@@ -1,0 +1,100 @@
+---
+description: 모델과 스키마 분리 규칙 및 사용 가이드
+globs:
+  - "app/models/**/*.py"
+  - "app/schemas/**/*.py"
+  - "app/api/routes/**/*.py"
+alwaysApply: false
+---
+
+# 모델 및 스키마 규칙
+
+## ⚠️ CRITICAL: 모델과 스키마 분리
+
+**모델과 스키마는 반드시 분리하여 사용해야 합니다:**
+
+- **`app/models/`**: DB 모델 정의 (MongoDB 문서 구조)
+  - DB 저장/조회 시 사용
+  - Repository, Use Case에서 사용
+  - 예: `app.models.mongodb_models.Stock`
+
+- **`app/schemas/`**: API 요청/응답 스키마 정의
+  - FastAPI 엔드포인트에서 사용
+  - API 문서 자동 생성에 사용
+  - 예: `app.schemas.stock.StockCreate`, `app.schemas.stock.StockResponse`
+
+## 모델 사용 규칙
+
+### 1. API 라우터에서는 schemas 사용
+
+```python
+# ✅ 올바른 방법
+from app.schemas.stock import StockCreate, StockResponse
+
+@router.post("", response_model=StockResponse)
+async def create_stock(stock: StockCreate):
+    # ...
+```
+
+### 2. Repository/Use Case에서는 models 사용
+
+```python
+# ✅ 올바른 방법
+from app.models.mongodb_models import Stock
+
+def save_stock(self, stock: Stock):
+    # DB 저장 로직
+```
+
+### 3. 스키마와 모델 간 변환
+
+```python
+# schemas -> models 변환
+stock_model = Stock(**stock_create.dict())
+
+# models -> schemas 변환
+stock_response = StockResponse(**stock_doc)
+```
+
+## 공통 모델 사용 원칙
+
+1. **재사용 가능한 모델은 공통으로 분리**
+   - 여러 곳에서 사용되는 모델은 `app/models/` 또는 `app/schemas/`에 공통으로 정의
+   - 중복 정의 금지
+
+2. **API 요청/응답은 항상 schemas 사용**
+   - FastAPI의 `response_model`에는 schemas 사용
+   - 요청 바디에는 schemas 사용
+   - DB 모델을 직접 API에 노출하지 않음
+
+3. **DB 저장 시 모든 필드 저장 보장**
+   - API 요청에 포함된 모든 필드는 DB에 저장되어야 함
+   - Optional 필드도 None이 아닌 경우 반드시 저장
+   - None 값 제거 로직은 필수 필드에만 적용
+
+## 예시: 올바른 패턴
+
+```python
+# app/schemas/stock.py
+class StockCreate(BaseModel):
+    """API 요청용 스키마"""
+    ticker: str
+    stock_name: str
+    stock_name_en: Optional[str] = None
+    # ...
+
+# app/api/routes/stocks.py
+from app.schemas.stock import StockCreate
+
+@router.post("")
+async def create_stock(stock: StockCreate):
+    # schemas -> DB 문서 변환
+    stock_doc = {
+        "ticker": stock.ticker.upper(),
+        "stock_name": stock.stock_name,
+        # 모든 필드 포함 (None이 아닌 경우)
+        **{k: v for k, v in stock.dict().items() 
+           if v is not None and k not in ["ticker"]}
+    }
+    db.stocks.insert_one(stock_doc)
+```

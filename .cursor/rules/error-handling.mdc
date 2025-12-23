@@ -1,0 +1,179 @@
+---
+description: 에러 처리 규칙 및 예외 처리 가이드
+globs:
+  - "app/**/*.py"
+alwaysApply: false
+---
+
+# 에러 처리 규칙
+
+## 예외 처리 원칙
+
+### 1. 명확한 예외 메시지
+
+모든 예외는 명확하고 이해하기 쉬운 메시지를 포함해야 합니다:
+
+```python
+# ✅ 올바른 방법
+if not stock:
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"주식을 찾을 수 없습니다: {ticker}"
+    )
+
+# ❌ 잘못된 방법
+if not stock:
+    raise HTTPException(status_code=404, detail="Not found")
+```
+
+### 2. 로깅과 함께 예외 처리
+
+예외 발생 시 반드시 로깅을 포함합니다:
+
+```python
+import logging
+
+logger = logging.getLogger(__name__)
+
+try:
+    result = await repository.find_by_ticker(ticker)
+except Exception as e:
+    logger.error(f"주식 조회 중 오류 발생: {ticker}, {str(e)}", exc_info=True)
+    raise HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail=f"주식 조회 중 오류가 발생했습니다: {str(e)}"
+    )
+```
+
+### 3. 예외 타입별 처리
+
+예외 타입에 따라 적절히 처리합니다:
+
+```python
+from pymongo.errors import DuplicateKeyError
+from fastapi import HTTPException, status
+
+try:
+    await repository.create_stock(stock_data)
+except DuplicateKeyError:
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=f"주식 '{ticker}'가 이미 존재합니다."
+    )
+except ValueError as e:
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=f"잘못된 입력값: {str(e)}"
+    )
+except Exception as e:
+    logger.error(f"주식 생성 중 오류 발생: {str(e)}", exc_info=True)
+    raise HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail="주식 생성 중 오류가 발생했습니다."
+    )
+```
+
+### 4. FastAPI HTTPException 사용
+
+API 라우터에서는 FastAPI의 `HTTPException`을 사용합니다:
+
+```python
+from fastapi import HTTPException, status
+
+@router.get("/stocks/{ticker}")
+async def get_stock(ticker: str):
+    stock = await repository.find_by_ticker(ticker)
+    if not stock:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"주식을 찾을 수 없습니다: {ticker}"
+        )
+    return stock
+```
+
+### 5. 커스텀 예외 클래스 (선택적)
+
+도메인별 커스텀 예외를 정의할 수 있습니다:
+
+```python
+class StockNotFoundError(Exception):
+    """주식을 찾을 수 없을 때 발생하는 예외"""
+    pass
+
+class InvalidTickerError(Exception):
+    """유효하지 않은 티커일 때 발생하는 예외"""
+    pass
+
+# 사용 예시
+try:
+    stock = await repository.find_by_ticker(ticker)
+    if not stock:
+        raise StockNotFoundError(f"주식을 찾을 수 없습니다: {ticker}")
+except StockNotFoundError as e:
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=str(e)
+    )
+```
+
+### 6. exc_info 사용
+
+중요한 예외는 `exc_info=True`로 스택 트레이스를 포함합니다:
+
+```python
+try:
+    result = await complex_operation()
+except Exception as e:
+    logger.error(
+        f"복잡한 작업 중 오류 발생: {str(e)}",
+        exc_info=True  # 스택 트레이스 포함
+    )
+    raise
+```
+
+### 7. 예외 전파
+
+불필요한 예외 래핑을 피하고, 원본 예외 정보를 보존합니다:
+
+```python
+# ✅ 올바른 방법
+try:
+    result = await repository.find_by_ticker(ticker)
+except Exception as e:
+    logger.error(f"주식 조회 실패: {ticker}", exc_info=True)
+    raise  # 원본 예외 전파
+
+# ❌ 잘못된 방법 (예외 정보 손실)
+try:
+    result = await repository.find_by_ticker(ticker)
+except Exception:
+    raise Exception("오류 발생")  # 원본 예외 정보 손실
+```
+
+## API 응답 형식
+
+에러 응답은 일관된 형식을 유지합니다:
+
+```python
+{
+    "detail": "주식을 찾을 수 없습니다: AAPL"
+}
+```
+
+## 일반적인 HTTP 상태 코드
+
+- `200 OK`: 성공
+- `201 Created`: 리소스 생성 성공
+- `400 Bad Request`: 잘못된 요청
+- `401 Unauthorized`: 인증 실패
+- `403 Forbidden`: 권한 없음
+- `404 Not Found`: 리소스를 찾을 수 없음
+- `409 Conflict`: 리소스 충돌 (중복 등)
+- `422 Unprocessable Entity`: 유효성 검증 실패
+- `500 Internal Server Error`: 서버 내부 오류
+
+## 참고
+
+- **로깅**: 모든 예외는 로깅되어야 합니다
+- **사용자 친화적 메시지**: 에러 메시지는 사용자가 이해할 수 있어야 합니다
+- **보안**: 내부 시스템 정보는 에러 메시지에 포함하지 않습니다
