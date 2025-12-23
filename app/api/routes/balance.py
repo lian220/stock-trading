@@ -13,6 +13,8 @@ from app.services.balance_service import (
     get_overseas_order_resv_list,
     order_overseas_stock,
     create_conditional_orders,
+    calculate_portfolio_profit,
+    calculate_cumulative_profit,
 )
 
 router = APIRouter()
@@ -387,3 +389,104 @@ def conditional_order_route(request: ConditionalOrderRequest):
     except Exception as e:
         print(f"조건부 주문 처리 중 오류 발생: {str(e)}")
         raise HTTPException(status_code=500, detail=f"조건부 주문 처리 중 오류가 발생했습니다: {str(e)}")
+
+@router.get("/profit/portfolio", summary="보유 종목 수익률 조회")
+def get_portfolio_profit():
+    """
+    현재 보유 중인 종목의 수익률을 조회합니다.
+    
+    ### 응답
+    - **holdings**: 각 종목별 수익률 정보
+    - **total_cost**: 총 매수금액
+    - **total_value**: 총 평가금액
+    - **total_profit**: 총 수익 (미실현)
+    - **total_profit_percent**: 총 수익률 (%)
+    
+    ### 참고
+    - 이 API는 **현재 보유 중인 종목**의 미실현 수익률만 계산합니다
+    - 완료된 거래(매수→매도)의 누적 수익률은 `/profit/cumulative` 엔드포인트를 사용하세요
+    """
+    try:
+        result = calculate_portfolio_profit()
+        
+        if not result.get("success"):
+            raise HTTPException(status_code=500, detail=result.get("error", "수익률 계산 실패"))
+        
+        return {
+            "success": True,
+            **result
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"수익률 조회 중 오류 발생: {str(e)}")
+
+@router.get("/profit/cumulative", summary="완료된 거래 누적 수익률 조회")
+def get_cumulative_profit(
+    user_id: str = Query(..., description="사용자 ID (필수)"),
+    days: int = Query(90, ge=1, le=365, description="조회 기간 (일, 기본값: 90일)"),
+    ticker: str = Query(None, description="특정 티커만 조회 (선택사항)")
+):
+    """
+    완료된 거래(매수→매도)의 누적 수익률을 조회합니다.
+    FIFO (First In First Out) 방식으로 매수/매도 거래를 매칭합니다.
+    
+    ### 입력값
+    - **user_id**: 사용자 ID (필수)
+    - **days**: 조회 기간 (1-365일, 기본값: 90일)
+    - **ticker**: 특정 티커만 조회 (선택사항, 예: "AAPL")
+    
+    ### 응답
+    - **trades**: 완료된 거래 목록
+        - ticker: 티커
+        - stock_name: 종목명
+        - buy_date: 매수일
+        - sell_date: 매도일
+        - holding_days: 보유 기간 (일)
+        - buy_price: 매수가
+        - sell_price: 매도가
+        - quantity: 거래 수량
+        - cost: 매수금액
+        - revenue: 매도금액
+        - profit: 실현 수익
+        - profit_percent: 수익률 (%)
+        - sell_reasons: 매도 사유
+    
+    - **statistics**: 통계 정보
+        - total_trades: 총 거래 횟수
+        - winning_trades: 수익 거래 횟수
+        - losing_trades: 손실 거래 횟수
+        - win_rate: 승률 (%)
+        - total_profit: 총 실현 수익 (USD)
+        - total_cost: 총 매수 금액 (USD)
+        - total_profit_percent: 총 수익률 (%)
+        - avg_profit_percent: 평균 수익률 (%)
+        - avg_winning_profit_percent: 평균 수익 거래 수익률 (%)
+        - avg_losing_profit_percent: 평균 손실 거래 손실률 (%)
+    
+    - **by_ticker**: 티커별 통계
+    
+    ### 사용 예시
+    - 전체 누적 수익률 확인: `GET /profit/cumulative?user_id=system&days=90`
+    - 특정 종목 수익률 확인: `GET /profit/cumulative?user_id=system&days=90&ticker=AAPL`
+    - 최근 30일 거래만 확인: `GET /profit/cumulative?user_id=system&days=30`
+    
+    ### 참고
+    - 이 API는 **완료된 거래**만 계산합니다 (매수 후 매도까지 완료된 거래)
+    - 현재 보유 중인 종목의 미실현 수익률은 `/profit/portfolio` 엔드포인트를 사용하세요
+    - **user_id별로 거래가 분리되어 계산됩니다**
+    """
+    try:
+        result = calculate_cumulative_profit(user_id=user_id, days=days, ticker=ticker)
+        
+        if not result.get("success"):
+            raise HTTPException(status_code=500, detail=result.get("error", "누적 수익률 계산 실패"))
+        
+        return {
+            "success": True,
+            **result
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"누적 수익률 조회 중 오류 발생: {str(e)}")

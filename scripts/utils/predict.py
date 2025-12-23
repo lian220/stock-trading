@@ -310,13 +310,20 @@ def get_all_data(collection_name):
         print("\n=== 활성화된 종목 조회 ===")
         active_stocks = list(db.stocks.find({"is_active": True}))
         active_stock_names = {stock["stock_name"] for stock in active_stocks if stock.get("stock_name")}
+        # 티커 목록과 매핑 생성 (stocks 필드는 티커를 키로 사용)
+        active_tickers = {stock["ticker"] for stock in active_stocks if stock.get("ticker")}
+        ticker_to_stock = {stock["ticker"]: stock["stock_name"] for stock in active_stocks if stock.get("ticker") and stock.get("stock_name")}
+        stock_to_ticker = {stock["stock_name"]: stock["ticker"] for stock in active_stocks if stock.get("stock_name") and stock.get("ticker")}
+        
         print(f"MongoDB에서 활성화된 종목 {len(active_stock_names)}개를 찾았습니다.")
+        print(f"활성화된 티커 {len(active_tickers)}개를 찾았습니다.")
         
         if len(active_stock_names) == 0:
             print("⚠️ 경고: 활성화된 종목이 없습니다.")
             print("stocks 컬렉션에 is_active=true인 종목이 있는지 확인해주세요.")
         else:
             print(f"활성화된 종목 샘플 (처음 10개): {list(active_stock_names)[:10]}")
+            print(f"활성화된 티커 샘플 (처음 10개): {list(active_tickers)[:10]}")
         
         # 2. daily_stock_data 컬렉션에서 모든 데이터 가져오기 (날짜순 정렬)
         print("\n=== daily_stock_data 컬렉션 조회 ===")
@@ -362,6 +369,7 @@ def get_all_data(collection_name):
                     result_dict.update(yfinance_indicators)
                 
                 # 활성화된 종목의 주가 데이터만 추가
+                # stocks 필드는 티커를 키로 사용하므로 티커로 접근
                 stocks_data = doc.get("stocks", {})
                 stocks_added = 0
                 if isinstance(stocks_data, dict):
@@ -369,18 +377,22 @@ def get_all_data(collection_name):
                     if processed_count == 0 and len(stocks_data) > 0:
                         print(f"\n=== stocks 필드 구조 확인 (첫 번째 문서) ===")
                         print(f"stocks 필드의 키 샘플 (처음 10개): {list(stocks_data.keys())[:10]}")
-                        print(f"활성화된 종목 샘플 (처음 10개): {list(active_stock_names)[:10]}")
-                        # 매칭되는 키 확인
-                        matching_keys = [k for k in stocks_data.keys() if k in active_stock_names]
-                        print(f"매칭되는 키 수: {len(matching_keys)}/{len(stocks_data)}")
-                        if len(matching_keys) > 0:
-                            print(f"매칭되는 키 샘플: {matching_keys[:10]}")
+                        print(f"활성화된 티커 샘플 (처음 10개): {list(active_tickers)[:10]}")
+                        # 매칭되는 키 확인 (티커 기준)
+                        matching_tickers = [k for k in stocks_data.keys() if k in active_tickers]
+                        print(f"매칭되는 티커 수: {len(matching_tickers)}/{len(stocks_data)}")
+                        if len(matching_tickers) > 0:
+                            print(f"매칭되는 티커 샘플: {matching_tickers[:10]}")
                         else:
-                            print("⚠️ 경고: 매칭되는 키가 없습니다!")
-                            print("stocks 필드의 키와 active_stock_names가 일치하지 않을 수 있습니다.")
+                            print("⚠️ 경고: 매칭되는 티커가 없습니다!")
+                            print("stocks 필드의 키(티커)와 active_tickers가 일치하지 않을 수 있습니다.")
                     
-                    for stock_name, stock_value in stocks_data.items():
-                        if stock_name in active_stock_names:
+                    # 티커로 접근하여 주식명으로 변환
+                    for ticker, stock_value in stocks_data.items():
+                        if ticker in active_tickers:
+                            # 티커를 주식명으로 변환
+                            stock_name = ticker_to_stock.get(ticker, ticker)
+                            
                             # stocks 필드가 객체인 경우 close_price 가격을 사용
                             if isinstance(stock_value, dict):
                                 close_price = stock_value.get("close_price")
@@ -388,9 +400,10 @@ def get_all_data(collection_name):
                                     result_dict[stock_name] = close_price
                                     stocks_added += 1
                             else:
-                                # 단순 숫자인 경우 그대로 사용
-                                result_dict[stock_name] = stock_value
-                                stocks_added += 1
+                                # 단순 숫자인 경우 그대로 사용 (레거시 호환)
+                                if stock_value is not None:
+                                    result_dict[stock_name] = stock_value
+                                    stocks_added += 1
                 
                 # 최소한 날짜와 일부 데이터가 있어야 함
                 if len(result_dict) > 1:  # 날짜 외에 최소 1개 이상의 컬럼

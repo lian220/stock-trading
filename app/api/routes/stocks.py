@@ -3,26 +3,12 @@ from typing import List, Optional
 from datetime import datetime
 from pymongo.errors import DuplicateKeyError
 from app.db.mongodb import get_db
-from app.models.mongodb_models import Stock
-from app.schemas.stock import StockPrediction
-from pydantic import BaseModel
+from app.schemas.stock import StockCreate, StockUpdate, StockResponse, StockPrediction
 import logging
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-
-class StockUpdate(BaseModel):
-    """종목 정보 업데이트 요청 스키마 (ticker 제외)"""
-    stock_name: Optional[str] = None
-    stock_name_en: Optional[str] = None
-    is_etf: Optional[bool] = None
-    leverage_ticker: Optional[str] = None
-    exchange: Optional[str] = None
-    sector: Optional[str] = None
-    industry: Optional[str] = None
-    is_active: Optional[bool] = None
 
 @router.get("", summary="종목 목록 조회", response_model=List[dict])
 async def get_stocks(
@@ -71,6 +57,7 @@ async def get_stocks(
 @router.get("/predictions", summary="주식 예측 결과 조회", response_model=List[StockPrediction])
 def read_predictions():
     try:
+        import pandas as pd
         # CSV 파일에서 예측 결과를 읽어오는 예시
         df = pd.read_csv("final_stock_analysis.csv")
         
@@ -91,7 +78,7 @@ def read_predictions():
         raise HTTPException(status_code=500, detail=f"예측 결과 조회 중 오류 발생: {str(e)}")
 
 @router.post("", summary="종목 추가", response_model=dict)
-async def create_stock(stock: Stock):
+async def create_stock(stock: StockCreate):
     """
     MongoDB의 stocks 컬렉션에 새로운 종목을 추가합니다.
     
@@ -112,8 +99,11 @@ async def create_stock(stock: Stock):
         if db is None:
             raise HTTPException(status_code=500, detail="MongoDB 연결에 실패했습니다.")
         
+        # ticker를 대문자로 변환
+        ticker_upper = stock.ticker.upper()
+        
         # ticker로 기존 종목 확인
-        existing = db.stocks.find_one({"ticker": stock.ticker})
+        existing = db.stocks.find_one({"ticker": ticker_upper})
         
         now = datetime.utcnow()
         
@@ -124,7 +114,7 @@ async def create_stock(stock: Stock):
                 "updated_at": now
             }
             
-            # 선택적 필드 추가
+            # 선택적 필드 추가 (모든 필드 포함)
             if stock.stock_name_en is not None:
                 update_data["stock_name_en"] = stock.stock_name_en
             if stock.is_etf is not None:
@@ -140,61 +130,83 @@ async def create_stock(stock: Stock):
             if stock.is_active is not None:
                 update_data["is_active"] = stock.is_active
             
+            # None으로 명시적으로 설정된 필드는 $unset으로 제거
+            unset_fields = {}
+            if stock.stock_name_en is None and "stock_name_en" in existing:
+                unset_fields["stock_name_en"] = ""
+            if stock.leverage_ticker is None and "leverage_ticker" in existing:
+                unset_fields["leverage_ticker"] = ""
+            if stock.exchange is None and "exchange" in existing:
+                unset_fields["exchange"] = ""
+            if stock.sector is None and "sector" in existing:
+                unset_fields["sector"] = ""
+            if stock.industry is None and "industry" in existing:
+                unset_fields["industry"] = ""
+            
+            # $unset과 $set을 함께 사용
+            update_operation = {"$set": update_data}
+            if unset_fields:
+                update_operation["$unset"] = unset_fields
+            
             result = db.stocks.update_one(
-                {"ticker": stock.ticker},
-                {"$set": update_data}
+                {"ticker": ticker_upper},
+                update_operation
             )
             
             if result.modified_count > 0:
-                logger.info(f"종목 업데이트 성공: {stock.ticker} ({stock.stock_name})")
+                logger.info(f"종목 업데이트 성공: {ticker_upper} ({stock.stock_name})")
                 return {
                     "success": True,
-                    "message": f"종목이 업데이트되었습니다: {stock.ticker}",
-                    "ticker": stock.ticker,
+                    "message": f"종목이 업데이트되었습니다: {ticker_upper}",
+                    "ticker": ticker_upper,
                     "stock_name": stock.stock_name,
                     "action": "updated"
                 }
             else:
                 return {
                     "success": True,
-                    "message": f"종목이 이미 존재하며 변경사항이 없습니다: {stock.ticker}",
-                    "ticker": stock.ticker,
+                    "message": f"종목이 이미 존재하며 변경사항이 없습니다: {ticker_upper}",
+                    "ticker": ticker_upper,
                     "stock_name": stock.stock_name,
                     "action": "no_change"
                 }
         else:
-            # 새 종목 추가
+            # 새 종목 추가 - 모든 필드를 포함하여 저장
             stock_doc = {
-                "ticker": stock.ticker,
+                "ticker": ticker_upper,
                 "stock_name": stock.stock_name,
-                "stock_name_en": stock.stock_name_en,
-                "is_etf": stock.is_etf if stock.is_etf is not None else False,
-                "leverage_ticker": stock.leverage_ticker,
-                "exchange": stock.exchange,
-                "sector": stock.sector,
-                "industry": stock.industry,
-                "is_active": stock.is_active if stock.is_active is not None else True,
+                "is_etf": stock.is_etf,
+                "is_active": stock.is_active,
                 "created_at": now,
                 "updated_at": now
             }
             
-            # None 값 제거
-            stock_doc = {k: v for k, v in stock_doc.items() if v is not None}
+            # Optional 필드 추가 (None이 아닌 경우에만)
+            if stock.stock_name_en is not None:
+                stock_doc["stock_name_en"] = stock.stock_name_en
+            if stock.leverage_ticker is not None:
+                stock_doc["leverage_ticker"] = stock.leverage_ticker
+            if stock.exchange is not None:
+                stock_doc["exchange"] = stock.exchange
+            if stock.sector is not None:
+                stock_doc["sector"] = stock.sector
+            if stock.industry is not None:
+                stock_doc["industry"] = stock.industry
             
             result = db.stocks.insert_one(stock_doc)
             
-            logger.info(f"종목 추가 성공: {stock.ticker} ({stock.stock_name})")
+            logger.info(f"종목 추가 성공: {ticker_upper} ({stock.stock_name})")
             return {
                 "success": True,
-                "message": f"종목이 추가되었습니다: {stock.ticker}",
-                "ticker": stock.ticker,
+                "message": f"종목이 추가되었습니다: {ticker_upper}",
+                "ticker": ticker_upper,
                 "stock_name": stock.stock_name,
                 "id": str(result.inserted_id),
                 "action": "created"
             }
             
     except DuplicateKeyError:
-        raise HTTPException(status_code=409, detail=f"종목 티커가 이미 존재합니다: {stock.ticker}")
+        raise HTTPException(status_code=409, detail=f"종목 티커가 이미 존재합니다: {ticker_upper}")
     except HTTPException as he:
         raise he
     except Exception as e:

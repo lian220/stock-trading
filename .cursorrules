@@ -11,6 +11,8 @@ COMMIT_MESSAGE_LANGUAGE: Korean (한글)
 
 **Cursor AI는 커밋 메시지를 생성할 때 반드시 `.ai/conventions/COMMIT_CONVENTION.md` 파일의 규칙을 따라야 합니다.**
 
+**⚠️ 커밋 전 필수**: 코드를 커밋하기 전에 반드시 실행 테스트를 수행해야 합니다. 실행 오류가 있으면 커밋하지 않고 오류를 먼저 수정합니다.
+
 ---
 
 **프로젝트 공통 규칙은 `.ai/PROJECT_RULES.md` 파일을 반드시 참조하세요.**
