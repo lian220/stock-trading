@@ -1470,10 +1470,6 @@ class StockRecommendationService:
                 # 목표 수익률 설정 (레버리지는 10%, 일반은 5%)
                 target_profit_percent = 10 if is_leveraged else 5
                 
-                # 레버리지 감지 결과 로깅 (디버깅용)
-                if is_leveraged:
-                    logger.info(f"get_stocks_to_sell: {stock_name}({ticker})는 레버리지 주식입니다. 손절 조건: -10% 이하만 매도, 익절 조건: +{target_profit_percent}% 이상")
-                
                 # Priority 1: 손절 조건 (최우선)
                 if is_leveraged:
                     # 레버리지 주식: -10% 이하일 때만 손절 (일반 손절 조건 없음)
@@ -1540,6 +1536,10 @@ class StockRecommendationService:
                 
                 # 매도 대상 판단 (익절/손절이 있으면 무조건 매도, 기술적 매도는 조건 충족 시만)
                 if sell_reasons:
+                    # 레버리지 주식인 경우 매도 대상으로 결정되었을 때만 로그 남기기
+                    if is_leveraged:
+                        logger.info(f"get_stocks_to_sell: {stock_name}({ticker}) 레버리지 주식 매도 대상 결정")
+                    
                     sell_candidates.append({
                         "ticker": ticker,
                         "stock_name": stock_name,
