@@ -734,8 +734,10 @@ class SlackNotifier:
                 signals = []
                 if rec.get('golden_cross'):
                     signals.append("골든크로스")
-                if rec.get('rsi', 100) < 50:
-                    signals.append(f"RSI {rec.get('rsi', 0):.0f}")
+                rsi_value = rec.get('rsi')
+                if rsi_value is not None and not (isinstance(rsi_value, float) and (rsi_value != rsi_value)):  # NaN 체크
+                    if rsi_value < 50:
+                        signals.append(f"RSI {rsi_value:.0f}")
                 if rec.get('macd_buy_signal'):
                     signals.append("MACD매수")
                 signal_text = ", ".join(signals) if signals else "N/A"

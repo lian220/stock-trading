@@ -178,11 +178,22 @@ class AutoTradingService:
                     if stock.get("composite_score", 0) < config.get("min_composite_score", 2.0):
                         continue
                     
+                    # use_leverage 필터링: use_leverage가 true인 종목만 매수
+                    if original_ticker not in user_leverage_map:
+                        # 사용자 설정에 없는 종목은 매수하지 않음
+                        logger.info(f"{original_ticker} ({stock.get('stock_name')}) - 사용자 설정에 없어 매수 제외")
+                        continue
+                    
+                    if not user_leverage_map[original_ticker]["use_leverage"]:
+                        # use_leverage가 false인 종목은 매수하지 않음
+                        logger.info(f"{original_ticker} ({stock.get('stock_name')}) - use_leverage가 false여서 매수 제외")
+                        continue
+                    
                     # 레버리지 설정 적용 (leverage_ticker는 stocks 컬렉션에서 조회)
                     actual_ticker = original_ticker
                     is_leverage = False
                     
-                    if original_ticker in user_leverage_map and user_leverage_map[original_ticker]["use_leverage"]:
+                    if user_leverage_map[original_ticker]["use_leverage"]:
                         # stocks 컬렉션에서 레버리지 티커 조회
                         if db is not None:
                             stock_doc = db.stocks.find_one({"ticker": original_ticker})

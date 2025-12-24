@@ -1242,48 +1242,9 @@ class StockScheduler:
         raw_candidates = recommendations.get("results", [])
         logger.info(f"[{function_name}] 추천 종목 수 (중복 제거 전): {len(raw_candidates)}개")
         
-        # 중복 제거 (티커 기준) - 이중 안전장치
-        buy_candidates = []
-        seen_tickers = set()
-        
-        for candidate in raw_candidates:
-            ticker = candidate.get("ticker")
-            stock_name = candidate.get("stock_name", "N/A")
-            
-            if not ticker:
-                logger.warning(f"[{function_name}] 티커가 없는 추천 종목 발견 및 제외: {stock_name}")
-                continue
-            
-            if ticker not in seen_tickers:
-                buy_candidates.append(candidate)
-                seen_tickers.add(ticker)
-            else:
-                logger.warning(f"[{function_name}] 중복된 티커 발견 및 제외: {stock_name} ({ticker})")
-        
-        logger.info(f"[{function_name}] 매수 후보 종목 수 (중복 제거 후): {len(buy_candidates)}개")
-        
-        if not buy_candidates:
-            logger.info(f"[{function_name}] 매수 조건을 만족하는 종목이 없습니다.")
-            if send_slack_notification:
-                slack_notifier.send_no_buy_notification(
-                    reason="매수 조건 불만족",
-                    details="매수 조건을 만족하는 종목이 없습니다."
-                )
-            logger.info(f"[{function_name}] 함수 실행 완료")
-            return
-        
-        
-        logger.info(f"[{function_name}] 매수 대상 종목 {len(buy_candidates)}개를 찾았습니다. (종합 점수 높은 순)")
-        
-        # 자동매매 설정 조회 (보유 중인 종목 매수 허용 여부 확인)
-        trading_config = self.auto_trading_service.get_auto_trading_config()
-        allow_buy_existing_stocks = trading_config.get("allow_buy_existing_stocks", True)  # 기본값: True
-        max_portfolio_weight = trading_config.get("max_portfolio_weight_per_stock", 20.0)  # 기본값: 20%
-        logger.info(f"[{function_name}] 보유 중인 종목 매수 허용: {allow_buy_existing_stocks}")
-        logger.info(f"[{function_name}] 단일 종목 최대 투자 비중: {max_portfolio_weight}%")
-        
-        # MongoDB에서 사용자 정보 조회 (레버리지 설정 확인용)
+        # MongoDB에서 사용자 정보 조회 (레버리지 설정 확인용) - 필터링을 위해 먼저 조회
         user_leverage_map = {}  # ticker -> use_leverage (leverage_ticker는 stocks 컬렉션에서 조회)
+        db = None
         try:
             from app.infrastructure.database.mongodb_client import get_mongodb_database
             db = get_mongodb_database()
@@ -1311,6 +1272,59 @@ class StockScheduler:
                 logger.warning(f"[{function_name}] MongoDB 연결 실패 - 레버리지 설정을 사용할 수 없습니다.")
         except Exception as e:
             logger.error(f"[{function_name}] 사용자 레버리지 설정 조회 중 오류: {str(e)}", exc_info=True)
+        
+        # 중복 제거 및 use_leverage 필터링
+        buy_candidates = []
+        seen_tickers = set()
+        
+        for candidate in raw_candidates:
+            ticker = candidate.get("ticker")
+            stock_name = candidate.get("stock_name", "N/A")
+            
+            if not ticker:
+                logger.warning(f"[{function_name}] 티커가 없는 추천 종목 발견 및 제외: {stock_name}")
+                continue
+            
+            # 중복 제거
+            if ticker in seen_tickers:
+                logger.warning(f"[{function_name}] 중복된 티커 발견 및 제외: {stock_name} ({ticker})")
+                continue
+            seen_tickers.add(ticker)
+            
+            # use_leverage 필터링: use_leverage가 true인 종목만 매수
+            if ticker not in user_leverage_map:
+                # 사용자 설정에 없는 종목은 매수하지 않음
+                logger.info(f"[{function_name}] {stock_name}({ticker}) - 사용자 설정에 없어 매수 제외")
+                continue
+            
+            if not user_leverage_map[ticker]["use_leverage"]:
+                # use_leverage가 false인 종목은 매수하지 않음
+                logger.info(f"[{function_name}] {stock_name}({ticker}) - use_leverage가 false여서 매수 제외")
+                continue
+            
+            buy_candidates.append(candidate)
+        
+        logger.info(f"[{function_name}] 매수 후보 종목 수 (중복 제거 및 use_leverage 필터링 후): {len(buy_candidates)}개")
+        
+        if not buy_candidates:
+            logger.info(f"[{function_name}] 매수 조건을 만족하는 종목이 없습니다.")
+            if send_slack_notification:
+                slack_notifier.send_no_buy_notification(
+                    reason="매수 조건 불만족",
+                    details="매수 조건을 만족하는 종목이 없습니다."
+                )
+            logger.info(f"[{function_name}] 함수 실행 완료")
+            return
+        
+        
+        logger.info(f"[{function_name}] 매수 대상 종목 {len(buy_candidates)}개를 찾았습니다. (종합 점수 높은 순)")
+        
+        # 자동매매 설정 조회 (보유 중인 종목 매수 허용 여부 확인)
+        trading_config = self.auto_trading_service.get_auto_trading_config()
+        allow_buy_existing_stocks = trading_config.get("allow_buy_existing_stocks", True)  # 기본값: True
+        max_portfolio_weight = trading_config.get("max_portfolio_weight_per_stock", 20.0)  # 기본값: 20%
+        logger.info(f"[{function_name}] 보유 중인 종목 매수 허용: {allow_buy_existing_stocks}")
+        logger.info(f"[{function_name}] 단일 종목 최대 투자 비중: {max_portfolio_weight}%")
         
         # 성공한 매수 건수 추적
         successful_purchases = 0

@@ -46,12 +46,31 @@ class StockRecommendationService:
         return series.ewm(span=period, adjust=False).mean()
 
     def calculate_rsi(self, series, period=14):
-        """RSI 계산"""
+        """RSI 계산
+        
+        RSI가 NaN이 되는 경우:
+        - loss가 0이면 rs = gain / 0 = inf 또는 NaN
+        - gain과 loss가 모두 0이면 rs = 0/0 = NaN
+        - 가격 변동이 없거나 매우 작을 때 발생
+        
+        해결: loss에 작은 epsilon 값을 추가하여 0으로 나누기 방지
+        """
         delta = series.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-        rs = gain / loss
+        gain = (delta.where(delta > 0, 0)).rolling(window=period, min_periods=period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=period, min_periods=period).mean()
+        
+        # loss가 0이거나 매우 작을 때 NaN 방지 (epsilon 추가)
+        epsilon = 1e-10
+        rs = gain / (loss + epsilon)
+        
+        # rs가 inf나 NaN인 경우 처리
+        rs = rs.replace([np.inf, -np.inf], np.nan)
+        
         rsi = 100 - (100 / (1 + rs))
+        
+        # RSI가 NaN이거나 범위를 벗어나는 경우 처리 (0-100 범위)
+        rsi = rsi.clip(0, 100)
+        
         return rsi
 
     def calculate_macd(self, series, short_period=12, long_period=26, signal_period=9):
@@ -910,6 +929,11 @@ class StockRecommendationService:
             logger.error("MongoDB 연결 실패 - 감정 분석 불가")
             return {"message": "MongoDB 연결 실패", "results": []}
 
+        # 오늘 날짜 (YYYY-MM-DD 형식) - 루프 밖에서 정의
+        import pytz
+        korea_tz = pytz.timezone('Asia/Seoul')
+        today_str = datetime.now(korea_tz).strftime('%Y-%m-%d')
+
         results = []
         for ticker in all_tickers:
             print(f"{ticker} 처리 중...")
@@ -950,18 +974,21 @@ class StockRecommendationService:
             article_count = len(articles)
             calculation_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             
-            # MongoDB에 감정 분석 데이터 upsert (ticker 기준)
+            # MongoDB에 감정 분석 데이터 upsert (ticker와 date 기준)
             db.sentiment_analysis.update_one(
-                {"ticker": ticker},
+                {
+                    "ticker": ticker,
+                    "date": today_str  # ticker와 date 기준으로 upsert
+                },
                 {
                     "$set": {
                         "average_sentiment_score": average_sentiment,
                         "article_count": article_count,
                         "calculation_date": calculation_date,
-                        "updated_at": datetime.now()
+                        "updated_at": datetime.utcnow()
                     },
                     "$setOnInsert": {
-                        "created_at": datetime.now()
+                        "created_at": datetime.utcnow()
                     }
                 },
                 upsert=True
@@ -972,9 +999,59 @@ class StockRecommendationService:
                 "stock_name": ticker_to_stock.get(ticker, ticker),
                 "average_sentiment_score": average_sentiment,
                 "article_count": article_count,
+                "calculation_date": calculation_date,
                 "is_active": True
             })
             time.sleep(sleep_interval)
+
+        # daily_stock_data에 sentiment 정보 저장
+        try:
+            if db is not None:
+                use_mongodb = settings.is_mongodb_enabled()
+                
+                if use_mongodb:
+                    # daily_stock_data용 딕셔너리 (ticker를 키로 사용)
+                    sentiment_dict = {}
+                    
+                    for result in results:
+                        if "average_sentiment_score" not in result:
+                            continue  # API 호출 실패나 기사 없음은 제외
+                        
+                        ticker = result.get("ticker")
+                        if not ticker:
+                            continue
+                        
+                        # daily_stock_data용 딕셔너리 (ticker를 키로 사용)
+                        sentiment_dict[ticker] = {
+                            "average_sentiment_score": result.get("average_sentiment_score"),
+                            "article_count": result.get("article_count"),
+                            "calculation_date": result.get("calculation_date", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                        }
+                    
+                    # daily_stock_data에 sentiment 필드 추가/업데이트 (날짜별 통합 조회용)
+                    if sentiment_dict:
+                        db.daily_stock_data.update_one(
+                            {"date": today_str},
+                            {
+                                "$set": {
+                                    "sentiment": sentiment_dict,
+                                    "updated_at": datetime.utcnow()
+                                },
+                                "$setOnInsert": {
+                                    "created_at": datetime.utcnow()
+                                }
+                            },
+                            upsert=True
+                        )
+                        logger.info(f"📊 MongoDB daily_stock_data.sentiment 업데이트 성공: {today_str} 기준 {len(sentiment_dict)}개 종목")
+                    else:
+                        logger.warning(f"⚠️ MongoDB에 저장할 감정 분석 데이터가 없습니다.")
+                else:
+                    logger.info(f"ℹ️ MongoDB가 비활성화되어 있습니다. (USE_MONGODB=False)")
+        except Exception as mongo_e:
+            logger.warning(f"⚠️ MongoDB daily_stock_data.sentiment 저장 실패: {str(mongo_e)}")
+            import traceback
+            logger.warning(traceback.format_exc())
 
         return {
             "message": f"{len(results)}개의 티커(활성화된 주식: {len(all_tickers)}개)를 분석했습니다",
@@ -1176,12 +1253,12 @@ class StockRecommendationService:
                         "sentiment_date": sentiment.get("calculation_date") or sentiment.get("date") if sentiment else None,
                         "short_percent": short_percent,  # 공매도 비율 추가
                         "technical_date": tech_data["날짜"],
-                        "sma20": float(tech_data["SMA20"]),
-                        "sma50": float(tech_data["SMA50"]),
+                        "sma20": float(tech_data["SMA20"]) if tech_data.get("SMA20") is not None else None,
+                        "sma50": float(tech_data["SMA50"]) if tech_data.get("SMA50") is not None else None,
                         "golden_cross": bool(tech_data["골든_크로스"]),
-                        "rsi": float(tech_data["RSI"]),
-                        "macd": float(tech_data["MACD"]),
-                        "signal": float(tech_data["Signal"]),
+                        "rsi": float(tech_data["RSI"]) if tech_data.get("RSI") is not None and not (isinstance(tech_data.get("RSI"), float) and np.isnan(tech_data.get("RSI"))) else None,
+                        "macd": float(tech_data["MACD"]) if tech_data.get("MACD") is not None else None,
+                        "signal": float(tech_data["Signal"]) if tech_data.get("Signal") is not None else None,
                         "macd_buy_signal": bool(tech_data["MACD_매수_신호"]),
                         "technical_recommended": bool(tech_data["추천_여부"])
                     }
