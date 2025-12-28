@@ -299,9 +299,28 @@ def collect_economic_data(start_date='2006-01-01', end_date=None):
             'observation_end': end_date,
             'frequency': frequency
         }
-        response = requests.get(url, params=params)
-    
-        if response.status_code == 200:
+        
+        # 재시도 로직 추가 (최대 3번 시도)
+        max_retries = 3
+        response = None
+        for attempt in range(max_retries):
+            try:
+                response = requests.get(url, params=params, timeout=30)
+                if response.status_code == 200:
+                    break  # 성공하면 루프 탈출
+                elif attempt < max_retries - 1:
+                    logger.warning(f"FRED API 호출 실패 ({name}/{code}): {response.status_code}, 재시도 중... (시도 {attempt+1}/{max_retries})")
+                    time.sleep(2 ** attempt)  # exponential backoff
+            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout, 
+                    requests.exceptions.RequestException) as e:
+                if attempt < max_retries - 1:
+                    logger.warning(f"FRED API 연결 오류 ({name}/{code}): {str(e)}, 재시도 중... (시도 {attempt+1}/{max_retries})")
+                    time.sleep(2 ** attempt)  # exponential backoff
+                else:
+                    logger.error(f"FRED API 최종 실패 ({name}/{code}): {str(e)}")
+                    response = None
+        
+        if response and response.status_code == 200:
             data = response.json().get('observations', [])
             if data:
                 df = pd.DataFrame(data)[['date', 'value']]
@@ -311,7 +330,10 @@ def collect_economic_data(start_date='2006-01-01', end_date=None):
             else:
                 logger.warning(f"No data found for indicator {name} ({code}).")
         else:
-            logger.warning(f"Failed to fetch data for indicator {name} ({code}): {response.status_code}")
+            if response:
+                logger.warning(f"Failed to fetch data for indicator {name} ({code}): {response.status_code}")
+            else:
+                logger.warning(f"Failed to fetch data for indicator {name} ({code}): 연결 실패")
     
     # 데이터 빈도에 따른 리샘플링 처리
     for i, df in enumerate(fred_data_frames):

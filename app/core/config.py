@@ -216,19 +216,35 @@ settings = Settings()
 # .env 파일에서 GOOGLE_APPLICATION_CREDENTIALS 읽어서 환경 변수로 설정
 # (Settings에서 extra="ignore"로 인해 무시되므로 직접 처리)
 def _load_google_credentials_from_env():
-    """.env 파일에서 GOOGLE_APPLICATION_CREDENTIALS를 읽어 환경 변수로 설정"""
-    # .env 파일 경로 찾기
+    """.env 파일에서 GOOGLE_APPLICATION_CREDENTIALS를 읽어 환경 변수로 설정 (로컬 환경에서만)"""
+    # Docker 환경 체크: /app 디렉토리가 존재하고 /Users 디렉토리가 없으면 Docker 환경
+    is_docker = Path("/app").exists() and not Path("/Users").exists()
+    
+    # Docker 환경에서는 환경 변수가 이미 설정되어 있으므로 건너뜀
+    if is_docker:
+        return None
+    
+    # 로컬 환경에서만 .env 파일에서 읽기
     env_file = Path(__file__).parent.parent.parent / ".env"
     if env_file.exists():
-        # .env 파일 직접 읽기
-        load_dotenv(env_file)
+        # 현재 환경 변수 값 저장 (이미 설정되어 있으면 유지)
+        existing_creds = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        
+        # .env 파일 직접 읽기 (기존 환경 변수는 유지)
+        load_dotenv(env_file, override=False)
         creds_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        
+        # 환경 변수가 이미 설정되어 있으면 .env 파일 값 무시
+        if existing_creds:
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = existing_creds
+            return existing_creds if os.path.exists(existing_creds) else None
+        
+        # .env 파일에서 읽은 값이 있는 경우에만 설정
         if creds_path:
             # 상대 경로인 경우 절대 경로로 변환
             if not os.path.isabs(creds_path):
                 project_root = Path(__file__).parent.parent.parent
                 creds_path = str(project_root / creds_path)
-                os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = creds_path
             
             # 파일 존재 여부 확인
             creds_path_normalized = os.path.normpath(creds_path)

@@ -714,8 +714,27 @@ class StockRecommendationService:
             print(f"{ticker} 처리 중...")
             params["tickers"] = ticker
 
-            response = requests.get(base_url, params=params)
-            if response.status_code != 200:
+            # 재시도 로직 추가 (최대 3번 시도)
+            max_retries = 3
+            response = None
+            for attempt in range(max_retries):
+                try:
+                    response = requests.get(base_url, params=params, timeout=30)
+                    if response.status_code == 200:
+                        break  # 성공하면 루프 탈출
+                    elif attempt < max_retries - 1:
+                        logger.warning(f"Alpha Vantage API 호출 실패 ({ticker}): {response.status_code}, 재시도 중... (시도 {attempt+1}/{max_retries})")
+                        time.sleep(2 ** attempt)  # exponential backoff
+                except (requests.exceptions.ConnectionError, requests.exceptions.Timeout,
+                        requests.exceptions.RequestException) as e:
+                    if attempt < max_retries - 1:
+                        logger.warning(f"Alpha Vantage API 연결 오류 ({ticker}): {str(e)}, 재시도 중... (시도 {attempt+1}/{max_retries})")
+                        time.sleep(2 ** attempt)  # exponential backoff
+                    else:
+                        logger.error(f"Alpha Vantage API 최종 실패 ({ticker}): {str(e)}")
+                        response = None
+            
+            if not response or response.status_code != 200:
                 results.append({
                     "ticker": ticker,
                     "stock_name": ticker_to_stock.get(ticker, ticker),  # 티커명이 없으면 티커 자체를 표시
@@ -939,8 +958,27 @@ class StockRecommendationService:
             print(f"{ticker} 처리 중...")
             params["tickers"] = ticker
 
-            response = requests.get(base_url, params=params)
-            if response.status_code != 200:
+            # 재시도 로직 추가 (최대 3번 시도)
+            max_retries = 3
+            response = None
+            for attempt in range(max_retries):
+                try:
+                    response = requests.get(base_url, params=params, timeout=30)
+                    if response.status_code == 200:
+                        break  # 성공하면 루프 탈출
+                    elif attempt < max_retries - 1:
+                        logger.warning(f"Alpha Vantage API 호출 실패 ({ticker}): {response.status_code}, 재시도 중... (시도 {attempt+1}/{max_retries})")
+                        time.sleep(2 ** attempt)  # exponential backoff
+                except (requests.exceptions.ConnectionError, requests.exceptions.Timeout,
+                        requests.exceptions.RequestException) as e:
+                    if attempt < max_retries - 1:
+                        logger.warning(f"Alpha Vantage API 연결 오류 ({ticker}): {str(e)}, 재시도 중... (시도 {attempt+1}/{max_retries})")
+                        time.sleep(2 ** attempt)  # exponential backoff
+                    else:
+                        logger.error(f"Alpha Vantage API 최종 실패 ({ticker}): {str(e)}")
+                        response = None
+            
+            if not response or response.status_code != 200:
                 results.append({
                     "ticker": ticker,
                     "stock_name": ticker_to_stock.get(ticker, ticker),
