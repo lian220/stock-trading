@@ -43,8 +43,8 @@ class SchedulerConfig:
     
     # 스케줄 시간
     SCHEDULE_ECONOMIC_DATA_UPDATE_1 = "06:05"
-    SCHEDULE_ECONOMIC_DATA_UPDATE_2 = "23:00"
-    SCHEDULE_VERTEX_AI_PREDICTION = "23:00"
+    SCHEDULE_ECONOMIC_DATA_UPDATE_2 = "23:00"  # 경제 데이터 재수집 및 Vertex AI 예측 병렬 실행 시간
+    SCHEDULE_VERTEX_AI_PREDICTION = "23:00"  # 레거시: 이제 SCHEDULE_ECONOMIC_DATA_UPDATE_2와 함께 _run_23_00_tasks에서 병렬 실행됨
     SCHEDULE_PARALLEL_ANALYSIS = "23:05"
     SCHEDULE_COMBINED_ANALYSIS = "23:45"
     SCHEDULE_AUTO_BUY = "23:50"
@@ -72,6 +72,8 @@ class StockScheduler:
         self.buy_executing = False  # 매수 작업 실행 중 플래그 (중복 실행 방지)
         self.analysis_executing = False  # 분석 작업 실행 중 플래그 (중복 실행 방지)
         self.prediction_executing = False  # Vertex AI 예측 작업 실행 중 플래그 (중복 실행 방지)
+        self.economic_executing = False  # 경제 데이터 업데이트 작업 실행 중 플래그 (중복 실행 방지)
+        self.tasks_23_00_executing = False  # 23:00 작업 실행 중 플래그 (중복 실행 방지)
         self.stopping = False  # 중지 중 플래그 (중복 중지 방지)
         # 현재가 조회 실패한 종목 추적 (ticker -> (실패 횟수, 마지막 실패 시간))
         self.price_fetch_failures = {}  # type: dict[str, tuple[int, datetime]]
@@ -92,6 +94,7 @@ class StockScheduler:
             '_run_combined_analysis',
             '_run_vertex_ai_prediction',
             '_run_economic_data_update',
+            '_run_23_00_tasks',
             '_run_portfolio_profit_report'
         ]
         
@@ -102,17 +105,16 @@ class StockScheduler:
         # 한국 시간 기준 새벽 6시 5분에 경제 데이터 업데이트 작업 실행
         schedule.every().day.at(SchedulerConfig.SCHEDULE_ECONOMIC_DATA_UPDATE_1).do(self._run_economic_data_update)
         
-        # 한국 시간 기준 밤 11시에 경제 데이터 재수집 (최신 지표 반영)
-        schedule.every().day.at(SchedulerConfig.SCHEDULE_ECONOMIC_DATA_UPDATE_2).do(self._run_economic_data_update)
-        
-        # 한국 시간 기준 밤 11시에 Vertex AI 예측 작업 실행
-        schedule.every().day.at(SchedulerConfig.SCHEDULE_VERTEX_AI_PREDICTION).do(self._run_vertex_ai_prediction)
+        # 한국 시간 기준 밤 11시에 경제 데이터 재수집 및 Vertex AI 예측 작업을 병렬로 실행
+        schedule.every().day.at(SchedulerConfig.SCHEDULE_ECONOMIC_DATA_UPDATE_2).do(self._run_23_00_tasks)
         
         # 한국 시간 기준 밤 11시 5분에 병렬 분석 작업 실행 (충분한 시간 확보)
-        schedule.every().day.at(SchedulerConfig.SCHEDULE_PARALLEL_ANALYSIS).do(self._run_parallel_analysis)
+        parallel_job = schedule.every().day.at(SchedulerConfig.SCHEDULE_PARALLEL_ANALYSIS).do(self._run_parallel_analysis)
+        logger.info(f"병렬 분석 작업 등록 완료: 매일 {SchedulerConfig.SCHEDULE_PARALLEL_ANALYSIS} (KST)")
 
         # 한국 시간 기준 밤 11시 45분에 통합 분석 작업 실행
-        schedule.every().day.at(SchedulerConfig.SCHEDULE_COMBINED_ANALYSIS).do(self._run_combined_analysis)
+        combined_job = schedule.every().day.at(SchedulerConfig.SCHEDULE_COMBINED_ANALYSIS).do(self._run_combined_analysis)
+        logger.info(f"통합 분석 작업 등록 완료: 매일 {SchedulerConfig.SCHEDULE_COMBINED_ANALYSIS} (KST)")
         
         # 한국 시간 기준 밤 11시 50분(23:50)에 매수 작업 실행 (장 시작 20분 후)
         schedule.every().day.at(SchedulerConfig.SCHEDULE_AUTO_BUY).do(self._run_auto_buy)
@@ -131,14 +133,24 @@ class StockScheduler:
         self.scheduler_thread.start()
         
         # 하나의 상세한 로그로 통합
+        logger.info("=" * 60)
         logger.info("주식 자동매매 스케줄러가 시작되었습니다.")
-        logger.info("  - 경제 데이터: 매일 06:05, 23:00 (재수집)")
-        logger.info("  - Vertex AI 예측: 매일 23:00")
-        logger.info("  - 병렬 분석: 매일 23:05 (기술적 지표 + 감정 분석)")
-        logger.info("  - 통합 분석: 매일 23:45 (AI 예측 + 기술적 지표 + 감정 분석)")
+        logger.info("=" * 60)
+        logger.info("등록된 스케줄:")
+        logger.info("  - 경제 데이터: 매일 06:05")
+        logger.info("  - 23:00 작업: 매일 23:00 (경제 데이터 업데이트 + Vertex AI 예측 병렬 실행)")
+        logger.info(f"  - 병렬 분석: 매일 {SchedulerConfig.SCHEDULE_PARALLEL_ANALYSIS} (기술적 지표 + 감정 분석)")
+        logger.info(f"  - 통합 분석: 매일 {SchedulerConfig.SCHEDULE_COMBINED_ANALYSIS} (AI 예측 + 기술적 지표 + 감정 분석)")
         logger.info("  - 매수: 매일 00:00")
         logger.info("  - 미체결 주문 정리: 매일 06:30 (장 마감 후)")
         logger.info("  - 계좌 수익율 리포트: 매일 07:00")
+        
+        # Slack 알림 설정 확인
+        if settings.SLACK_WEBHOOK_URL_SCHEDULER:
+            logger.info(f"Slack 스케줄러 알림: 활성화됨")
+        else:
+            logger.warning("⚠️  Slack 스케줄러 알림: SLACK_WEBHOOK_URL_SCHEDULER 환경변수가 설정되지 않아 알림이 전송되지 않습니다.")
+        logger.info("=" * 60)
         return True
     
     def stop(self):
@@ -163,6 +175,7 @@ class StockScheduler:
             '_run_combined_analysis',
             '_run_vertex_ai_prediction',
             '_run_economic_data_update',
+            '_run_23_00_tasks',
             '_cleanup_pending_orders',
             '_run_portfolio_profit_report'
         ]
@@ -178,19 +191,38 @@ class StockScheduler:
     def _run_economic_data_update(self, send_slack_notification: bool = True):
         """경제 데이터 업데이트 실행 함수"""
         function_name = "_run_economic_data_update"
+        
+        # 중복 실행 방지
+        if self.economic_executing:
+            logger.warning(f"[{function_name}] 경제 데이터 업데이트가 이미 실행 중입니다. 중복 실행을 건너뜁니다.")
+            return False
+        
         # 시간 진단 로깅
         korea_tz = pytz.timezone('Asia/Seoul')
         now_korea = datetime.now(korea_tz)
         now_local = datetime.now()
-        logger.info(f"[{function_name}] 함수 실행 시작 (시스템 시간: {now_local.strftime('%Y-%m-%d %H:%M:%S')}, 한국 시간: {now_korea.strftime('%Y-%m-%d %H:%M:%S')} KST)")
+        start_time_str = now_korea.strftime('%Y-%m-%d %H:%M:%S')
+        logger.info(f"[{function_name}] 함수 실행 시작 (시스템 시간: {now_local.strftime('%Y-%m-%d %H:%M:%S')}, 한국 시간: {start_time_str} KST)")
+        
+        self.economic_executing = True
+        
         if send_slack_notification:
-            send_scheduler_slack_notification(f"📈 *경제 데이터 업데이트 시작*\n경제 데이터 수집을 시작합니다.")
+            send_scheduler_slack_notification(f"📈 *경제 데이터 업데이트 시작*\n경제 데이터 수집을 시작합니다.\n실행 시간: {start_time_str} (KST)")
         
         try:
             asyncio.run(update_economic_data_in_background())
-            logger.info(f"[{function_name}] 함수 실행 완료")
+            end_time_korea = datetime.now(korea_tz)
+            end_time_str = end_time_korea.strftime('%Y-%m-%d %H:%M:%S')
+            elapsed_time = (end_time_korea - now_korea).total_seconds()
+            logger.info(f"[{function_name}] 함수 실행 완료 (소요 시간: {elapsed_time:.1f}초)")
             if send_slack_notification:
-                success = send_scheduler_slack_notification(f"✅ *경제 데이터 업데이트 완료*\n경제 데이터 수집이 완료되었습니다.")
+                success = send_scheduler_slack_notification(
+                    f"✅ *경제 데이터 업데이트 완료*\n"
+                    f"경제 데이터 수집이 완료되었습니다.\n"
+                    f"시작: {start_time_str} (KST)\n"
+                    f"완료: {end_time_str} (KST)\n"
+                    f"소요 시간: {elapsed_time:.1f}초"
+                )
                 if not success:
                     logger.warning(f"[{function_name}] 슬랙 알림 전송 실패 (경제 데이터 업데이트 완료)")
             return True
@@ -202,6 +234,92 @@ class StockScheduler:
                 if not success:
                     logger.warning(f"[{function_name}] 슬랙 알림 전송 실패 (경제 데이터 업데이트 오류)")
             return False
+        finally:
+            # 실행 완료 후 플래그 해제
+            self.economic_executing = False
+
+    def _run_23_00_tasks(self, send_slack_notification: bool = True):
+        """
+        23:00에 실행되어야 하는 작업들을 병렬로 실행
+        - 경제 데이터 업데이트
+        - Vertex AI 예측
+        """
+        function_name = "_run_23_00_tasks"
+        
+        # 중복 실행 방지
+        if self.tasks_23_00_executing:
+            logger.warning(f"[{function_name}] 23:00 작업이 이미 실행 중입니다. 중복 실행을 건너뜁니다.")
+            return False
+        
+        korea_tz = pytz.timezone('Asia/Seoul')
+        now_korea = datetime.now(korea_tz)
+        start_time_str = now_korea.strftime('%Y-%m-%d %H:%M:%S')
+        
+        self.tasks_23_00_executing = True
+        
+        logger.info("=" * 60)
+        logger.info(f"[{function_name}] 23:00 작업 시작 (한국 시간: {start_time_str} KST)")
+        logger.info("=" * 60)
+        
+        if send_slack_notification:
+            send_scheduler_slack_notification(
+                f"🚀 *23:00 작업 시작*\n"
+                f"경제 데이터 업데이트와 Vertex AI 예측을 병렬로 실행합니다.\n"
+                f"실행 시간: {start_time_str} (KST)"
+            )
+        
+        try:
+            import concurrent.futures
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                # 1. 경제 데이터 업데이트
+                logger.info(f"[{function_name}] 경제 데이터 업데이트 시작...")
+                economic_future = executor.submit(
+                    self._run_economic_data_update,
+                    send_slack_notification=False  # 개별 알림은 비활성화 (통합 알림만)
+                )
+                
+                # 2. Vertex AI 예측
+                logger.info(f"[{function_name}] Vertex AI 예측 시작...")
+                prediction_future = executor.submit(
+                    self._run_vertex_ai_prediction,
+                    send_slack_notification=False  # 개별 알림은 비활성화 (통합 알림만)
+                )
+                
+                # 두 작업 완료 대기
+                economic_result = economic_future.result()
+                prediction_result = prediction_future.result()
+                
+                end_time_korea = datetime.now(korea_tz)
+                end_time_str = end_time_korea.strftime('%Y-%m-%d %H:%M:%S')
+                elapsed_time = (end_time_korea - now_korea).total_seconds()
+                
+                logger.info(f"[{function_name}] ✅ 경제 데이터 업데이트 완료: {economic_result}")
+                logger.info(f"[{function_name}] ✅ Vertex AI 예측 완료: {prediction_result}")
+                logger.info("=" * 60)
+                logger.info(f"[{function_name}] 23:00 작업 완료 (소요 시간: {elapsed_time:.1f}초)")
+                logger.info("=" * 60)
+                
+                if send_slack_notification:
+                    send_scheduler_slack_notification(
+                        f"✅ *23:00 작업 완료*\n"
+                        f"경제 데이터 업데이트: {'성공' if economic_result else '실패'}\n"
+                        f"Vertex AI 예측: {'성공' if prediction_result else '실패'}\n"
+                        f"시작: {start_time_str} (KST)\n"
+                        f"완료: {end_time_str} (KST)\n"
+                        f"소요 시간: {elapsed_time:.1f}초"
+                    )
+                
+                return economic_result and prediction_result
+                
+        except Exception as e:
+            logger.error(f"[{function_name}] ❌ 23:00 작업 중 오류 발생: {str(e)}", exc_info=True)
+            if send_slack_notification:
+                send_scheduler_slack_notification(f"❌ *23:00 작업 오류*\n오류 발생: {str(e)}")
+            return False
+        finally:
+            # 실행 완료 후 플래그 해제
+            self.tasks_23_00_executing = False
 
     def _run_vertex_ai_prediction(self, send_slack_notification: bool = True):
         """Vertex AI를 사용한 주가 예측 작업 실행 (run_predict_vertex_ai.py)"""
@@ -210,8 +328,9 @@ class StockScheduler:
         korea_tz = pytz.timezone('Asia/Seoul')
         now_korea = datetime.now(korea_tz)
         now_local = datetime.now()
+        start_time_str = now_korea.strftime('%Y-%m-%d %H:%M:%S')
         logger.info("=" * 60)
-        logger.info(f"[{function_name}] Vertex AI 주가 예측 작업 시작 (시스템 시간: {now_local.strftime('%Y-%m-%d %H:%M:%S')}, 한국 시간: {now_korea.strftime('%Y-%m-%d %H:%M:%S')} KST)")
+        logger.info(f"[{function_name}] Vertex AI 주가 예측 작업 시작 (시스템 시간: {now_local.strftime('%Y-%m-%d %H:%M:%S')}, 한국 시간: {start_time_str} KST)")
         logger.info("=" * 60)
         
         if self.prediction_executing:
@@ -222,7 +341,7 @@ class StockScheduler:
         
         try:
             if send_slack_notification:
-                send_scheduler_slack_notification(f"🚀 *Vertex AI 주가 예측 시작*\nrun_predict_vertex_ai.py 실행을 시작합니다.")
+                send_scheduler_slack_notification(f"🚀 *Vertex AI 주가 예측 시작*\nrun_predict_vertex_ai.py 실행을 시작합니다.\n실행 시간: {start_time_str} (KST)")
             
             import subprocess
             import sys
@@ -548,7 +667,8 @@ class StockScheduler:
         korea_tz = pytz.timezone('Asia/Seoul')
         now_korea = datetime.now(korea_tz)
         now_local = datetime.now()
-        logger.info(f"[{function_name}] 함수 실행 시작 (시스템 시간: {now_local.strftime('%Y-%m-%d %H:%M:%S')}, 한국 시간: {now_korea.strftime('%Y-%m-%d %H:%M:%S')} KST)")
+        start_time_str = now_korea.strftime('%Y-%m-%d %H:%M:%S')
+        logger.info(f"[{function_name}] 함수 실행 시작 (시스템 시간: {now_local.strftime('%Y-%m-%d %H:%M:%S')}, 한국 시간: {start_time_str} KST)")
         
         # 중복 실행 방지
         if self.analysis_executing:
@@ -560,7 +680,7 @@ class StockScheduler:
         logger.info(f"[{function_name}] 병렬 분석 작업 시작")
         logger.info("=" * 60)
         if send_slack_notification:
-            send_scheduler_slack_notification(f"🚀 *병렬 분석 작업 시작*\n기술적 지표와 감정 분석을 병렬로 실행합니다.")
+            send_scheduler_slack_notification(f"🚀 *병렬 분석 작업 시작*\n기술적 지표와 감정 분석을 병렬로 실행합니다.\n실행 시간: {start_time_str} (KST)")
         
         try:
             import concurrent.futures
@@ -610,9 +730,19 @@ class StockScheduler:
                     if not success:
                         logger.warning(f"[{function_name}] 슬랙 알림 전송 실패 (감정 분석 완료)")
                 
+            end_time_korea = datetime.now(korea_tz)
+            end_time_str = end_time_korea.strftime('%Y-%m-%d %H:%M:%S')
+            elapsed_time = (end_time_korea - now_korea).total_seconds()
             logger.info("=" * 60)
-            logger.info(f"[{function_name}] 병렬 분석 작업 완료")
+            logger.info(f"[{function_name}] 병렬 분석 작업 완료 (소요 시간: {elapsed_time:.1f}초)")
             logger.info("=" * 60)
+            if send_slack_notification:
+                send_scheduler_slack_notification(
+                    f"✅ *병렬 분석 작업 완료*\n"
+                    f"시작: {start_time_str} (KST)\n"
+                    f"완료: {end_time_str} (KST)\n"
+                    f"소요 시간: {elapsed_time:.1f}초"
+                )
             return True
             
         except Exception as e:
@@ -2562,18 +2692,26 @@ def send_scheduler_slack_notification(message: str) -> bool:
     """
     스케줄러 실행 알림을 Slack으로 전송 (재시도 포함, 최대 3번)
     
+    Args:
+        message: 알림 메시지 (이미 실행 시간이 포함되어 있을 수 있음)
+    
     Returns:
         bool: 전송 성공 여부
     """
     webhook_url = settings.SLACK_WEBHOOK_URL_SCHEDULER
     if not webhook_url:
+        logger.warning("SLACK_WEBHOOK_URL_SCHEDULER 환경변수가 설정되지 않아 스케줄러 알림을 전송할 수 없습니다.")
         return False
     
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            now_korea = datetime.now(pytz.timezone('Asia/Seoul'))
-            formatted_message = f"📅 *스케줄러 알림*\n{message}\n\n🕒 {now_korea.strftime('%Y-%m-%d %H:%M:%S')} (KST)"
+            # 메시지에 이미 시간이 포함되어 있으면 중복 추가하지 않음
+            if "실행 시간:" in message or "시작:" in message or "완료:" in message:
+                formatted_message = f"📅 *스케줄러 알림*\n{message}"
+            else:
+                now_korea = datetime.now(pytz.timezone('Asia/Seoul'))
+                formatted_message = f"📅 *스케줄러 알림*\n{message}\n\n🕒 알림 전송 시간: {now_korea.strftime('%Y-%m-%d %H:%M:%S')} (KST)"
             
             payload = {"text": formatted_message}
             with httpx.Client(timeout=10.0) as client:
