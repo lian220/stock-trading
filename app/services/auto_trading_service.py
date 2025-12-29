@@ -42,6 +42,12 @@ class AutoTradingService:
             "min_sentiment_score": 0.15,  # 최소 감정 점수
             "order_type": OrderType.LIMIT.value,  # 주문 구분 (00: 지정가)
             "allow_buy_existing_stocks": True,  # 보유 중인 종목도 매수 허용 여부
+            # 트레일링 스톱 설정
+            "trailing_stop_enabled": False,  # 트레일링 스톱 활성화 여부
+            "trailing_stop_distance_percent": 5.0,  # 일반 종목 트레일링 거리 (%)
+            "leveraged_trailing_stop_distance_percent": 7.0,  # 레버리지 종목 트레일링 거리 (%)
+            "trailing_stop_min_profit_percent": 3.0,  # 일반 종목 최소 수익률 (%)
+            "leveraged_trailing_stop_min_profit_percent": 5.0,  # 레버리지 종목 최소 수익률 (%)
         }
     
     def get_auto_trading_config(self) -> Dict:
@@ -52,10 +58,10 @@ class AutoTradingService:
                 logger.error("MongoDB 연결 실패")
                 return self.default_config
             
-            # 최신 설정 조회
+            # 최신 설정 조회 (updated_at 기준으로 정렬하여 가장 최근에 업데이트된 설정 사용)
             config = db.trading_configs.find_one(
                 {},
-                sort=[("created_at", -1)]
+                sort=[("updated_at", -1), ("created_at", -1)]
             )
             
             if config:
@@ -140,6 +146,8 @@ class AutoTradingService:
             candidates = []
             if recommendations and recommendations.get("results"):
                 # MongoDB에서 사용자별 레버리지 설정 조회
+                # 모델 구조: User.stocks (List[UserStockEmbedded])
+                # UserStockEmbedded에는 ticker, use_leverage만 있고, leverage_ticker는 stocks 컬렉션에서 조회
                 user_leverage_map = {}
                 db = None
                 try:
@@ -150,12 +158,13 @@ class AutoTradingService:
                         user_id = 'lian'
                         user = db.users.find_one({"user_id": user_id})
                         if user and user.get("stocks"):
+                            # embedded stocks에서 UserStockEmbedded 모델 구조에 맞게 ticker, use_leverage만 사용
                             for stock in user.get("stocks", []):
-                                ticker = stock.get("ticker")
+                                ticker = stock.get("ticker")  # UserStockEmbedded.ticker
                                 if ticker:
                                     user_leverage_map[ticker] = {
-                                        "use_leverage": stock.get("use_leverage", False)
-                                        # leverage_ticker는 stocks 컬렉션에서 조회
+                                        "use_leverage": stock.get("use_leverage", False)  # UserStockEmbedded.use_leverage
+                                        # leverage_ticker는 Stock 모델에 있으므로 stocks 컬렉션에서 조회해야 함
                                     }
                 except Exception as e:
                     logger.error(f"레버리지 설정 조회 실패: {str(e)}")
@@ -189,15 +198,17 @@ class AutoTradingService:
                         logger.info(f"{original_ticker} ({stock.get('stock_name')}) - use_leverage가 false여서 매수 제외")
                         continue
                     
-                    # 레버리지 설정 적용 (leverage_ticker는 stocks 컬렉션에서 조회)
+                    # 레버리지 설정 적용
+                    # 모델 구조: Stock.leverage_ticker 필드를 stocks 컬렉션에서 조회
+                    # UserStockEmbedded에는 leverage_ticker가 없으므로 stocks 컬렉션에서 조회해야 함
                     actual_ticker = original_ticker
                     is_leverage = False
                     
                     if user_leverage_map[original_ticker]["use_leverage"]:
-                        # stocks 컬렉션에서 레버리지 티커 조회
+                        # Stock 모델의 leverage_ticker 필드를 stocks 컬렉션에서 조회
                         if db is not None:
                             stock_doc = db.stocks.find_one({"ticker": original_ticker})
-                            if stock_doc and stock_doc.get("leverage_ticker"):
+                            if stock_doc and stock_doc.get("leverage_ticker"):  # Stock.leverage_ticker
                                 actual_ticker = stock_doc["leverage_ticker"]
                                 is_leverage = True
                                 stock["original_ticker"] = original_ticker
@@ -312,79 +323,120 @@ class AutoTradingService:
             
             for candidate in candidates:
                 ticker = candidate.get("ticker")
+                stock_name = candidate.get("stock_name", "N/A")
+                original_ticker = candidate.get("original_ticker")  # 레버리지 티커인 경우 원본 티커
+                is_leverage = candidate.get("is_leverage", False)
                 
                 # 이미 보유 중인 종목은 스킵
                 # if ticker in holding_tickers:
                 #     logger.info(f"{ticker} - 이미 보유 중, 스킵")
                 #     continue
                 
-                # 현재가 조회 (여러 거래소 시도)
-                exchanges = ["NAS", "AMS", "NYS"]
-                price_result = None
+                # stocks 컬렉션에서 거래소 정보 조회
+                # 모델 구조: Stock.exchange 필드를 stocks 컬렉션에서 조회
+                # 레버리지 티커인 경우: 레버리지 티커로 먼저 조회, 없으면 원본 티커로 조회
+                exchange_code = None
+                pure_ticker = ticker
+                try:
+                    from app.infrastructure.database.mongodb_client import get_mongodb_database
+                    db = get_mongodb_database()
+                    if db is not None:  # MongoDB Database 객체는 직접 boolean 평가 불가
+                        # Stock 모델의 exchange 필드를 조회
+                        # 레버리지 티커인 경우 레버리지 티커로 먼저 조회
+                        stock_doc = db.stocks.find_one({"ticker": ticker})
+                        
+                        # 레버리지 티커로 조회 실패하고 원본 티커가 있으면 원본 티커로 조회
+                        if not stock_doc and original_ticker and original_ticker != ticker:
+                            stock_doc = db.stocks.find_one({"ticker": original_ticker})
+                        
+                        if stock_doc and stock_doc.get("exchange"):  # Stock.exchange
+                            # stocks 컬렉션의 exchange 필드 사용 (예: "NASD", "NYSE", "AMEX")
+                            exchange_code = stock_doc.get("exchange")
+                            # "NASS" 같은 잘못된 코드는 정규화
+                            if exchange_code == "NASS":
+                                exchange_code = "NASD"
+                            elif exchange_code == "NYS":
+                                exchange_code = "NYSE"
+                            elif exchange_code == "AMS":
+                                exchange_code = "AMEX"
+                except Exception as e:
+                    logger.warning(f"{stock_name}({ticker}) - 거래소 정보 조회 실패: {str(e)}")
                 
-                # 기본 거래소를 맨 앞으로
-                default_exchange = self._get_exchange_code(ticker).replace("D", "S")
-                if default_exchange in exchanges:
-                    exchanges.remove(default_exchange)
-                    exchanges.insert(0, default_exchange)
+                # 거래소 코드 결정 (stocks 컬렉션에 없으면 티커 기반으로 판단)
+                if not exchange_code:
+                    if ticker.endswith(".X") or ticker.endswith(".N"):
+                        # 거래소 구분이 티커에 포함된 경우
+                        exchange_code = "NYSE" if ticker.endswith(".N") else "NASD"
+                        pure_ticker = ticker.split(".")[0]
+                    else:
+                        # 기본값 NASDAQ으로 설정
+                        exchange_code = "NASD"
+                        pure_ticker = ticker
+                else:
+                    # exchange_code가 있으면 티커에서 거래소 구분 제거
+                    if ticker.endswith(".X") or ticker.endswith(".N"):
+                        pure_ticker = ticker.split(".")[0]
+                    else:
+                        pure_ticker = ticker
                 
-                for exchange in exchanges:
-                    temp_result = get_current_price({
-                        "EXCD": exchange,
-                        "SYMB": ticker
-                    })
-                    
-                    # 데이터가 있는지 확인 (last나 base가 있어야 함)
-                    output = temp_result.get("output", {})
-                    if temp_result.get("rt_cd") == "0" and (output.get("last") or output.get("base")):
-                        price_result = temp_result
-                        if exchange != default_exchange:
-                            logger.info(f"{ticker} - 거래소 변경 발견: {default_exchange} -> {exchange}")
-                        break
-                    
-                    # 마지막 시도였으면 결과 저장
-                    if exchange == exchanges[-1]:
-                        price_result = temp_result
-
-                if not price_result or price_result.get("rt_cd") != "0":
-                    logger.error(f"{ticker} - 현재가 조회 실패")
-                    # 실시간 조회 실패 시 추천 당시 가격 사용 시도
+                # 거래소 코드 유효성 검증
+                if not exchange_code or exchange_code not in ["NASD", "NYSE", "AMEX"]:
+                    logger.warning(f"{stock_name}({ticker}) - 유효하지 않은 거래소 코드: {exchange_code}, 기본값 NASD 사용")
+                    exchange_code = "NASD"
                 
-                # 데이터가 없는 경우 (rt_cd는 0이지만 output이 비어있는 경우 포함)
+                # 거래소 코드 변환 (API 요청에 맞게 변환)
+                from app.core.enums import get_exchange_code_for_api
+                api_exchange_code = get_exchange_code_for_api(exchange_code)
+                
+                if not api_exchange_code:
+                    logger.error(f"{stock_name}({ticker}) - 거래소 코드 변환 실패: {exchange_code}")
+                    continue
+                
+                # 현재가 조회
+                price_params = {
+                    "AUTH": "",
+                    "EXCD": api_exchange_code,  # 변환된 거래소 코드 사용
+                    "SYMB": pure_ticker
+                }
+                
+                price_result = get_current_price(price_params)
+                
+                if price_result.get("rt_cd") != "0":
+                    error_msg = price_result.get('msg1', '알 수 없는 오류')
+                    logger.error(f"{stock_name}({ticker}) - 현재가 조회 실패: {error_msg}")
+                    continue
+                
+                # 현재가 추출
+                last_price = price_result.get("output", {}).get("last", 0) or 0
+                try:
+                    current_price = float(last_price)
+                except (ValueError, TypeError) as e:
+                    logger.error(f"{stock_name}({ticker}) - 현재가 변환 실패: {last_price}, 오류: {str(e)}")
+                    continue
+                
                 if current_price <= 0:
-                    # 현재가가 0이거나 비어있는 경우 전일 종가(base) 확인
-                    try:
-                        base_price = float(price_result.get("output", {}).get("base") or 0)
-                        if base_price > 0:
-                            current_price = base_price
-                            logger.warning(f"{ticker} - 현재가 조회 불가(0.0), 전일 종가({base_price})로 대체합니다.")
-                        else:
-                            # 전일 종가도 없는 경우 추천 데이터의 last_price 또는 predicted_price 사용
-                            logger.warning(f"{ticker} - API 가격 정보 없음. 추천 데이터의 대체 가격 확인 중...")
-                            
-                            cached_last_price = float(candidate.get("last_price") or 0)
-                            predicted_price = float(candidate.get("predicted_price") or 0)
-                            
-                            if cached_last_price > 0:
-                                current_price = cached_last_price
-                                logger.warning(f"{ticker} - 추천 당시 가격({current_price})을 사용하여 주문 진행")
-                            elif predicted_price > 0:
-                                current_price = predicted_price
-                                logger.warning(f"{ticker} - AI 예측 가격({current_price})을 사용하여 주문 진행")
-                            else:
-                                logger.error(f"{ticker} - 유효하지 않은 가격: {current_price}, 대체 가격도 없음 (API 응답: {price_result})")
-                                continue
-                    except ValueError:
-                         logger.error(f"{ticker} - 유효하지 않은 가격: {current_price} (API 응답: {price_result})")
-                         continue
+                    logger.error(f"{stock_name}({ticker}) - 현재가가 유효하지 않습니다: {current_price}")
+                    continue
                 
                 # 매수 수량 계산
                 quantity_result = self.calculate_buy_quantity(
                     ticker, exchange_code, current_price, max_amount
                 )
                 
-                if not quantity_result.get("success") or quantity_result.get("quantity", 0) <= 0:
-                    logger.warning(f"{ticker} - 매수 가능 수량 없음")
+                if not quantity_result.get("success"):
+                    error_msg = quantity_result.get("error", "알 수 없는 오류")
+                    logger.warning(f"{ticker} - 매수 수량 계산 실패: {error_msg}")
+                    continue
+                
+                quantity = quantity_result.get("quantity", 0)
+                if quantity <= 0:
+                    max_available = quantity_result.get("max_available", 0)
+                    estimated_amount = quantity_result.get("estimated_amount", 0)
+                    logger.warning(
+                        f"{ticker} - 매수 가능 수량 없음 "
+                        f"(현재가: ${current_price:.2f}, 최대가능금액: ${max_available:.2f}, "
+                        f"설정최대금액: ${max_amount:.2f}, 계산수량: {quantity})"
+                    )
                     continue
                 
                 quantity = quantity_result["quantity"]

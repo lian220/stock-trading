@@ -1605,9 +1605,32 @@ class StockRecommendationService:
                         sell_type = "stop_loss"
                         sell_reasons.append(f"손절 조건 충족: 구매가 대비 {price_change_percent:.2f}% 하락")
                 
-                # Priority 2: 익절 조건 (손절 조건이 없을 때만 체크)
+                # Priority 2: 트레일링 스톱 체크 (손절 조건이 없을 때만 체크)
+                if priority == 3:
+                    try:
+                        from app.services.trailing_stop_service import TrailingStopService
+                        trailing_stop_service = TrailingStopService()
+                        
+                        # 트레일링 스톱 조건 충족 여부 확인
+                        if trailing_stop_service.check_trailing_stop_triggered(ticker, current_price):
+                            priority = 2
+                            sell_type = "trailing_stop"
+                            trailing_info = trailing_stop_service.get_trailing_stop_info(ticker)
+                            if trailing_info:
+                                highest_price = trailing_info.get("highest_price", 0)
+                                dynamic_stop_price = trailing_info.get("dynamic_stop_price", 0)
+                                sell_reasons.append(
+                                    f"트레일링 스톱 도달: 최고가 ${highest_price:.2f} 기준, "
+                                    f"동적 익절가 ${dynamic_stop_price:.2f} 하회 (현재가: ${current_price:.2f})"
+                                )
+                            else:
+                                sell_reasons.append(f"트레일링 스톱 도달: 현재가 ${current_price:.2f}")
+                    except Exception as e:
+                        logger.warning(f"get_stocks_to_sell: {stock_name}({ticker}) 트레일링 스톱 체크 중 오류 (계속 진행): {str(e)}")
+                
+                # Priority 3: 고정 익절 조건 (손절/트레일링 스톱 조건이 없을 때만 체크)
                 if priority == 3 and price_change_percent >= target_profit_percent:
-                    priority = 2
+                    priority = 3  # Priority 3으로 유지 (트레일링 스톱이 Priority 2)
                     sell_type = "take_profit"
                     sell_reasons.append(f"익절 조건 충족({'레버리지' if is_leveraged else '일반'}): 구매가 대비 {price_change_percent:.2f}% 상승 (목표: {target_profit_percent}%)")
                 
@@ -1638,8 +1661,8 @@ class StockRecommendationService:
                 if ticker in sentiment_data:
                     sentiment_score = sentiment_data[ticker].get("average_sentiment_score")
                 
-                # Priority 3: 기술적 매도 조건 (익절/손절 조건이 없을 때만 적용)
-                if priority == 3:  # 익절/손절 조건이 없을 때만 기술적 매도 체크
+                # Priority 4: 기술적 매도 조건 (손절/트레일링 스톱/익절 조건이 없을 때만 적용)
+                if priority == 3:  # 손절/트레일링 스톱/익절 조건이 없을 때만 기술적 매도 체크
                     # 조건 3: 기술적 지표 중 3개 이상 매도 신호 (강력한 매도 신호)
                     if technical_sell_signals >= 3:
                         sell_type = "technical_strong"
@@ -1672,7 +1695,7 @@ class StockRecommendationService:
                         "technical_data": tech_record
                     })
             
-            # 우선순위별 정렬: Priority 1 (손절) → Priority 2 (익절) → Priority 3 (기술적 매도)
+            # 우선순위별 정렬: Priority 1 (손절) → Priority 2 (트레일링 스톱) → Priority 3 (익절) → Priority 4 (기술적 매도)
             # 같은 우선순위 내에서는 가격 변동률이 큰 순서로 정렬 (절대값 기준)
             sell_candidates.sort(key=lambda x: (x["priority"], -abs(x["price_change_percent"])))
             

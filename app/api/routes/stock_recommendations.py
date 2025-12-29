@@ -171,8 +171,8 @@ async def generate_complete_analysis():
         return {
             "message": "통합 분석이 완료되었습니다",
             "date_range": {
-                "start_date": start_date,
-                "end_date": end_date
+                "start_date": today,  # 감정 분석은 오늘 날짜 기준
+                "end_date": today     # 감정 분석은 오늘 날짜 기준
             },
             "technical_analysis": {
                 "message": tech_results["message"],

@@ -884,6 +884,33 @@ class StockScheduler:
         """자동 매도 실행 로직"""
         function_name = "_execute_auto_sell"
         
+        # 트레일링 스톱 활성화된 종목의 최고가 갱신 (매도 조건 체크 전에 실행)
+        try:
+            from app.services.trailing_stop_service import TrailingStopService
+            trailing_stop_service = TrailingStopService()
+            
+            # 설정 확인
+            config = self.auto_trading_service.get_auto_trading_config()
+            if config.get("trailing_stop_enabled", False):
+                # 보유 종목 조회
+                balance_result = get_overseas_balance()
+                if balance_result.get("rt_cd") == "0":
+                    holdings = balance_result.get("output1", [])
+                    active_trailing_stops = trailing_stop_service.get_active_trailing_stops()
+                    
+                    # 활성화된 트레일링 스톱 종목만 최고가 갱신
+                    for item in holdings:
+                        ticker = item.get("ovrs_pdno")
+                        if ticker in active_trailing_stops:
+                            try:
+                                current_price = float(item.get("now_pric2", 0))
+                                if current_price > 0:
+                                    trailing_stop_service.update_highest_price(ticker, current_price)
+                            except (ValueError, TypeError) as e:
+                                logger.debug(f"[{function_name}] {ticker} 최고가 갱신 중 오류 (무시): {str(e)}")
+        except Exception as e:
+            logger.warning(f"[{function_name}] 트레일링 스톱 최고가 갱신 중 오류 (계속 진행): {str(e)}")
+        
         # 매도 대상 종목 조회
         sell_candidates_result = self.recommendation_service.get_stocks_to_sell()
         
@@ -898,26 +925,28 @@ class StockScheduler:
         # 우선순위별 통계 추적
         priority_stats = {
             SellPriority.STOP_LOSS: {"count": 0, "success": 0, "failed": 0, "name": "손절 (Priority 1)"},
-            SellPriority.TAKE_PROFIT: {"count": 0, "success": 0, "failed": 0, "name": "익절 (Priority 2)"},
-            SellPriority.TECHNICAL: {"count": 0, "success": 0, "failed": 0, "name": "기술적 매도 (Priority 3)"}
+            SellPriority.TRAILING_STOP: {"count": 0, "success": 0, "failed": 0, "name": "트레일링 스톱 (Priority 2)"},
+            SellPriority.TAKE_PROFIT: {"count": 0, "success": 0, "failed": 0, "name": "익절 (Priority 3)"},
+            SellPriority.TECHNICAL: {"count": 0, "success": 0, "failed": 0, "name": "기술적 매도 (Priority 4)"}
         }
         
         # 우선순위별로 그룹화하여 로깅
         priority_groups = {
             SellPriority.STOP_LOSS: [],
+            SellPriority.TRAILING_STOP: [],
             SellPriority.TAKE_PROFIT: [],
             SellPriority.TECHNICAL: []
         }
         for candidate in sell_candidates:
-            priority = candidate.get("priority", SellPriority.TECHNICAL)  # 기본값 3
+            priority = candidate.get("priority", SellPriority.TECHNICAL)  # 기본값 4
             if priority in priority_groups:
                 priority_groups[priority].append(candidate)
         
         logger.info(f"[{function_name}] 매도 대상 종목 {len(sell_candidates)}개 발견")
-        logger.info(f"[{function_name}] 우선순위별 분류: Priority 1 (손절) {len(priority_groups[1])}개, Priority 2 (익절) {len(priority_groups[2])}개, Priority 3 (기술적 매도) {len(priority_groups[3])}개")
+        logger.info(f"[{function_name}] 우선순위별 분류: Priority 1 (손절) {len(priority_groups[1])}개, Priority 2 (트레일링 스톱) {len(priority_groups[2])}개, Priority 3 (익절) {len(priority_groups[3])}개, Priority 4 (기술적 매도) {len(priority_groups[4])}개")
         
-        # 우선순위 순서대로 처리 (Priority 1 → 2 → 3)
-        for priority in [SellPriority.STOP_LOSS, SellPriority.TAKE_PROFIT, SellPriority.TECHNICAL]:
+        # 우선순위 순서대로 처리 (Priority 1 → 2 → 3 → 4)
+        for priority in [SellPriority.STOP_LOSS, SellPriority.TRAILING_STOP, SellPriority.TAKE_PROFIT, SellPriority.TECHNICAL]:
             if not priority_groups[priority]:
                 continue
             
@@ -1211,6 +1240,28 @@ class StockScheduler:
                         
                         if not save_success:
                             logger.warning(f"[{function_name}] ⚠️ {stock_name}({ticker}) 매도 주문은 성공했으나 기록 저장에 실패했습니다. 수동으로 확인이 필요합니다.")
+                        
+                        # 트레일링 스톱 비활성화 (매도 성공 시)
+                        try:
+                            from app.services.trailing_stop_service import TrailingStopService
+                            trailing_stop_service = TrailingStopService()
+                            trailing_stop_service.deactivate_trailing_stop(ticker)
+                            
+                            # 트레일링 스톱 매도인 경우 상세 정보 로깅
+                            sell_type = candidate.get("sell_type", "")
+                            if sell_type == "trailing_stop":
+                                trailing_info = trailing_stop_service.get_trailing_stop_info(ticker)
+                                if trailing_info:
+                                    logger.info(f"[{function_name}] 📊 {stock_name}({ticker}) 트레일링 스톱 매도 상세:")
+                                    logger.info(f"    최고가: ${trailing_info.get('highest_price', 0):.2f}")
+                                    logger.info(f"    동적 익절가: ${trailing_info.get('dynamic_stop_price', 0):.2f}")
+                                    logger.info(f"    매도가: ${order_price:.2f}")
+                                    purchase_price = trailing_info.get('purchase_price', 0)
+                                    if purchase_price > 0:
+                                        profit_percent = ((order_price - purchase_price) / purchase_price) * 100
+                                        logger.info(f"    수익률: {profit_percent:.2f}%")
+                        except Exception as e:
+                            logger.warning(f"[{function_name}] 트레일링 스톱 비활성화 중 오류 (무시): {str(e)}")
                         
                         # Slack 알림 전송 (성공 시에만)
                         slack_notifier.send_sell_notification(
@@ -1918,6 +1969,14 @@ class StockScheduler:
                                     if update_result.modified_count > 0:
                                         logger.info(f"[{function_name}] ✅ {stock_name}({ticker}) 체결 상태 업데이트 완료 (잔고 조회)")
                                         
+                                        # 트레일링 스톱 초기화 (체결 완료 시)
+                                        self._initialize_trailing_stop_after_buy(
+                                            ticker=order_ticker,  # 실제 주문 티커 사용
+                                            stock_name=stock_name,
+                                            purchase_price=log_record.get("price", 0),
+                                            function_name=function_name
+                                        )
+                                        
                                         # Slack 알림 전송 (체결 완료)
                                         slack_notifier.send_buy_notification(
                                             stock_name=stock_name,
@@ -1956,6 +2015,14 @@ class StockScheduler:
                                     
                                     if update_result.modified_count > 0:
                                         logger.info(f"[{function_name}] ✅ {stock_name}({ticker}) 체결 상태 업데이트 완료 (잔고 조회, 추가 매수로 간주)")
+                                        
+                                        # 트레일링 스톱 초기화 (체결 완료 시)
+                                        self._initialize_trailing_stop_after_buy(
+                                            ticker=order_ticker,  # 실제 주문 티커 사용
+                                            stock_name=stock_name,
+                                            purchase_price=log_record.get("price", 0),
+                                            function_name=function_name
+                                        )
                                         
                                         # Slack 알림 전송 (체결 완료)
                                         slack_notifier.send_buy_notification(
@@ -2014,6 +2081,14 @@ class StockScheduler:
                 
                 if update_result.modified_count > 0:
                     logger.info(f"[{function_name}] ✅ {stock_name}({ticker}) 체결 상태 업데이트 완료")
+                    
+                    # 트레일링 스톱 초기화 (체결 완료 시)
+                    self._initialize_trailing_stop_after_buy(
+                        ticker=order_ticker,  # 실제 주문 티커 사용
+                        stock_name=stock_name,
+                        purchase_price=executed_price,
+                        function_name=function_name
+                    )
                     
                     # Slack 알림 전송 (체결 완료)
                     slack_notifier.send_buy_notification(
@@ -2519,6 +2594,66 @@ class StockScheduler:
                 send_scheduler_slack_notification(f"❌ *계좌 수익율 리포트 오류*\n오류 발생: {str(e)}")
             return False
         
+    def _initialize_trailing_stop_after_buy(
+        self,
+        ticker: str,
+        stock_name: str,
+        purchase_price: float,
+        function_name: str = "_execute_auto_buy"
+    ):
+        """
+        매수 체결 완료 후 트레일링 스톱 초기화
+        
+        Args:
+            ticker: 실제 주문 티커 (레버리지 티커 또는 원본 티커)
+            stock_name: 종목명
+            purchase_price: 구매가
+            function_name: 함수명 (로깅용)
+        """
+        try:
+            from app.services.trailing_stop_service import TrailingStopService
+            trailing_stop_service = TrailingStopService()
+            
+            # 설정 확인
+            config = self.auto_trading_service.get_auto_trading_config()
+            if not config.get("trailing_stop_enabled", False):
+                logger.debug(f"[{function_name}] 트레일링 스톱이 비활성화되어 있어 초기화하지 않습니다.")
+                return
+            
+            # 레버리지 여부 확인
+            is_leveraged = False
+            db = get_db()
+            if db is not None:
+                try:
+                    # MongoDB에서 레버리지 티커인지 확인
+                    base_stock = db.stocks.find_one({"leverage_ticker": ticker})
+                    if base_stock:
+                        is_leveraged = True
+                        logger.debug(f"[{function_name}] {stock_name}({ticker})는 레버리지 티커로 확인됨")
+                    else:
+                        # 종목명 키워드로 확인
+                        leverage_keywords = ["2X", "3X", "Leverage", "Ultra", "레버리지", "2배", "3배"]
+                        for keyword in leverage_keywords:
+                            if keyword.lower() in stock_name.lower():
+                                is_leveraged = True
+                                logger.debug(f"[{function_name}] {stock_name}({ticker})는 종목명 키워드로 레버리지로 확인됨")
+                                break
+                except Exception as e:
+                    logger.warning(f"[{function_name}] 레버리지 여부 확인 중 오류 (계속 진행): {str(e)}")
+            
+            # 트레일링 스톱 초기화
+            trailing_stop_service.initialize_trailing_stop(
+                ticker=ticker,
+                purchase_price=purchase_price,
+                purchase_date=datetime.now(),
+                is_leveraged=is_leveraged,
+                stock_name=stock_name
+            )
+            logger.info(f"[{function_name}] ✅ {stock_name}({ticker}) 트레일링 스톱 초기화 완료 (구매가: ${purchase_price:.2f}, 레버리지: {is_leveraged})")
+            
+        except Exception as e:
+            logger.error(f"[{function_name}] ❌ {stock_name}({ticker}) 트레일링 스톱 초기화 중 오류: {str(e)}", exc_info=True)
+    
     def _save_trading_log(
         self,
         order_type: str,

@@ -82,6 +82,9 @@ class UserStockEmbedded(BaseModel):
     
     stocks 컬렉션에 있는 정보(ticker, stock_name, is_etf, leverage_ticker 등)는 
     stocks 컬렉션을 참조하여 조회합니다.
+    
+    Note: 실제 seed 스크립트에서는 stock_name, leverage_ticker 등도 embedded되지만,
+    모델에서는 사용자별 고유 정보만 정의합니다.
     """
     ticker: str  # stocks 컬렉션 참조용
     use_leverage: bool = False  # 사용자별 레버리지 사용 여부
@@ -89,6 +92,8 @@ class UserStockEmbedded(BaseModel):
     tags: Optional[List[str]] = Field(default_factory=list)  # 사용자 정의 태그
     is_active: bool = True  # 사용자별 활성화 여부 (stocks.is_active와 독립적)
     added_at: Optional[datetime] = Field(default_factory=datetime.utcnow)  # 관심 종목 추가 일시
+    # 실제 데이터에는 stock_name, leverage_ticker 등도 포함되지만, 
+    # 이는 stocks 컬렉션 참조용이므로 모델에서는 생략
 
 
 class User(BaseModel):
@@ -289,7 +294,11 @@ class TradingConfig(BaseModel):
     min_sentiment_score: float = 0.15
     order_type: str = "00"
     allow_buy_existing_stocks: bool = True  # 보유 중인 종목도 매수 허용 여부
-    watchlist_stocks: Optional[List[str]] = Field(default_factory=list)
+    trailing_stop_enabled: bool = False
+    trailing_stop_distance_percent: float = 5.0
+    trailing_stop_min_profit_percent: float = 3.0
+    leveraged_trailing_stop_distance_percent: float = 10.0
+    leveraged_trailing_stop_min_profit_percent: float = 5.0
     created_at: Optional[datetime] = Field(default_factory=datetime.utcnow)
     updated_at: Optional[datetime] = Field(default_factory=datetime.utcnow)
 
@@ -297,6 +306,34 @@ class TradingConfig(BaseModel):
         populate_by_name = True
         arbitrary_types_allowed = True
         json_encoders = {ObjectId: str}
+
+
+# ============= Trailing Stop =============
+
+class TrailingStop(BaseModel):
+    """트레일링 스톱 정보"""
+    id: Optional[PyObjectId] = Field(default_factory=PyObjectId, alias="_id")
+    user_id: str = "lian"  # 기본값
+    ticker: str
+    stock_name: Optional[str] = None
+    purchase_price: float
+    purchase_date: datetime
+    highest_price: float  # 초기값은 purchase_price
+    highest_price_date: datetime  # 초기값은 purchase_date
+    trailing_distance_percent: float = 5.0  # 기본값 5%
+    dynamic_stop_price: float  # highest_price * (1 - trailing_distance_percent / 100)
+    is_leveraged: bool = False
+    is_active: bool = True
+    last_updated: Optional[datetime] = Field(default_factory=datetime.utcnow)
+    created_at: Optional[datetime] = Field(default_factory=datetime.utcnow)
+
+    @field_serializer('id', when_used='json')
+    def serialize_id(self, value: Optional[PyObjectId]) -> Optional[str]:
+        return str(value) if value else None
+
+    class Config:
+        populate_by_name = True
+        arbitrary_types_allowed = True
 
 
 # ============= Trading Log =============

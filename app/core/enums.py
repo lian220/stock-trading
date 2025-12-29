@@ -26,8 +26,9 @@ class OrderType(str, Enum):
 class SellPriority(IntEnum):
     """매도 우선순위"""
     STOP_LOSS = 1  # 손절
-    TAKE_PROFIT = 2  # 익절
-    TECHNICAL = 3  # 기술적 매도
+    TRAILING_STOP = 2  # 트레일링 스톱
+    TAKE_PROFIT = 3  # 익절
+    TECHNICAL = 4  # 기술적 매도
 
 
 class ExchangeCode(str, Enum):
