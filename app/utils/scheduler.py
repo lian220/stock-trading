@@ -15,7 +15,7 @@ from app.core.enums import (
     get_exchange_code_for_api
 )
 from app.services.stock_recommendation_service import StockRecommendationService
-from app.services.balance_service import get_current_price, order_overseas_stock, order_overseas_stock_daytime, get_all_overseas_balances, get_overseas_balance, get_overseas_order_possible_amount, check_order_execution, calculate_portfolio_profit
+from app.services.balance_service import get_current_price, order_overseas_stock, order_overseas_stock_daytime, get_all_overseas_balances, get_overseas_balance, get_overseas_order_possible_amount, check_order_execution, calculate_portfolio_profit, update_ticker_realized_profit, calculate_total_return, calculate_cumulative_profit
 from app.services.auto_trading_service import AutoTradingService
 from app.core.config import settings
 import logging
@@ -1891,15 +1891,17 @@ class StockScheduler:
                 logger.error(f"[{function_name}] ❌ MongoDB 연결 실패 - 체결 상태 업데이트 불가")
                 return
             
-            # 주문번호로 기록 찾기 (최근 것부터)
+            # 주문번호로 기록 찾기 (최근 것부터) - 매수/매도 모두 처리
             log_record = db.trading_logs.find_one(
                 {
                     "order_no": order_no,
-                    "ticker": ticker,
-                    "order_type": "buy"
+                    "ticker": ticker
                 },
                 sort=[("created_at", -1)]
             )
+            
+            # order_type 확인
+            order_type = log_record.get("order_type", "buy") if log_record else "buy"
             
             if not log_record:
                 logger.warning(f"[{function_name}] ⚠️ 주문번호 {order_no}에 해당하는 기록을 찾을 수 없습니다.")
@@ -2061,7 +2063,10 @@ class StockScheduler:
                 executed_price = execution_result.get("executed_price", log_record.get("price", 0))
                 execution_order_detail = execution_result.get("order", {})  # 주문체결내역 상세 정보
                 
-                logger.info(f"[{function_name}] ✅ {stock_name}({ticker}) 매수 체결 완료!")
+                if order_type == "sell":
+                    logger.info(f"[{function_name}] ✅ {stock_name}({ticker}) 매도 체결 완료!")
+                else:
+                    logger.info(f"[{function_name}] ✅ {stock_name}({ticker}) 매수 체결 완료!")
                 logger.info(f"[{function_name}]    체결 수량: {executed_qty}주, 체결 가격: ${executed_price:.2f}")
                 
                 # 상태 업데이트 (executed) - 주문체결내역 상세 정보도 함께 저장
@@ -2082,23 +2087,46 @@ class StockScheduler:
                 if update_result.modified_count > 0:
                     logger.info(f"[{function_name}] ✅ {stock_name}({ticker}) 체결 상태 업데이트 완료")
                     
-                    # 트레일링 스톱 초기화 (체결 완료 시)
-                    self._initialize_trailing_stop_after_buy(
-                        ticker=order_ticker,  # 실제 주문 티커 사용
-                        stock_name=stock_name,
-                        purchase_price=executed_price,
-                        function_name=function_name
-                    )
+                    # 매도 체결 시 종목별 실현 수익률 업데이트
+                    if order_type == "sell":
+                        try:
+                            user_id = log_record.get("user_id", "lian")
+                            update_result_profit = update_ticker_realized_profit(user_id=user_id, ticker=ticker)
+                            if update_result_profit.get("success"):
+                                profit_percent = update_result_profit.get("realized_profit_percent", 0.0)
+                                logger.info(f"[{function_name}] ✅ {stock_name}({ticker}) 종목별 실현 수익률 업데이트 완료: {profit_percent:.2f}%")
+                            else:
+                                logger.warning(f"[{function_name}] ⚠️ {stock_name}({ticker}) 종목별 실현 수익률 업데이트 실패: {update_result_profit.get('error', '알 수 없는 오류')}")
+                        except Exception as e:
+                            logger.error(f"[{function_name}] ❌ 종목별 실현 수익률 업데이트 중 오류: {str(e)}")
+                    else:
+                        # 매수 체결 시 트레일링 스톱 초기화
+                        self._initialize_trailing_stop_after_buy(
+                            ticker=order_ticker,  # 실제 주문 티커 사용
+                            stock_name=stock_name,
+                            purchase_price=executed_price,
+                            function_name=function_name
+                        )
                     
                     # Slack 알림 전송 (체결 완료)
-                    slack_notifier.send_buy_notification(
-                        stock_name=stock_name,
-                        ticker=ticker,
-                        quantity=executed_qty,
-                        price=executed_price,
-                        exchange_code=exchange_code,
-                        success=True
-                    )
+                    if order_type == "sell":
+                        slack_notifier.send_sell_notification(
+                            stock_name=stock_name,
+                            ticker=ticker,
+                            quantity=executed_qty,
+                            price=executed_price,
+                            exchange_code=exchange_code,
+                            success=True
+                        )
+                    else:
+                        slack_notifier.send_buy_notification(
+                            stock_name=stock_name,
+                            ticker=ticker,
+                            quantity=executed_qty,
+                            price=executed_price,
+                            exchange_code=exchange_code,
+                            success=True
+                        )
                     logger.info(f"[{function_name}] 📨 {stock_name}({ticker}) 체결 완료 Slack 알림 전송 완료")
                 else:
                     logger.error(f"[{function_name}] ❌ {stock_name}({ticker}) 체결 상태 업데이트 실패")
@@ -2574,6 +2602,86 @@ class StockScheduler:
             logger.info(f"  - 총 평가금액: ${total_value:,.2f}")
             logger.info(f"  - 총 수익: ${total_profit:+,.2f} ({total_profit_percent:+.2f}%)")
             
+            # 추가 수익률 및 계좌 정보 조회
+            user_id = "lian"  # 기본 사용자 ID
+            account_info = {}
+            total_return_info = {}
+            realized_return_info = {}
+            ticker_realized_profit = {}
+            
+            try:
+                # 전체 포트폴리오 수익률 (총 자산 기준)
+                total_return_result = calculate_total_return(user_id=user_id)
+                if total_return_result.get("success"):
+                    total_return_info = {
+                        "total_deposit_usd": total_return_result.get("total_deposit_usd", 0.0),
+                        "total_assets_usd": total_return_result.get("total_assets_usd", 0.0),
+                        "total_return_usd": total_return_result.get("total_return_usd", 0.0),
+                        "total_return_percent": total_return_result.get("total_return_percent", 0.0)
+                    }
+                    logger.info(f"[{function_name}] ✅ 전체 포트폴리오 수익률 조회 완료: {total_return_info['total_return_percent']:.2f}%")
+                
+                # 실현 수익률 (완료된 거래)
+                end_date = datetime.now()
+                start_date = datetime(2025, 11, 1)
+                days_diff = (end_date - start_date).days
+                cumulative_result = calculate_cumulative_profit(user_id=user_id, days=days_diff)
+                if cumulative_result.get("success"):
+                    stats = cumulative_result.get("statistics", {})
+                    realized_return_info = {
+                        "total_profit": stats.get("total_profit", 0.0),
+                        "total_cost": stats.get("total_cost", 0.0),
+                        "total_profit_percent": stats.get("total_profit_percent", 0.0),
+                        "win_rate": stats.get("win_rate", 0.0),
+                        "total_trades": stats.get("total_trades", 0),
+                        "winning_trades": stats.get("winning_trades", 0),
+                        "losing_trades": stats.get("losing_trades", 0)
+                    }
+                    
+                    # 종목별 실현 수익률 (수익률 + 금액)
+                    by_ticker = cumulative_result.get("by_ticker", {})
+                    if isinstance(by_ticker, dict):
+                        for ticker, ticker_stats in by_ticker.items():
+                            if isinstance(ticker_stats, dict):
+                                profit_percent = round(ticker_stats.get("total_profit_percent", 0.0), 2)
+                                profit_usd = round(ticker_stats.get("total_profit", 0.0), 2)
+                                ticker_realized_profit[ticker] = {
+                                    "profit_percent": profit_percent,
+                                    "profit_usd": profit_usd
+                                }
+                    elif isinstance(by_ticker, list):
+                        for ticker_stats in by_ticker:
+                            if isinstance(ticker_stats, dict):
+                                ticker = ticker_stats.get("ticker", "N/A")
+                                profit_percent = round(ticker_stats.get("total_profit_percent", 0.0), 2)
+                                profit_usd = round(ticker_stats.get("total_profit", 0.0), 2)
+                                ticker_realized_profit[ticker] = {
+                                    "profit_percent": profit_percent,
+                                    "profit_usd": profit_usd
+                                }
+                    
+                    logger.info(f"[{function_name}] ✅ 실현 수익률 조회 완료: {realized_return_info['total_profit_percent']:.2f}%")
+                
+                # 계좌 정보 조회 (MongoDB에서)
+                db = get_db()
+                if db is not None:
+                    user = db.users.find_one({"user_id": user_id})
+                    if user and "account_balance" in user:
+                        balance = user["account_balance"]
+                        account_info = {
+                            "available_usd": balance.get("available_usd", 0.0),
+                            "total_assets_usd": balance.get("total_assets_usd", 0.0),
+                            "total_deposit_usd": balance.get("total_deposit_usd", 0.0),
+                            "total_cost_usd": balance.get("total_cost_usd", 0.0),
+                            "total_value_usd": balance.get("total_value_usd", 0.0),
+                            "total_profit_usd": balance.get("total_profit_usd", 0.0),
+                            "total_profit_percent": balance.get("total_profit_percent", 0.0),
+                            "holdings_count": balance.get("holdings_count", 0)
+                        }
+                        logger.info(f"[{function_name}] ✅ 계좌 정보 조회 완료")
+            except Exception as e:
+                logger.warning(f"[{function_name}] ⚠️ 추가 정보 조회 중 오류 (계속 진행): {str(e)}")
+            
             # Slack 알림 전송
             if send_slack_notification:
                 slack_notifier.send_portfolio_profit_notification(
@@ -2581,7 +2689,11 @@ class StockScheduler:
                     total_cost=total_cost,
                     total_value=total_value,
                     total_profit=total_profit,
-                    total_profit_percent=total_profit_percent
+                    total_profit_percent=total_profit_percent,
+                    account_info=account_info,
+                    total_return_info=total_return_info,
+                    realized_return_info=realized_return_info,
+                    ticker_realized_profit=ticker_realized_profit
                 )
                 logger.info(f"[{function_name}] 📨 계좌 수익율 리포트 Slack 알림 전송 완료")
             

@@ -1004,7 +1004,11 @@ class SlackNotifier:
         total_cost: float,
         total_value: float,
         total_profit: float,
-        total_profit_percent: float
+        total_profit_percent: float,
+        account_info: dict = None,
+        total_return_info: dict = None,
+        realized_return_info: dict = None,
+        ticker_realized_profit: dict = None
     ) -> bool:
         """
         계좌 수익율 알림을 전송합니다.
@@ -1067,6 +1071,41 @@ class SlackNotifier:
                 "type": "divider"
             }
         ]
+        
+        # 계좌 정보 추가
+        if account_info:
+            account_text = "*💰 계좌 정보*\n\n"
+            account_text += f"• 총 입금금액: ${account_info.get('total_deposit_usd', 0):,.2f}\n"
+            account_text += f"• 총 자산: ${account_info.get('total_assets_usd', 0):,.2f}\n"
+            account_text += f"• 보유 현금: ${account_info.get('available_usd', 0):,.2f}\n"
+            account_text += f"• 보유 종목 수: {account_info.get('holdings_count', 0)}개\n"
+            account_text += f"• 미실현 손익: ${account_info.get('total_profit_usd', 0):+,.2f} ({account_info.get('total_profit_percent', 0):+.2f}%)"
+            
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": account_text
+                }
+            })
+            blocks.append({"type": "divider"})
+        
+        # 전체 포트폴리오 수익률 추가
+        if total_return_info:
+            total_return_text = "*📊 전체 포트폴리오 수익률 (총 자산 기준)*\n\n"
+            total_return_text += f"• 총 입금금액: ${total_return_info.get('total_deposit_usd', 0):,.2f}\n"
+            total_return_text += f"• 총 자산: ${total_return_info.get('total_assets_usd', 0):,.2f}\n"
+            total_return_text += f"• 총 수익: ${total_return_info.get('total_return_usd', 0):+,.2f}\n"
+            total_return_text += f"• 전체 수익률: {total_return_info.get('total_return_percent', 0):+.2f}%"
+            
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": total_return_text
+                }
+            })
+            blocks.append({"type": "divider"})
         
         # 보유 종목별 수익율 정보
         if holdings and len(holdings) > 0:
