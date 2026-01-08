@@ -370,6 +370,10 @@ def get_overseas_present_balance():
             "CANO": settings.KIS_CANO,
             "ACNT_PRDT_CD": settings.KIS_ACNT_PRDT_CD,
             "TR_CRCY_CD": "USD",  # 통화코드 USD
+            "WCRC_FRCR_DVSN_CD": "02",  # 원화외화구분코드 (01: 원화, 02: 외화)
+            "NATN_CD": "000",  # 국가코드 (000: 전체)
+            "TR_MKET_CD": "00",  # 거래시장코드 (00: 전체)
+            "INQR_DVSN_CD": "00",  # 조회구분코드 (00: 전체)
             "CTX_AREA_FK200": "",
             "CTX_AREA_NK200": ""
         }
@@ -1543,6 +1547,74 @@ def calculate_portfolio_profit():
         }
 
 
+def calculate_total_return(user_id: str = "lian"):
+    """
+    전체 수익률 계산 (총 자산 기준)
+    
+    Args:
+        user_id: 사용자 ID (기본값: "lian")
+    
+    Returns:
+        dict: {
+            "success": bool,
+            "total_deposit_usd": float,  # 총 입금금액
+            "total_assets_usd": float,  # 총 자산
+            "total_return_usd": float,  # 총 수익 (총 자산 - 총 입금금액)
+            "total_return_percent": float,  # 전체 수익률 (%)
+            "error": str (optional)
+        }
+    """
+    try:
+        db = get_db()
+        if db is None:
+            return {
+                "success": False,
+                "total_deposit_usd": 0.0,
+                "total_assets_usd": 0.0,
+                "total_return_usd": 0.0,
+                "total_return_percent": 0.0,
+                "error": "MongoDB 연결 실패"
+            }
+        
+        # users 컬렉션에서 총 입금금액 조회
+        user = db.users.find_one({"user_id": user_id})
+        if not user or "account_balance" not in user:
+            return {
+                "success": False,
+                "total_deposit_usd": 0.0,
+                "total_assets_usd": 0.0,
+                "total_return_usd": 0.0,
+                "total_return_percent": 0.0,
+                "error": f"사용자 '{user_id}'의 계좌 정보를 찾을 수 없습니다"
+            }
+        
+        account_balance = user["account_balance"]
+        total_deposit_usd = account_balance.get("total_deposit_usd", 0.0) or 0.0
+        total_assets_usd = account_balance.get("total_assets_usd", 0.0) or 0.0
+        
+        # 수익률 계산
+        total_return_usd = total_assets_usd - total_deposit_usd
+        total_return_percent = (total_return_usd / total_deposit_usd * 100) if total_deposit_usd > 0 else 0.0
+        
+        return {
+            "success": True,
+            "total_deposit_usd": round(total_deposit_usd, 2),
+            "total_assets_usd": round(total_assets_usd, 2),
+            "total_return_usd": round(total_return_usd, 2),
+            "total_return_percent": round(total_return_percent, 2)
+        }
+        
+    except Exception as e:
+        logger.error(f"전체 수익률 계산 중 오류: {str(e)}", exc_info=True)
+        return {
+            "success": False,
+            "total_deposit_usd": 0.0,
+            "total_assets_usd": 0.0,
+            "total_return_usd": 0.0,
+            "total_return_percent": 0.0,
+            "error": str(e)
+        }
+
 def calculate_cumulative_profit(user_id: str, days: int = 90, ticker: str = None):
     """
     완료된 거래(매수→매도)의 누적 수익률을 계산합니다.
@@ -1851,6 +1923,118 @@ def calculate_cumulative_profit(user_id: str, days: int = 90, ticker: str = None
             "trades": [],
             "statistics": {},
             "by_ticker": {},
+            "error": str(e)
+        }
+
+def update_ticker_realized_profit(user_id: str, ticker: str):
+    """
+    특정 종목의 실현 수익률을 계산하여 users 컬렉션에 업데이트합니다.
+    매도 체결 시 호출됩니다.
+    
+    Args:
+        user_id: 사용자 ID
+        ticker: 티커 심볼
+    
+    Returns:
+        dict: {
+            "success": bool,
+            "ticker": str,
+            "realized_profit_percent": float,
+            "error": str (optional)
+        }
+    """
+    try:
+        from datetime import datetime, timedelta
+        
+        db = get_db()
+        if db is None:
+            return {
+                "success": False,
+                "ticker": ticker,
+                "realized_profit_percent": 0.0,
+                "error": "MongoDB 연결 실패"
+            }
+        
+        # 2025년 11월 1일부터 오늘까지의 일수 계산
+        end_date = datetime.now()
+        start_date = datetime(2025, 11, 1)
+        days_diff = (end_date - start_date).days
+        
+        # 해당 종목의 실현 수익률 계산
+        cumulative_result = calculate_cumulative_profit(user_id=user_id, days=days_diff, ticker=ticker)
+        
+        if not cumulative_result.get("success"):
+            return {
+                "success": False,
+                "ticker": ticker,
+                "realized_profit_percent": 0.0,
+                "error": cumulative_result.get("error", "알 수 없는 오류")
+            }
+        
+        # 티커별 통계에서 해당 종목의 수익률 및 금액 추출
+        by_ticker = cumulative_result.get("by_ticker", {})
+        realized_profit_percent = 0.0
+        realized_profit_usd = 0.0
+        
+        if isinstance(by_ticker, dict):
+            ticker_stats = by_ticker.get(ticker, {})
+            if isinstance(ticker_stats, dict):
+                realized_profit_percent = round(ticker_stats.get("total_profit_percent", 0.0), 2)
+                realized_profit_usd = round(ticker_stats.get("total_profit", 0.0), 2)
+        elif isinstance(by_ticker, list):
+            for ticker_stats in by_ticker:
+                if isinstance(ticker_stats, dict) and ticker_stats.get("ticker") == ticker:
+                    realized_profit_percent = round(ticker_stats.get("total_profit_percent", 0.0), 2)
+                    realized_profit_usd = round(ticker_stats.get("total_profit", 0.0), 2)
+                    break
+        
+        # users 컬렉션의 account_balance.ticker_realized_profit 업데이트
+        user = db.users.find_one({"user_id": user_id})
+        if not user or "account_balance" not in user:
+            return {
+                "success": False,
+                "ticker": ticker,
+                "realized_profit_percent": realized_profit_percent,
+                "realized_profit_usd": realized_profit_usd,
+                "error": f"사용자 '{user_id}'의 계좌 정보를 찾을 수 없습니다"
+            }
+        
+        account_balance = user.get("account_balance", {})
+        ticker_realized_profit = account_balance.get("ticker_realized_profit", {})
+        
+        if not isinstance(ticker_realized_profit, dict):
+            ticker_realized_profit = {}
+        
+        # 해당 종목의 실현 수익률 및 금액 업데이트
+        ticker_realized_profit[ticker] = {
+            "profit_percent": realized_profit_percent,
+            "profit_usd": realized_profit_usd
+        }
+        
+        # MongoDB 업데이트
+        db.users.update_one(
+            {"user_id": user_id},
+            {"$set": {
+                "account_balance.ticker_realized_profit": ticker_realized_profit,
+                "updated_at": datetime.utcnow()
+            }}
+        )
+        
+        logger.info(f"[{user_id}] {ticker} 종목별 실현 수익률 업데이트: {realized_profit_percent:.2f}% (${realized_profit_usd:+,.2f})")
+        
+        return {
+            "success": True,
+            "ticker": ticker,
+            "realized_profit_percent": realized_profit_percent,
+            "realized_profit_usd": realized_profit_usd
+        }
+        
+    except Exception as e:
+        logger.error(f"종목별 실현 수익률 업데이트 중 오류: {str(e)}", exc_info=True)
+        return {
+            "success": False,
+            "ticker": ticker,
+            "realized_profit_percent": 0.0,
             "error": str(e)
         }
     

@@ -96,6 +96,29 @@ class UserStockEmbedded(BaseModel):
     # 이는 stocks 컬렉션 참조용이므로 모델에서는 생략
 
 
+class AccountBalance(BaseModel):
+    """계좌 잔액 정보 (USD 단위)"""
+    available_usd: float  # 외화사용가능금액 (현재 보유 현금)
+    total_valuation_usd: float  # 외화평가총액
+    total_assets_usd: float  # 총 자산
+    total_cost_usd: float  # 매입금액 합계 (보유 종목 구매 금액)
+    total_value_usd: float  # 평가금액 합계
+    total_profit_usd: float  # 총 평가손익
+    total_profit_percent: float  # 총 평가손익률 (%)
+    total_deposit_usd: float  # 총 입금금액 (실제 외부 입금 금액)
+    previous_total_deposit_usd: Optional[float] = 0.0  # 이전 총 입금금액 (입금 감지용)
+    total_return_percent: Optional[float] = 0.0  # 전체 수익률 ((총 자산 - 총 입금금액) / 총 입금금액 * 100)
+    realized_return_percent: Optional[float] = 0.0  # 실현 수익률 (완료된 거래 기준)
+    ticker_realized_profit: Optional[Dict[str, Dict[str, float]]] = None  # 종목별 실현 수익률 (티커: {"profit_percent": float, "profit_usd": float})
+    deposit_history: Optional[List[Dict[str, Any]]] = None  # 입금 이력 (선택사항)
+    holdings_count: int  # 보유 종목 수
+    exchange_rate: float  # 기준환율 (원/USD)
+    currency: Optional[str] = "USD"  # 통화코드
+    currency_name: Optional[str] = "미국 달러"  # 통화명
+    withdrawable_amount_usd: Optional[float] = None  # 출금가능금액
+    last_updated: datetime  # 마지막 업데이트 시간
+
+
 class User(BaseModel):
     """사용자 정보 (MongoDB embedded 구조)"""
     id: Optional[PyObjectId] = Field(default_factory=PyObjectId, alias="_id")
@@ -104,6 +127,7 @@ class User(BaseModel):
     display_name: Optional[str] = None
     preferences: Optional[UserPreferences] = Field(default_factory=UserPreferences)
     stocks: Optional[List[UserStockEmbedded]] = Field(default_factory=list)  # 👈 embedded stocks
+    account_balance: Optional[AccountBalance] = None  # 계좌 잔액 정보
     created_at: Optional[datetime] = Field(default_factory=datetime.utcnow)
     updated_at: Optional[datetime] = Field(default_factory=datetime.utcnow)
 
@@ -353,7 +377,12 @@ class TradingLog(BaseModel):
     price_change_percent: Optional[float] = None
     sell_reasons: Optional[List[str]] = Field(default_factory=list)
     order_result: Optional[Dict[str, Any]] = None
-    created_at: Optional[datetime] = Field(default_factory=datetime.utcnow)
+    # 주문 정보
+    order_no: Optional[str] = None  # 주문번호 (중복 체크용)
+    order_dt: Optional[str] = None  # 주문일자 (YYYYMMDD)
+    order_tmd: Optional[str] = None  # 주문시각 (HHMMSS)
+    trade_datetime: Optional[datetime] = None  # 실제 거래 일시 (API에서 가져온 시간)
+    created_at: Optional[datetime] = Field(default_factory=datetime.utcnow)  # 레코드 생성 시간
 
     class Config:
         populate_by_name = True
