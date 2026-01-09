@@ -48,8 +48,10 @@ class VersionResponse(BaseModel):
 
 def get_gcs_config():
     """GCS 설정 가져오기"""
-    project = os.getenv("GCP_PROJECT_ID")
-    bucket_name = os.getenv("GCP_BUCKET_NAME", "stock-trading-packages")
+    from app.core.config import settings
+    
+    project = settings.GCP_PROJECT_ID
+    bucket_name = settings.GCP_BUCKET_NAME or "stock-trading-packages"
     
     if bucket_name.startswith("gs://"):
         bucket_name = bucket_name[5:]
@@ -57,7 +59,7 @@ def get_gcs_config():
     if not project:
         raise HTTPException(
             status_code=500,
-            detail="GCP_PROJECT_ID 환경 변수가 설정되지 않았습니다."
+            detail="GCP_PROJECT_ID 환경 변수가 설정되지 않았습니다. .env 파일에서 GCP_PROJECT_ID를 확인하세요."
         )
     
     return {

@@ -887,10 +887,13 @@ class StockScheduler:
         # 트레일링 스톱 활성화된 종목의 최고가 갱신 (매도 조건 체크 전에 실행)
         try:
             from app.services.trailing_stop_service import TrailingStopService
-            trailing_stop_service = TrailingStopService()
+            from app.utils.user_context import get_current_user_id
+            user_id = get_current_user_id()
+            
+            trailing_stop_service = TrailingStopService(user_id=user_id)
             
             # 설정 확인
-            config = self.auto_trading_service.get_auto_trading_config()
+            config = self.auto_trading_service.get_auto_trading_config(user_id=user_id)
             if config.get("trailing_stop_enabled", False):
                 # 보유 종목 조회
                 balance_result = get_overseas_balance()
@@ -1673,7 +1676,9 @@ class StockScheduler:
         logger.info(f"[{function_name}] 매수 대상 종목 {len(buy_candidates)}개를 찾았습니다. (종합 점수 높은 순)")
         
         # 자동매매 설정 조회 (보유 중인 종목 매수 허용 여부 확인)
-        trading_config = self.auto_trading_service.get_auto_trading_config()
+        from app.utils.user_context import get_current_user_id
+        user_id = get_current_user_id()
+        trading_config = self.auto_trading_service.get_auto_trading_config(user_id=user_id)
         allow_buy_existing_stocks = trading_config.get("allow_buy_existing_stocks", True)  # 기본값: True
         max_portfolio_weight = trading_config.get("max_portfolio_weight_per_stock", 20.0)  # 기본값: 20%
         logger.info(f"[{function_name}] 보유 중인 종목 매수 허용: {allow_buy_existing_stocks}")
@@ -2893,11 +2898,14 @@ class StockScheduler:
             function_name: 함수명 (로깅용)
         """
         try:
+            from app.utils.user_context import get_current_user_id
+            user_id = get_current_user_id()
+            
             from app.services.trailing_stop_service import TrailingStopService
-            trailing_stop_service = TrailingStopService()
+            trailing_stop_service = TrailingStopService(user_id=user_id)
             
             # 설정 확인
-            config = self.auto_trading_service.get_auto_trading_config()
+            config = self.auto_trading_service.get_auto_trading_config(user_id=user_id)
             if not config.get("trailing_stop_enabled", False):
                 logger.debug(f"[{function_name}] 트레일링 스톱이 비활성화되어 있어 초기화하지 않습니다.")
                 return

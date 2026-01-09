@@ -4,7 +4,6 @@
 - 사용자별 설정 및 데이터 접근
 """
 
-import os
 import logging
 from typing import Optional
 from app.core.config import settings
@@ -46,21 +45,15 @@ def get_default_user_id() -> str:
     기본 사용자 ID 가져오기
     
     우선순위:
-    1. 환경변수 DEFAULT_USER_ID
-    2. 설정 파일의 기본값
-    3. "lian" (하위 호환성)
+    1. settings.DEFAULT_USER_ID (환경변수에서 자동 로드)
+    2. "lian" (하위 호환성)
     
     Returns:
         기본 사용자 ID
     """
-    # 환경변수에서 가져오기
-    env_user_id = os.getenv("DEFAULT_USER_ID")
-    if env_user_id:
-        return env_user_id
-    
-    # 설정에서 가져오기 (향후 추가 가능)
-    # if hasattr(settings, 'DEFAULT_USER_ID') and settings.DEFAULT_USER_ID:
-    #     return settings.DEFAULT_USER_ID
+    # settings 객체에서 가져오기 (환경변수는 Pydantic이 자동으로 로드)
+    if settings.DEFAULT_USER_ID:
+        return settings.DEFAULT_USER_ID
     
     # 기본값 (하위 호환성)
     return "lian"

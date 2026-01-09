@@ -50,17 +50,29 @@ class AutoTradingService:
             "leveraged_trailing_stop_min_profit_percent": 5.0,  # 레버리지 종목 최소 수익률 (%)
         }
     
-    def get_auto_trading_config(self) -> Dict:
-        """자동매매 설정 조회 (MongoDB trading_configs 컬렉션)"""
+    def get_auto_trading_config(self, user_id: Optional[str] = None) -> Dict:
+        """
+        자동매매 설정 조회 (MongoDB trading_configs 컬렉션)
+        
+        Args:
+            user_id: 사용자 ID. None이면 기본 사용자 ID 사용
+        
+        Returns:
+            자동매매 설정 딕셔너리
+        """
         try:
+            from app.utils.user_context import get_current_user_id
+            if user_id is None:
+                user_id = get_current_user_id()
+            
             db = get_db()
             if db is None:
                 logger.error("MongoDB 연결 실패")
                 return self.default_config
             
-            # 최신 설정 조회 (updated_at 기준으로 정렬하여 가장 최근에 업데이트된 설정 사용)
+            # 사용자별 설정 조회 (updated_at 기준으로 정렬하여 가장 최근에 업데이트된 설정 사용)
             config = db.trading_configs.find_one(
-                {},
+                {"user_id": user_id},
                 sort=[("updated_at", -1), ("created_at", -1)]
             )
             
@@ -70,15 +82,27 @@ class AutoTradingService:
                 return config
             
             # 설정이 없으면 기본값 생성
-            return self._create_default_config()
+            return self._create_default_config(user_id)
         
         except Exception as e:
             logger.error(f"자동매매 설정 조회 중 오류: {str(e)}")
             return self.default_config
     
-    def _create_default_config(self) -> Dict:
-        """기본 설정 생성 (MongoDB trading_configs 컬렉션)"""
+    def _create_default_config(self, user_id: Optional[str] = None) -> Dict:
+        """
+        기본 설정 생성 (MongoDB trading_configs 컬렉션)
+        
+        Args:
+            user_id: 사용자 ID. None이면 기본 사용자 ID 사용
+        
+        Returns:
+            기본 설정 딕셔너리
+        """
         try:
+            from app.utils.user_context import get_current_user_id
+            if user_id is None:
+                user_id = get_current_user_id()
+            
             db = get_db()
             if db is None:
                 logger.error("MongoDB 연결 실패")
@@ -86,37 +110,52 @@ class AutoTradingService:
             
             config = {
                 **self.default_config,
+                "user_id": user_id,  # 사용자 ID 추가
                 "created_at": datetime.now(),
                 "updated_at": datetime.now()
             }
             result = db.trading_configs.insert_one(config)
             config["_id"] = str(result.inserted_id)
+            logger.info(f"사용자별 기본 설정 생성: user_id={user_id}")
             return config
         except Exception as e:
             logger.error(f"기본 설정 생성 중 오류: {str(e)}")
             return self.default_config
     
-    def update_auto_trading_config(self, config: Dict) -> Dict:
-        """자동매매 설정 업데이트 (MongoDB trading_configs 컬렉션)"""
+    def update_auto_trading_config(self, config: Dict, user_id: Optional[str] = None) -> Dict:
+        """
+        자동매매 설정 업데이트 (MongoDB trading_configs 컬렉션)
+        
+        Args:
+            config: 업데이트할 설정 딕셔너리
+            user_id: 사용자 ID. None이면 기본 사용자 ID 사용
+        
+        Returns:
+            업데이트 결과 딕셔너리
+        """
         try:
+            from app.utils.user_context import get_current_user_id
+            if user_id is None:
+                user_id = get_current_user_id()
+            
             db = get_db()
             if db is None:
                 logger.error("MongoDB 연결 실패")
                 return {"success": False, "error": "MongoDB 연결 실패"}
             
-            current_config = self.get_auto_trading_config()
+            current_config = self.get_auto_trading_config(user_id)
             
             # 설정 업데이트
-            updated_config = {**current_config, **config, "updated_at": datetime.now()}
+            updated_config = {**current_config, **config, "updated_at": datetime.now(), "user_id": user_id}
             
             # _id 필드 제거 (업데이트 시 _id는 변경 불가)
             config_id = updated_config.pop("_id", None)
             
             if config_id:
-                # 기존 설정 업데이트
+                # 기존 설정 업데이트 (user_id도 함께 확인하여 안전성 강화)
                 from bson import ObjectId
                 db.trading_configs.update_one(
-                    {"_id": ObjectId(config_id)},
+                    {"_id": ObjectId(config_id), "user_id": user_id},
                     {"$set": updated_config}
                 )
                 updated_config["_id"] = config_id
@@ -126,16 +165,17 @@ class AutoTradingService:
                 result = db.trading_configs.insert_one(updated_config)
                 updated_config["_id"] = str(result.inserted_id)
             
+            logger.info(f"사용자별 설정 업데이트 완료: user_id={user_id}")
             return {"success": True, "config": updated_config}
         
         except Exception as e:
             logger.error(f"자동매매 설정 업데이트 중 오류: {str(e)}")
             return {"success": False, "error": str(e)}
     
-    def get_buy_candidates(self, config: Optional[Dict] = None) -> List[Dict]:
+    def get_buy_candidates(self, config: Optional[Dict] = None, user_id: Optional[str] = None) -> List[Dict]:
         """매수 추천 종목 조회"""
         if config is None:
-            config = self.get_auto_trading_config()
+            config = self.get_auto_trading_config(user_id=user_id)
         
         try:
             # 2. 매수 추천 종목 조회 (통합 분석 결과 사용)
@@ -283,17 +323,21 @@ class AutoTradingService:
             logger.error(f"매수 수량 계산 중 오류: {str(e)}")
             return {"success": False, "error": str(e)}
     
-    def execute_auto_buy(self, dry_run: bool = False) -> Dict:
+    def execute_auto_buy(self, dry_run: bool = False, user_id: Optional[str] = None) -> Dict:
         """자동 매수 실행"""
         try:
+            from app.utils.user_context import get_current_user_id
+            if user_id is None:
+                user_id = get_current_user_id()
+            
             # 설정 확인
-            config = self.get_auto_trading_config()
+            config = self.get_auto_trading_config(user_id=user_id)
             
             if not config.get("enabled", False):
                 return {"success": False, "error": "자동매매가 비활성화되어 있습니다"}
             
             # 매수 후보 조회
-            candidates = self.get_buy_candidates(config)
+            candidates = self.get_buy_candidates(config, user_id=user_id)
             
             if not candidates:
                 return {"success": True, "message": "매수할 종목이 없습니다", "orders": []}
@@ -501,11 +545,15 @@ class AutoTradingService:
             logger.error(traceback.format_exc())
             return {"success": False, "error": str(e)}
     
-    def execute_auto_sell(self, dry_run: bool = False) -> Dict:
+    def execute_auto_sell(self, dry_run: bool = False, user_id: Optional[str] = None) -> Dict:
         """자동 매도 실행 (손절/익절)"""
         try:
+            from app.utils.user_context import get_current_user_id
+            if user_id is None:
+                user_id = get_current_user_id()
+            
             # 설정 확인
-            config = self.get_auto_trading_config()
+            config = self.get_auto_trading_config(user_id=user_id)
             
             if not config.get("enabled", False):
                 return {"success": False, "error": "자동매매가 비활성화되어 있습니다"}
@@ -585,10 +633,14 @@ class AutoTradingService:
             logger.error(traceback.format_exc())
             return {"success": False, "error": str(e)}
     
-    def get_auto_trading_status(self) -> Dict:
+    def get_auto_trading_status(self, user_id: Optional[str] = None) -> Dict:
         """자동매매 상태 조회"""
         try:
-            config = self.get_auto_trading_config()
+            from app.utils.user_context import get_current_user_id
+            if user_id is None:
+                user_id = get_current_user_id()
+            
+            config = self.get_auto_trading_config(user_id=user_id)
             
             # 보유 종목 정보
             balance_result = get_overseas_balance()
@@ -629,7 +681,7 @@ class AutoTradingService:
             recent_orders = self._get_recent_orders(days=7)
             
             # 매수/매도 후보
-            buy_candidates = self.get_buy_candidates(config)
+            buy_candidates = self.get_buy_candidates(config, user_id=user_id)
             sell_result = self.stock_service.get_stocks_to_sell()
             sell_candidates = sell_result.get("sell_candidates", [])
             

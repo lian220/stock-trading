@@ -58,6 +58,84 @@ class Settings(BaseSettings):
         description="TR ID"
     )
     
+    # Supabase 설정 (레거시 호환용)
+    SUPABASE_URL: Optional[str] = Field(
+        default=None,
+        description="Supabase URL"
+    )
+    SUPABASE_KEY: Optional[str] = Field(
+        default=None,
+        description="Supabase API Key"
+    )
+    
+    # GCP 설정
+    GCP_PROJECT_ID: Optional[str] = Field(
+        default=None,
+        description="GCP 프로젝트 ID"
+    )
+    GCP_BUCKET_NAME: Optional[str] = Field(
+        default=None,
+        description="GCP 버킷 이름"
+    )
+    GCP_STAGING_BUCKET: Optional[str] = Field(
+        default=None,
+        description="GCP 스테이징 버킷 이름"
+    )
+    GCP_REGION: Optional[str] = Field(
+        default=None,
+        description="GCP 리전"
+    )
+    
+    # Vertex AI 설정
+    VERTEX_AI_CONTAINER_URI: Optional[str] = Field(
+        default=None,
+        description="Vertex AI 컨테이너 URI"
+    )
+    VERTEX_AI_MACHINE_TYPE: Optional[str] = Field(
+        default=None,
+        description="Vertex AI 머신 타입"
+    )
+    VERTEX_AI_GPU_TYPE: Optional[str] = Field(
+        default=None,
+        description="Vertex AI GPU 타입"
+    )
+    VERTEX_AI_GPU_COUNT: Optional[int] = Field(
+        default=None,
+        description="Vertex AI GPU 개수"
+    )
+    VERTEX_AI_USE_FLEX_START: bool = Field(
+        default=False,
+        description="Vertex AI Flex Start 사용 여부"
+    )
+    
+    # GitHub 설정
+    GITHUB_TOKEN: Optional[str] = Field(
+        default=None,
+        description="GitHub 토큰"
+    )
+    
+    # 사용자 설정
+    DEFAULT_USER_ID: Optional[str] = Field(
+        default=None,
+        description="기본 사용자 ID"
+    )
+    
+    # Vertex AI 작업 설정
+    USE_TRAINING_JOBS: bool = Field(
+        default=True,
+        description="Vertex AI Training Jobs 사용 여부 (false면 Custom Jobs 사용)"
+    )
+    
+    @field_validator('USE_TRAINING_JOBS', mode='before')
+    @classmethod
+    def parse_use_training_jobs(cls, v):
+        """빈 문자열을 True로 변환 (기본값)"""
+        if v == '' or v is None:
+            return True
+        if isinstance(v, str):
+            return v.lower() in ('true', '1', 'yes', 'on')
+        return bool(v)
+    
     # Slack 알림 설정
     SLACK_WEBHOOK_URL_TRADING: Optional[str] = Field(
         default=None,
@@ -82,18 +160,19 @@ class Settings(BaseSettings):
         description="서버 시작 시 경제 데이터 수집 실행 여부 (.env에서 RUN_ECONOMIC_DATA_ON_STARTUP=true/false로 설정 가능)"
     )
     
-    # MongoDB 설정 (통일된 환경변수 패턴 - 다양한 환경변수명 지원)
+    # MongoDB 설정
+    # 하위 호환성: MONGO_URL, MONGO_USER, MONGO_PASSWORD도 지원
     MONGODB_URL: Optional[str] = Field(
         default=None,
-        description="MongoDB 연결 URL"
+        description="MongoDB 연결 URL (MONGO_URL 환경변수도 지원)"
     )
     MONGODB_USER: Optional[str] = Field(
         default=None,
-        description="MongoDB 사용자명"
+        description="MongoDB 사용자명 (MONGO_USER 환경변수도 지원)"
     )
     MONGODB_PASSWORD: Optional[str] = Field(
         default=None,
-        description="MongoDB 비밀번호"
+        description="MongoDB 비밀번호 (MONGO_PASSWORD 환경변수도 지원)"
     )
     MONGODB_DATABASE: str = Field(
         default="stock_trading",
@@ -103,6 +182,23 @@ class Settings(BaseSettings):
         default=False,
         description="MongoDB 사용 여부 (.env에서 USE_MONGODB=true/false로 설정 가능)"
     )
+    
+    def _get_env_var(self, primary: Optional[str], legacy_name: str) -> Optional[str]:
+        """
+        환경변수를 가져오는 헬퍼 메서드
+        우선순위: primary 값 > legacy 환경변수
+        
+        Args:
+            primary: Settings 필드 값
+            legacy_name: 하위 호환성을 위한 환경변수 이름 (예: "MONGO_URL")
+        
+        Returns:
+            환경변수 값 또는 None
+        """
+        if primary:
+            return primary
+        # config.py 내부에서만 os.getenv 사용 (하위 호환성)
+        return os.getenv(legacy_name)
     
     @field_validator('USE_MONGODB', mode='before')
     @classmethod
@@ -162,47 +258,36 @@ class Settings(BaseSettings):
     def get_mongodb_url(self) -> str:
         """
         MongoDB 연결 URL을 반환합니다.
-        다양한 환경변수명을 지원하며, config.py를 통해서만 접근합니다.
+        config.py를 통해서만 접근합니다.
+        
+        하위 호환성: MONGO_URL 환경변수도 지원
         """
-        # 우선순위: MONGODB_URL > MONGO_URL > 환경변수 직접 확인 > 기본값
-        url = (
-            self.MONGODB_URL or
-            os.getenv("MONGO_URL") or
-            os.getenv("MONGODB_URL") or
-            "mongodb://localhost:27017"
-        )
-        return url
+        url = self._get_env_var(self.MONGODB_URL, "MONGO_URL")
+        return url or "mongodb://localhost:27017"
     
     def get_mongodb_user(self) -> Optional[str]:
-        """MongoDB 사용자명을 반환합니다."""
-        return (
-            self.MONGODB_USER or
-            os.getenv("MONGO_USER") or
-            os.getenv("MONGODB_USER")
-        )
+        """
+        MongoDB 사용자명을 반환합니다.
+        
+        하위 호환성: MONGO_USER 환경변수도 지원
+        """
+        return self._get_env_var(self.MONGODB_USER, "MONGO_USER")
     
     def get_mongodb_password(self) -> Optional[str]:
-        """MongoDB 비밀번호를 반환합니다."""
-        return (
-            self.MONGODB_PASSWORD or
-            os.getenv("MONGO_PASSWORD") or
-            os.getenv("MONGODB_PASSWORD")
-        )
+        """
+        MongoDB 비밀번호를 반환합니다.
+        
+        하위 호환성: MONGO_PASSWORD 환경변수도 지원
+        """
+        return self._get_env_var(self.MONGODB_PASSWORD, "MONGO_PASSWORD")
     
     def get_mongodb_database(self) -> str:
         """MongoDB 데이터베이스 이름을 반환합니다."""
-        return (
-            os.getenv("MONGODB_DATABASE") or
-            self.MONGODB_DATABASE or
-            "stock_trading"
-        )
+        return self.MONGODB_DATABASE or "stock_trading"
     
     def is_mongodb_enabled(self) -> bool:
         """MongoDB 사용 여부를 반환합니다."""
-        if self.USE_MONGODB:
-            return True
-        env_value = os.getenv('USE_MONGODB', 'false').lower()
-        return env_value in ('true', '1', 'yes', 'on')
+        return self.USE_MONGODB
 
     class Config:
         env_file = ".env"
@@ -252,15 +337,17 @@ def _load_google_credentials_from_env():
                 os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = creds_path_normalized
                 return creds_path_normalized
             else:
-                # 대안 경로 시도
+                # 대안 경로 시도 (프로젝트 루트 기준)
+                project_root = Path(__file__).parent.parent.parent
                 alt_paths = [
-                    "/Users/imdoyeong/Desktop/workSpace/stock-trading/credentials/vertex-ai-key.json",
+                    str(project_root / "credentials" / "vertex-ai-key.json"),
                     str(Path.home() / "Desktop" / "workSpace" / "stock-trading" / "credentials" / "vertex-ai-key.json")
                 ]
                 for alt_path in alt_paths:
-                    if os.path.exists(alt_path):
-                        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = alt_path
-                        return alt_path
+                    normalized_path = os.path.normpath(alt_path)
+                    if os.path.exists(normalized_path):
+                        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = normalized_path
+                        return normalized_path
     return None
 
 # 설정 로드 시 GOOGLE_APPLICATION_CREDENTIALS 환경 변수 설정

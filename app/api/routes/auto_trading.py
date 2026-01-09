@@ -37,7 +37,9 @@ def get_auto_trading_config():
     - **allow_buy_existing_stocks**: 보유 중인 종목도 매수 허용 여부 (기본값: true)
     """
     try:
-        config = auto_trading_service.get_auto_trading_config()
+        from app.utils.user_context import get_current_user_id
+        user_id = get_current_user_id()
+        config = auto_trading_service.get_auto_trading_config(user_id=user_id)
         return {
             "success": True,
             "config": config
@@ -76,10 +78,13 @@ def update_auto_trading_config(config: AutoTradingConfigUpdate):
     ```
     """
     try:
+        from app.utils.user_context import get_current_user_id
+        user_id = get_current_user_id()
+        
         # None이 아닌 필드만 딕셔너리로 변환
         config_dict = {k: v for k, v in config.model_dump().items() if v is not None}
         
-        result = auto_trading_service.update_auto_trading_config(config_dict)
+        result = auto_trading_service.update_auto_trading_config(config_dict, user_id=user_id)
         
         if not result.get("success"):
             raise HTTPException(status_code=400, detail=result.get("error"))

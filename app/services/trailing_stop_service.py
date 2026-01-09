@@ -63,7 +63,7 @@ class TrailingStopService:
             return {}
         
         # 설정에서 트레일링 거리 가져오기 (레버리지 여부에 따라 다름)
-        config = self.auto_trading_service.get_auto_trading_config()
+        config = self.auto_trading_service.get_auto_trading_config(user_id=self.user_id)
         
         if trailing_distance_percent is None:
             if is_leveraged:
@@ -183,7 +183,7 @@ class TrailingStopService:
             return False
         
         # 설정 확인
-        config = self.auto_trading_service.get_auto_trading_config()
+        config = self.auto_trading_service.get_auto_trading_config(user_id=self.user_id)
         if not config.get("trailing_stop_enabled", False):
             return False
             
