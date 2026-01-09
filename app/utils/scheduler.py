@@ -2234,7 +2234,8 @@ class StockScheduler:
                     # 매도 체결 시 종목별 실현 수익률 업데이트
                     if order_type == "sell":
                         try:
-                            user_id = log_record.get("user_id", "lian")
+                            from app.utils.user_context import get_current_user_id
+                            user_id = log_record.get("user_id") or get_current_user_id()
                             update_result_profit = update_ticker_realized_profit(user_id=user_id, ticker=ticker)
                             if update_result_profit.get("success"):
                                 profit_percent = update_result_profit.get("realized_profit_percent", 0.0)
