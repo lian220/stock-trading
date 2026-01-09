@@ -360,6 +360,37 @@ class TrailingStop(BaseModel):
         arbitrary_types_allowed = True
 
 
+# ============= Partial Sell History =============
+
+class PartialSellHistory(BaseModel):
+    """부분 익절 히스토리"""
+    id: Optional[PyObjectId] = Field(default_factory=PyObjectId, alias="_id")
+    user_id: str
+    ticker: str
+    stock_name: Optional[str] = None
+    purchase_price: float  # 구매 평균단가
+    initial_quantity: int  # 초기 보유 수량 (부분 매도 전 전체 수량)
+    # 부분 매도 단계별 정보
+    partial_sells: List[Dict[str, Any]] = Field(default_factory=list)  # [
+    #     {
+    #         "stage": int,  # 1: 5%, 2: 8%, 3: 12%
+    #         "profit_percent": float,  # 해당 단계의 수익률 (%)
+    #         "sell_quantity": int,  # 매도한 수량
+    #         "sell_price": float,  # 매도 가격
+    #         "sell_date": datetime,  # 매도일
+    #         "remaining_quantity": int  # 매도 후 남은 수량
+    #     }
+    # ]
+    is_completed: bool = False  # 모든 부분 매도가 완료되었는지 여부 (3단계 모두 완료)
+    last_updated: Optional[datetime] = Field(default_factory=datetime.utcnow)
+    created_at: Optional[datetime] = Field(default_factory=datetime.utcnow)
+
+    class Config:
+        populate_by_name = True
+        arbitrary_types_allowed = True
+        json_encoders = {ObjectId: str}
+
+
 # ============= Trading Log =============
 
 class TradingLog(BaseModel):

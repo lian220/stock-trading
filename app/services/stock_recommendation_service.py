@@ -2,6 +2,7 @@ import pandas as pd
 import requests
 import time
 from datetime import datetime, timedelta
+from typing import Optional, Dict, List, Any
 from app.db.mongodb import get_db
 import numpy as np
 from app.core.config import settings
@@ -1448,6 +1449,119 @@ class StockRecommendationService:
             
             raise Exception(f"추천 주식 분석 중 오류: {str(e)}")
 
+    def _check_partial_profit_stage(
+        self, 
+        ticker: str, 
+        price_change_percent: float, 
+        quantity: int,
+        purchase_price: float,
+        is_leveraged: bool = False
+    ) -> Optional[Dict]:
+        """
+        부분 익절 단계별 체크
+        
+        부분 익절 전략:
+        - 일반 종목:
+          - 1차: +5% 도달 시 30% 매도
+          - 2차: +8% 도달 시 30% 매도
+          - 3차: +12% 도달 시 40% 매도
+        - 레버리지 종목 (2배 기준):
+          - 1차: +10% 도달 시 30% 매도
+          - 2차: +16% 도달 시 30% 매도
+          - 3차: +24% 도달 시 40% 매도
+        
+        Args:
+            ticker: 종목 티커
+            price_change_percent: 구매가 대비 수익률 (%)
+            quantity: 현재 보유 수량
+            purchase_price: 구매 평균단가
+            is_leveraged: 레버리지 종목 여부
+            
+        Returns:
+            부분 매도 정보 Dict 또는 None
+            {
+                "stage": int,  # 1, 2, 또는 3
+                "profit_percent": float,  # 해당 단계의 목표 수익률
+                "sell_percent": float,  # 매도할 비율 (30% 또는 40%)
+                "sell_quantity": int,  # 매도할 수량
+                "triggered": bool  # 해당 단계가 트리거되었는지 여부
+            }
+        """
+        db = get_db()
+        if db is None:
+            return None
+        
+        user_id = "lian"  # 기본값
+        
+        # 부분 익절 히스토리 조회
+        history = db.partial_sell_history.find_one({
+            "user_id": user_id,
+            "ticker": ticker
+        })
+        
+        # 부분 익절 단계 정의 (레버리지 여부에 따라 다름)
+        if is_leveraged:
+            # 레버리지 종목: 일반 종목의 2배 기준
+            stages = [
+                {"profit_percent": 10.0, "sell_percent": 30.0, "stage": 1},
+                {"profit_percent": 16.0, "sell_percent": 30.0, "stage": 2},
+                {"profit_percent": 24.0, "sell_percent": 40.0, "stage": 3}
+            ]
+        else:
+            # 일반 종목
+            stages = [
+                {"profit_percent": 5.0, "sell_percent": 30.0, "stage": 1},
+                {"profit_percent": 8.0, "sell_percent": 30.0, "stage": 2},
+                {"profit_percent": 12.0, "sell_percent": 40.0, "stage": 3}
+            ]
+        
+        # 이미 완료된 단계 확인
+        completed_stages = set()
+        initial_quantity = quantity
+        
+        if history:
+            initial_quantity = history.get("initial_quantity", quantity)
+            partial_sells = history.get("partial_sells", [])
+            completed_stages = {sell.get("stage") for sell in partial_sells}
+            
+            # 전체 매도가 완료되었으면 None 반환
+            if history.get("is_completed", False):
+                return None
+        
+        # 현재 가격 변동률에 따라 트리거될 단계 확인
+        for stage_info in stages:
+            stage = stage_info["stage"]
+            target_profit = stage_info["profit_percent"]
+            
+            # 이미 완료된 단계는 스킵
+            if stage in completed_stages:
+                continue
+            
+            # 현재 수익률이 목표 수익률 이상이면 해당 단계 트리거
+            if price_change_percent >= target_profit:
+                # 매도할 수량 계산 (초기 수량 기준)
+                sell_percent = stage_info["sell_percent"]
+                sell_quantity = int(initial_quantity * (sell_percent / 100))
+                
+                # 최소 1주는 매도 가능해야 함
+                if sell_quantity < 1:
+                    sell_quantity = 1
+                
+                # 현재 보유 수량을 초과하지 않도록 조정
+                if sell_quantity > quantity:
+                    sell_quantity = quantity
+                
+                return {
+                    "stage": stage,
+                    "profit_percent": target_profit,
+                    "sell_percent": sell_percent,
+                    "sell_quantity": sell_quantity,
+                    "triggered": True,
+                    "current_profit_percent": price_change_percent
+                }
+        
+        return None
+
     def get_stocks_to_sell(self):
         """
         매도 대상 종목을 식별하는 함수
@@ -1456,6 +1570,11 @@ class StockRecommendationService:
         1. 구매가 대비 현재가가 +5% 이상(익절) 또는 -7% 이하(손절)인 종목
         2. 감성 점수 < -0.15이고 기술적 지표 중 2개 이상 매도 신호인 종목
         3. 기술적 지표 중 3개 이상 매도 신호인 종목
+        4. 부분 익절 전략 (피라미드 매도):
+           - 1차: +5% 도달 시 30% 매도
+           - 2차: +8% 도달 시 30% 매도
+           - 3차: +12% 도달 시 40% 매도
+           - 트레일링 스톱으로 나머지 관리
         
         반환값:
         - sell_candidates: 매도 대상 종목 목록
@@ -1628,11 +1747,31 @@ class StockRecommendationService:
                     except Exception as e:
                         logger.warning(f"get_stocks_to_sell: {stock_name}({ticker}) 트레일링 스톱 체크 중 오류 (계속 진행): {str(e)}")
                 
-                # Priority 3: 고정 익절 조건 (손절/트레일링 스톱 조건이 없을 때만 체크)
-                if priority == 3 and price_change_percent >= target_profit_percent:
-                    priority = 3  # Priority 3으로 유지 (트레일링 스톱이 Priority 2)
-                    sell_type = "take_profit"
-                    sell_reasons.append(f"익절 조건 충족({'레버리지' if is_leveraged else '일반'}): 구매가 대비 {price_change_percent:.2f}% 상승 (목표: {target_profit_percent}%)")
+                # Priority 3: 부분 익절 전략 체크 (손절/트레일링 스톱 조건이 없을 때만)
+                if priority == 3:
+                    partial_profit_info = self._check_partial_profit_stage(
+                        ticker, price_change_percent, quantity, purchase_price, is_leveraged
+                    )
+                    
+                    if partial_profit_info and partial_profit_info.get("triggered"):
+                        # 부분 익절이 트리거됨
+                        priority = 3  # Priority 3으로 유지
+                        sell_type = "partial_profit"
+                        stage = partial_profit_info.get("stage")
+                        stage_profit = partial_profit_info.get("profit_percent")
+                        sell_qty = partial_profit_info.get("sell_quantity")
+                        sell_pct = partial_profit_info.get("sell_percent")
+                        
+                        sell_reasons.append(
+                            f"부분 익절 {stage}단계 트리거: +{stage_profit:.0f}% 도달 시 "
+                            f"{sell_pct:.0f}% ({sell_qty}주) 매도 "
+                            f"(현재 수익률: {price_change_percent:.2f}%)"
+                        )
+                    elif price_change_percent >= target_profit_percent:
+                        # 고정 익절 조건 (부분 익절이 완료되었거나 비활성화된 경우)
+                        priority = 3
+                        sell_type = "take_profit"
+                        sell_reasons.append(f"익절 조건 충족({'레버리지' if is_leveraged else '일반'}): 구매가 대비 {price_change_percent:.2f}% 상승 (목표: {target_profit_percent}%)")
                 
                 # 기술적 지표 확인
                 tech_record = None
@@ -1678,7 +1817,14 @@ class StockRecommendationService:
                     if is_leveraged:
                         logger.info(f"get_stocks_to_sell: {stock_name}({ticker}) 레버리지 주식 매도 대상 결정")
                     
-                    sell_candidates.append({
+                    # 부분 익절 정보 추가
+                    partial_profit_info = None
+                    if sell_type == "partial_profit":
+                        partial_profit_info = self._check_partial_profit_stage(
+                            ticker, price_change_percent, quantity, purchase_price, is_leveraged
+                        )
+                    
+                    candidate_data = {
                         "ticker": ticker,
                         "stock_name": stock_name,
                         "purchase_price": purchase_price,
@@ -1687,13 +1833,21 @@ class StockRecommendationService:
                         "quantity": quantity,
                         "exchange_code": exchange_code,
                         "sell_reasons": sell_reasons,
-                        "priority": priority,  # 우선순위 추가 (1: 손절, 2: 익절, 3: 기술적 매도)
+                        "priority": priority,  # 우선순위 추가 (1: 손절, 2: 트레일링 스톱, 3: 익절/부분익절, 4: 기술적 매도)
                         "sell_type": sell_type,  # 매도 유형 추가
                         "technical_sell_signals": technical_sell_signals,
                         "technical_sell_details": tech_sell_signals_details if tech_sell_signals_details else None,
                         "sentiment_score": sentiment_score,
                         "technical_data": tech_record
-                    })
+                    }
+                    
+                    # 부분 익절 정보가 있으면 추가
+                    if partial_profit_info:
+                        candidate_data["partial_profit_info"] = partial_profit_info
+                        # 부분 익절인 경우 매도 수량을 부분 매도 수량으로 조정
+                        candidate_data["quantity"] = partial_profit_info.get("sell_quantity", quantity)
+                    
+                    sell_candidates.append(candidate_data)
             
             # 우선순위별 정렬: Priority 1 (손절) → Priority 2 (트레일링 스톱) → Priority 3 (익절) → Priority 4 (기술적 매도)
             # 같은 우선순위 내에서는 가격 변동률이 큰 순서로 정렬 (절대값 기준)

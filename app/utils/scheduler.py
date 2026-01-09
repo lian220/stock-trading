@@ -1241,14 +1241,139 @@ class StockScheduler:
                         if not save_success:
                             logger.warning(f"[{function_name}] ⚠️ {stock_name}({ticker}) 매도 주문은 성공했으나 기록 저장에 실패했습니다. 수동으로 확인이 필요합니다.")
                         
-                        # 트레일링 스톱 비활성화 (매도 성공 시)
+                        # 부분 익절 히스토리 업데이트 (부분 매도인 경우)
+                        sell_type = candidate.get("sell_type", "")
+                        if sell_type == "partial_profit":
+                            try:
+                                from app.db.mongodb import get_db
+                                db = get_db()
+                                if db is not None:
+                                    partial_profit_info = candidate.get("partial_profit_info")
+                                    if partial_profit_info:
+                                        stage = partial_profit_info.get("stage")
+                                        stage_profit = partial_profit_info.get("profit_percent")
+                                        sell_qty = partial_profit_info.get("sell_quantity")
+                                        
+                                        user_id = "lian"  # 기본값
+                                        
+                                        # 부분 익절 히스토리 조회 또는 생성
+                                        history = db.partial_sell_history.find_one({
+                                            "user_id": user_id,
+                                            "ticker": ticker
+                                        })
+                                        
+                                        # 현재 보유 수량 확인 (부분 매도 후 남은 수량)
+                                        # 잔고 조회를 통해 정확한 남은 수량 확인
+                                        remaining_quantity = 0
+                                        try:
+                                            balance_result = get_overseas_balance()
+                                            if balance_result.get("rt_cd") == "0":
+                                                holdings = balance_result.get("output1", [])
+                                                for item in holdings:
+                                                    if item.get("ovrs_pdno") == ticker:
+                                                        remaining_quantity = int(item.get("ovrs_cblc_qty", 0))
+                                                        break
+                                        except Exception as e:
+                                            logger.warning(f"[{function_name}] {stock_name}({ticker}) 부분 매도 후 남은 수량 조회 실패: {str(e)}")
+                                        
+                                        # 구매 평균단가 조회
+                                        purchase_price = candidate.get("purchase_price", 0)
+                                        if purchase_price <= 0:
+                                            # candidate에 없으면 잔고에서 조회
+                                            try:
+                                                balance_result = get_overseas_balance()
+                                                if balance_result.get("rt_cd") == "0":
+                                                    holdings = balance_result.get("output1", [])
+                                                    for item in holdings:
+                                                        if item.get("ovrs_pdno") == ticker:
+                                                            purchase_price = float(item.get("pchs_avg_pric", 0))
+                                                            break
+                                            except Exception as e:
+                                                logger.warning(f"[{function_name}] {stock_name}({ticker}) 구매 평균단가 조회 실패: {str(e)}")
+                                        
+                                        # 부분 매도 기록 생성
+                                        partial_sell_record = {
+                                            "stage": stage,
+                                            "profit_percent": stage_profit,
+                                            "sell_quantity": sell_qty,
+                                            "sell_price": order_price,
+                                            "sell_date": datetime.utcnow(),
+                                            "remaining_quantity": remaining_quantity
+                                        }
+                                        
+                                        if history:
+                                            # 기존 히스토리 업데이트
+                                            partial_sells = history.get("partial_sells", [])
+                                            partial_sells.append(partial_sell_record)
+                                            
+                                            # 초기 수량이 없으면 현재 수량 + 매도 수량으로 설정
+                                            initial_quantity = history.get("initial_quantity")
+                                            if not initial_quantity:
+                                                initial_quantity = remaining_quantity + sell_qty
+                                            
+                                            # 모든 단계가 완료되었는지 확인 (3단계 모두 완료)
+                                            completed_stages = {sell.get("stage") for sell in partial_sells}
+                                            is_completed = len(completed_stages) >= 3
+                                            
+                                            db.partial_sell_history.update_one(
+                                                {"user_id": user_id, "ticker": ticker},
+                                                {
+                                                    "$set": {
+                                                        "partial_sells": partial_sells,
+                                                        "is_completed": is_completed,
+                                                        "last_updated": datetime.utcnow()
+                                                    }
+                                                }
+                                            )
+                                            
+                                            logger.info(
+                                                f"[{function_name}] 📝 {stock_name}({ticker}) 부분 익절 {stage}단계 히스토리 업데이트 완료 "
+                                                f"(매도: {sell_qty}주 @ ${order_price:.2f}, 남은 수량: {remaining_quantity}주)"
+                                            )
+                                        else:
+                                            # 새로운 히스토리 생성
+                                            initial_quantity = remaining_quantity + sell_qty
+                                            is_completed = stage >= 3  # 3단계면 완료
+                                            
+                                            new_history = {
+                                                "user_id": user_id,
+                                                "ticker": ticker,
+                                                "stock_name": stock_name,
+                                                "purchase_price": purchase_price,
+                                                "initial_quantity": initial_quantity,
+                                                "partial_sells": [partial_sell_record],
+                                                "is_completed": is_completed,
+                                                "last_updated": datetime.utcnow(),
+                                                "created_at": datetime.utcnow()
+                                            }
+                                            
+                                            db.partial_sell_history.insert_one(new_history)
+                                            
+                                            logger.info(
+                                                f"[{function_name}] 📝 {stock_name}({ticker}) 부분 익절 히스토리 생성 완료 "
+                                                f"(초기 수량: {initial_quantity}주, {stage}단계 매도: {sell_qty}주 @ ${order_price:.2f})"
+                                            )
+                                        
+                                        # 3단계 모두 완료되었으면 로그 추가
+                                        if is_completed:
+                                            logger.info(
+                                                f"[{function_name}] ✅ {stock_name}({ticker}) 부분 익절 전략 완료 "
+                                                f"(1단계: +5%, 2단계: +8%, 3단계: +12% 모두 매도 완료). "
+                                                f"나머지는 트레일링 스톱으로 관리됩니다."
+                                            )
+                            except Exception as e:
+                                logger.warning(f"[{function_name}] 부분 익절 히스토리 업데이트 중 오류 (무시): {str(e)}", exc_info=True)
+                        
+                        # 트레일링 스톱 비활성화 (전체 매도인 경우만, 부분 매도는 유지)
                         try:
                             from app.services.trailing_stop_service import TrailingStopService
                             trailing_stop_service = TrailingStopService()
-                            trailing_stop_service.deactivate_trailing_stop(ticker)
+                            
+                            # 부분 익절이 아닌 경우에만 트레일링 스톱 비활성화
+                            if sell_type != "partial_profit":
+                                trailing_stop_service.deactivate_trailing_stop(ticker)
                             
                             # 트레일링 스톱 매도인 경우 상세 정보 로깅
-                            sell_type = candidate.get("sell_type", "")
                             if sell_type == "trailing_stop":
                                 trailing_info = trailing_stop_service.get_trailing_stop_info(ticker)
                                 if trailing_info:
@@ -1979,6 +2104,15 @@ class StockScheduler:
                                             function_name=function_name
                                         )
                                         
+                                        # 부분 익절 히스토리 초기화 (체결 완료 시)
+                                        self._initialize_partial_profit_history_after_buy(
+                                            ticker=order_ticker,  # 실제 주문 티커 사용
+                                            stock_name=stock_name,
+                                            purchase_price=log_record.get("price", 0),
+                                            initial_quantity=current_qty,  # 체결 후 현재 보유 수량
+                                            function_name=function_name
+                                        )
+                                        
                                         # Slack 알림 전송 (체결 완료)
                                         slack_notifier.send_buy_notification(
                                             stock_name=stock_name,
@@ -2023,6 +2157,15 @@ class StockScheduler:
                                             ticker=order_ticker,  # 실제 주문 티커 사용
                                             stock_name=stock_name,
                                             purchase_price=log_record.get("price", 0),
+                                            function_name=function_name
+                                        )
+                                        
+                                        # 부분 익절 히스토리 초기화 (체결 완료 시)
+                                        self._initialize_partial_profit_history_after_buy(
+                                            ticker=order_ticker,  # 실제 주문 티커 사용
+                                            stock_name=stock_name,
+                                            purchase_price=log_record.get("price", 0),
+                                            initial_quantity=current_qty,  # 체결 후 현재 보유 수량
                                             function_name=function_name
                                         )
                                         
@@ -2107,6 +2250,30 @@ class StockScheduler:
                             purchase_price=executed_price,
                             function_name=function_name
                         )
+                        
+                        # 부분 익절 히스토리 초기화 (매수 체결 시)
+                        # 현재 보유 수량 조회
+                        try:
+                            from app.services.balance_service import get_overseas_balance
+                            balance_result = get_overseas_balance()
+                            current_qty = executed_qty  # 기본값은 체결 수량
+                            
+                            if balance_result.get("rt_cd") == "0":
+                                holdings = balance_result.get("output1", [])
+                                for item in holdings:
+                                    if item.get("ovrs_pdno") == ticker or item.get("ovrs_pdno") == order_ticker:
+                                        current_qty = int(item.get("ovrs_cblc_qty", executed_qty))
+                                        break
+                            
+                            self._initialize_partial_profit_history_after_buy(
+                                ticker=order_ticker,  # 실제 주문 티커 사용
+                                stock_name=stock_name,
+                                purchase_price=executed_price,
+                                initial_quantity=current_qty,  # 체결 후 현재 보유 수량
+                                function_name=function_name
+                            )
+                        except Exception as e:
+                            logger.warning(f"[{function_name}] 부분 익절 히스토리 초기화 중 오류 (무시): {str(e)}")
                     
                     # Slack 알림 전송 (체결 완료)
                     if order_type == "sell":
@@ -2765,6 +2932,74 @@ class StockScheduler:
             
         except Exception as e:
             logger.error(f"[{function_name}] ❌ {stock_name}({ticker}) 트레일링 스톱 초기화 중 오류: {str(e)}", exc_info=True)
+    
+    def _initialize_partial_profit_history_after_buy(
+        self,
+        ticker: str,
+        stock_name: str,
+        purchase_price: float,
+        initial_quantity: int,
+        function_name: str = "_execute_auto_buy"
+    ):
+        """
+        매수 체결 완료 후 부분 익절 히스토리 초기화
+        
+        Args:
+            ticker: 실제 주문 티커 (레버리지 티커 또는 원본 티커)
+            stock_name: 종목명
+            purchase_price: 구매가
+            initial_quantity: 초기 보유 수량 (부분 매도 전 전체 수량)
+            function_name: 함수명 (로깅용)
+        """
+        try:
+            from app.db.mongodb import get_db
+            db = get_db()
+            if db is None:
+                logger.warning(f"[{function_name}] MongoDB 연결 실패 - 부분 익절 히스토리 초기화 불가")
+                return
+            
+            user_id = "lian"  # 기본값
+            
+            # 이미 히스토리가 있는지 확인
+            existing_history = db.partial_sell_history.find_one({
+                "user_id": user_id,
+                "ticker": ticker
+            })
+            
+            if existing_history:
+                # 이미 히스토리가 있으면 초기 수량만 업데이트 (부분 매도가 아직 시작되지 않은 경우)
+                if not existing_history.get("partial_sells") or len(existing_history.get("partial_sells", [])) == 0:
+                    # 부분 매도가 아직 없는 경우 초기 수량 업데이트
+                    db.partial_sell_history.update_one(
+                        {"user_id": user_id, "ticker": ticker},
+                        {
+                            "$set": {
+                                "initial_quantity": initial_quantity,
+                                "purchase_price": purchase_price,
+                                "last_updated": datetime.utcnow()
+                            }
+                        }
+                    )
+                    logger.info(f"[{function_name}] ✅ {stock_name}({ticker}) 부분 익절 히스토리 초기 수량 업데이트 완료 ({initial_quantity}주)")
+            else:
+                # 새로운 히스토리 생성
+                new_history = {
+                    "user_id": user_id,
+                    "ticker": ticker,
+                    "stock_name": stock_name,
+                    "purchase_price": purchase_price,
+                    "initial_quantity": initial_quantity,
+                    "partial_sells": [],
+                    "is_completed": False,
+                    "last_updated": datetime.utcnow(),
+                    "created_at": datetime.utcnow()
+                }
+                
+                db.partial_sell_history.insert_one(new_history)
+                logger.info(f"[{function_name}] ✅ {stock_name}({ticker}) 부분 익절 히스토리 초기화 완료 (초기 수량: {initial_quantity}주, 구매가: ${purchase_price:.2f})")
+            
+        except Exception as e:
+            logger.error(f"[{function_name}] ❌ {stock_name}({ticker}) 부분 익절 히스토리 초기화 중 오류: {str(e)}", exc_info=True)
     
     def _save_trading_log(
         self,
