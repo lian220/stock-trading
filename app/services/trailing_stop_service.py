@@ -16,8 +16,15 @@ logger = logging.getLogger(__name__)
 class TrailingStopService:
     """트레일링 스톱 서비스 클래스"""
     
-    def __init__(self):
-        self.user_id = "lian"  # 기본값
+    def __init__(self, user_id: Optional[str] = None):
+        """
+        트레일링 스톱 서비스 초기화
+        
+        Args:
+            user_id: 사용자 ID. None이면 기본 사용자 ID 사용
+        """
+        from app.utils.user_context import get_current_user_id
+        self.user_id = user_id or get_current_user_id()
         self._auto_trading_service = None
 
     @property

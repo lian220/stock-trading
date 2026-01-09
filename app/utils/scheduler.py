@@ -1254,7 +1254,8 @@ class StockScheduler:
                                         stage_profit = partial_profit_info.get("profit_percent")
                                         sell_qty = partial_profit_info.get("sell_quantity")
                                         
-                                        user_id = "lian"  # 기본값
+                                        from app.utils.user_context import get_current_user_id
+                                        user_id = get_current_user_id()
                                         
                                         # 부분 익절 히스토리 조회 또는 생성
                                         history = db.partial_sell_history.find_one({
@@ -2770,7 +2771,8 @@ class StockScheduler:
             logger.info(f"  - 총 수익: ${total_profit:+,.2f} ({total_profit_percent:+.2f}%)")
             
             # 추가 수익률 및 계좌 정보 조회
-            user_id = "lian"  # 기본 사용자 ID
+            from app.utils.user_context import get_current_user_id
+            user_id = get_current_user_id()
             account_info = {}
             total_return_info = {}
             realized_return_info = {}
@@ -2958,7 +2960,8 @@ class StockScheduler:
                 logger.warning(f"[{function_name}] MongoDB 연결 실패 - 부분 익절 히스토리 초기화 불가")
                 return
             
-            user_id = "lian"  # 기본값
+            from app.utils.user_context import get_current_user_id
+            user_id = get_current_user_id()
             
             # 이미 히스토리가 있는지 확인
             existing_history = db.partial_sell_history.find_one({
