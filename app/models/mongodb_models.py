@@ -128,6 +128,7 @@ class User(BaseModel):
     preferences: Optional[UserPreferences] = Field(default_factory=UserPreferences)
     stocks: Optional[List[UserStockEmbedded]] = Field(default_factory=list)  # 👈 embedded stocks
     account_balance: Optional[AccountBalance] = None  # 계좌 잔액 정보
+    trading_config: Optional["TradingConfigEmbedded"] = None  # 👈 embedded trading config (forward reference)
     created_at: Optional[datetime] = Field(default_factory=datetime.utcnow)
     updated_at: Optional[datetime] = Field(default_factory=datetime.utcnow)
 
@@ -304,8 +305,34 @@ class SentimentAnalysis(BaseModel):
 
 # ============= Trading Config =============
 
+class TradingConfigEmbedded(BaseModel):
+    """자동매매 설정 (User에 embedded되는 버전)"""
+    enabled: bool = False
+    min_composite_score: float = 2.0  # 최소 종합 점수 (실제 점수 분포 2~3점에 맞춰 조정)
+    max_stocks_to_buy: int = 5
+    max_amount_per_stock: float = 10000.0
+    max_portfolio_weight_per_stock: float = 20.0  # 단일 종목 최대 투자 비중 (%)
+    stop_loss_percent: float = -7.0
+    take_profit_percent: float = 5.0
+    use_sentiment: bool = True
+    min_sentiment_score: float = 0.15
+    order_type: str = "00"
+    allow_buy_existing_stocks: bool = True  # 보유 중인 종목도 매수 허용 여부
+    trailing_stop_enabled: bool = False
+    trailing_stop_distance_percent: float = 5.0
+    trailing_stop_min_profit_percent: float = 3.0
+    leveraged_trailing_stop_distance_percent: float = 7.0
+    leveraged_trailing_stop_min_profit_percent: float = 5.0
+    updated_at: Optional[datetime] = Field(default_factory=datetime.utcnow)
+
+    class Config:
+        populate_by_name = True
+        arbitrary_types_allowed = True
+        json_encoders = {ObjectId: str}
+
+
 class TradingConfig(BaseModel):
-    """자동매매 설정"""
+    """자동매매 설정 (별도 컬렉션용 - 레거시 호환)"""
     id: Optional[PyObjectId] = Field(default_factory=PyObjectId, alias="_id")
     user_id: str
     enabled: bool = False

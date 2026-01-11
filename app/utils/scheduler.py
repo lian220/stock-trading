@@ -15,7 +15,7 @@ from app.core.enums import (
     get_exchange_code_for_api
 )
 from app.services.stock_recommendation_service import StockRecommendationService
-from app.services.balance_service import get_current_price, order_overseas_stock, order_overseas_stock_daytime, get_all_overseas_balances, get_overseas_balance, get_overseas_order_possible_amount, check_order_execution, calculate_portfolio_profit, update_ticker_realized_profit, calculate_total_return, calculate_cumulative_profit
+from app.services.balance_service import get_current_price, order_overseas_stock, order_overseas_stock_daytime, get_all_overseas_balances, get_overseas_balance, get_overseas_order_possible_amount, get_overseas_present_balance, check_order_execution, calculate_portfolio_profit, update_ticker_realized_profit, calculate_total_return, calculate_cumulative_profit
 from app.services.auto_trading_service import AutoTradingService
 from app.core.config import settings
 import logging
@@ -820,7 +820,9 @@ class StockScheduler:
             
             # 주말(토요일=5, 일요일=6)이면 실행하지 않음
             if ny_weekday >= 5:
-                logger.info(f"[{function_name}] 현재 시간 (뉴욕: {now_ny.strftime('%Y-%m-%d %H:%M:%S')})은 주말입니다. 매수 작업을 건너뜁니다.")
+                weekday_names = ['월요일', '화요일', '수요일', '목요일', '금요일', '토요일', '일요일']
+                weekday_name = weekday_names[ny_weekday]
+                logger.info(f"[{function_name}] 현재 시간 (뉴욕: {now_ny.strftime('%Y-%m-%d %H:%M:%S')} ({weekday_name}))은 주말입니다. 매수 작업을 건너뜁니다.")
                 logger.info(f"[{function_name}] 함수 실행 완료 (주말로 인한 건너뜀)")
                 return False
             
@@ -1463,11 +1465,13 @@ class StockScheduler:
         
         # 주말 체크
         if ny_weekday >= 5:  # 토요일(5) 또는 일요일(6)
-            logger.info(f"[{function_name}] 현재 시간 (한국: {now_in_korea.strftime('%Y-%m-%d %H:%M:%S')}, 뉴욕: {now_in_ny.strftime('%Y-%m-%d %H:%M:%S')})은 주말입니다. 매수 작업을 건너뜁니다.")
+            weekday_names = ['월요일', '화요일', '수요일', '목요일', '금요일', '토요일', '일요일']
+            weekday_name = weekday_names[ny_weekday]
+            logger.info(f"[{function_name}] 현재 시간 (한국: {now_in_korea.strftime('%Y-%m-%d %H:%M:%S')}, 뉴욕: {now_in_ny.strftime('%Y-%m-%d %H:%M:%S')} ({weekday_name}))은 주말입니다. 매수 작업을 건너뜁니다.")
             if send_slack_notification:
                 slack_notifier.send_no_buy_notification(
                     reason="주말",
-                    details=f"현재 시간 (한국: {now_in_korea.strftime('%Y-%m-%d %H:%M:%S')}, 뉴욕: {now_in_ny.strftime('%Y-%m-%d %H:%M:%S')})은 주말입니다."
+                    details=f"현재 시간 (한국: {now_in_korea.strftime('%Y-%m-%d %H:%M:%S')}, 뉴욕: {now_in_ny.strftime('%Y-%m-%d %H:%M:%S')} ({weekday_name}))은 주말입니다."
                 )
             logger.info(f"[{function_name}] 함수 실행 완료 (주말로 인한 건너뜀)")
             return
@@ -1537,36 +1541,48 @@ class StockScheduler:
             logger.info(f"[{function_name}] 현재 보유 중인 종목 수: {len(holding_tickers)}")
             logger.info(f"[{function_name}] 📊 포트폴리오 총 가치: ${portfolio_total_value:,.2f}")
             
-            # 2. 주문가능금액 조회 - TTTS3007R API 사용
-            order_psbl_result = get_overseas_order_possible_amount("NASD", "AAPL")
+            # 2. 잔고 조회 - 체결기준현재잔고 API 사용 (외화사용가능금액 포함)
+            present_balance_result = get_overseas_present_balance()
             available_cash = 0.0
             
-            if order_psbl_result.get("rt_cd") == "0":
-                output = order_psbl_result.get("output", {})
+            if present_balance_result.get("rt_cd") == "0":
+                # output3에서 외화사용가능금액 조회
+                output3 = present_balance_result.get("output3", {})
                 
-                if output:
-                    # ord_psbl_frcr_amt: 주문가능외화금액
-                    # ovrs_ord_psbl_amt: 해외주문가능금액
-                    cash_str = output.get("ord_psbl_frcr_amt") or output.get("ovrs_ord_psbl_amt") or "0"
-                    available_cash = float(cash_str)
-                    logger.info(f"[{function_name}] 💰 구매 가능 금액: ${available_cash:,.2f}")
+                if output3:
+                    # frcr_use_psbl_amt: 외화사용가능금액 (USD)
+                    cash_str = output3.get("frcr_use_psbl_amt") or "0"
+                    try:
+                        available_cash = float(cash_str)
+                        logger.info(f"[{function_name}] 💰 구매 가능 금액 (외화사용가능금액): ${available_cash:,.2f}")
+                        
+                        # 추가 디버깅 정보
+                        frcr_evlu_tota = output3.get("frcr_evlu_tota", "0")
+                        logger.debug(f"[{function_name}] 📊 외화평가총액: ${float(frcr_evlu_tota):,.2f}")
+                    except (ValueError, TypeError) as e:
+                        logger.error(f"[{function_name}] 외화사용가능금액 변환 실패: {cash_str}, 오류: {str(e)}")
+                        available_cash = 0.0
                 else:
-                    logger.warning(f"[{function_name}] ⚠️ 주문가능금액 조회 실패: output이 비어있습니다.")
+                    logger.warning(f"[{function_name}] ⚠️ 체결기준현재잔고 조회 실패: output3이 비어있습니다.")
+                    logger.warning(f"[{function_name}] 전체 응답: {present_balance_result}")
                     if send_slack_notification:
                         slack_notifier.send_no_buy_notification(
-                            reason="주문가능금액 조회 실패",
-                            details="주문가능금액 조회 결과가 비어있습니다."
+                            reason="잔고 조회 실패",
+                            details="체결기준현재잔고 조회 결과 output3이 비어있습니다."
                         )
-                    logger.info(f"[{function_name}] 함수 실행 완료 (주문가능금액 조회 실패)")
+                    logger.info(f"[{function_name}] 함수 실행 완료 (잔고 조회 실패)")
                     return
             else:
-                logger.error(f"[{function_name}] 주문가능금액 조회 실패: {order_psbl_result.get('msg1', '알 수 없는 오류')}")
+                error_msg = present_balance_result.get('msg1', '알 수 없는 오류')
+                error_code = present_balance_result.get('msg_cd', 'N/A')
+                logger.error(f"[{function_name}] 체결기준현재잔고 조회 실패: {error_msg} (코드: {error_code})")
+                logger.error(f"[{function_name}] 전체 응답: {present_balance_result}")
                 if send_slack_notification:
                     slack_notifier.send_no_buy_notification(
-                        reason="주문가능금액 조회 실패",
-                        details=order_psbl_result.get('msg1', '알 수 없는 오류')
+                        reason="잔고 조회 실패",
+                        details=f"체결기준현재잔고 조회 실패: {error_msg} (코드: {error_code})"
                     )
-                logger.info(f"[{function_name}] 함수 실행 완료 (주문가능금액 조회 실패)")
+                logger.info(f"[{function_name}] 함수 실행 완료 (잔고 조회 실패)")
                 return
                 
         except Exception as e:
@@ -2419,17 +2435,28 @@ class StockScheduler:
             except Exception as e:
                 logger.warning(f"[{function_name}] 보유 종목 조회 실패 (중복 매수 체크 건너뜀): {str(e)}")
             
-            # 주문가능금액 조회
+            # 잔고 조회 - 체결기준현재잔고 API 사용 (외화사용가능금액 포함)
             available_cash = 0.0
             try:
-                order_psbl_result = get_overseas_order_possible_amount("NASD", "AAPL")
-                if order_psbl_result.get("rt_cd") == "0":
-                    output = order_psbl_result.get("output", {})
-                    if output:
-                        cash_str = output.get("ord_psbl_frcr_amt") or output.get("ovrs_ord_psbl_amt") or "0"
-                        available_cash = float(cash_str)
+                present_balance_result = get_overseas_present_balance()
+                if present_balance_result.get("rt_cd") == "0":
+                    output3 = present_balance_result.get("output3", {})
+                    if output3:
+                        # frcr_use_psbl_amt: 외화사용가능금액 (USD)
+                        cash_str = output3.get("frcr_use_psbl_amt") or "0"
+                        try:
+                            available_cash = float(cash_str)
+                            logger.debug(f"[{function_name}] 💰 구매 가능 금액 (외화사용가능금액): ${available_cash:,.2f}")
+                        except (ValueError, TypeError) as e:
+                            logger.warning(f"[{function_name}] 외화사용가능금액 변환 실패: {cash_str}, 오류: {str(e)}")
+                            available_cash = 0.0
+                    else:
+                        logger.warning(f"[{function_name}] 체결기준현재잔고 조회 실패: output3이 비어있습니다.")
+                else:
+                    error_msg = present_balance_result.get('msg1', '알 수 없는 오류')
+                    logger.warning(f"[{function_name}] 체결기준현재잔고 조회 실패: {error_msg}")
             except Exception as e:
-                logger.warning(f"[{function_name}] 주문가능금액 조회 실패: {str(e)}")
+                logger.warning(f"[{function_name}] 잔고 조회 실패: {str(e)}")
             
             for order in yesterday_orders:
                 try:

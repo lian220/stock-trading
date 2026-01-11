@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 import logging
 from app.core.enums import OrderStatus, OrderType
-from app.db.mongodb import get_db
+from app.infrastructure.database.mongodb_client import get_mongodb_database
 from app.services.stock_recommendation_service import StockRecommendationService
 from app.services.balance_service import (
     get_overseas_balance,
@@ -52,7 +52,7 @@ class AutoTradingService:
     
     def get_auto_trading_config(self, user_id: Optional[str] = None) -> Dict:
         """
-        자동매매 설정 조회 (MongoDB trading_configs 컬렉션)
+        자동매매 설정 조회 (users 컬렉션의 trading_config 필드)
         
         Args:
             user_id: 사용자 ID. None이면 기본 사용자 ID 사용
@@ -65,20 +65,18 @@ class AutoTradingService:
             if user_id is None:
                 user_id = get_current_user_id()
             
-            db = get_db()
+            db = get_mongodb_database()
             if db is None:
                 logger.error("MongoDB 연결 실패")
                 return self.default_config
             
-            # 사용자별 설정 조회 (updated_at 기준으로 정렬하여 가장 최근에 업데이트된 설정 사용)
-            config = db.trading_configs.find_one(
-                {"user_id": user_id},
-                sort=[("updated_at", -1), ("created_at", -1)]
-            )
+            # users 컬렉션에서 사용자 정보 조회
+            user = db.users.find_one({"user_id": user_id})
             
-            if config:
-                # ObjectId를 문자열로 변환
-                config["_id"] = str(config["_id"])
+            if user and user.get("trading_config"):
+                # trading_config가 있으면 반환 (ObjectId 제거)
+                config = user["trading_config"]
+                config["user_id"] = user_id  # user_id 추가
                 return config
             
             # 설정이 없으면 기본값 생성
@@ -90,7 +88,7 @@ class AutoTradingService:
     
     def _create_default_config(self, user_id: Optional[str] = None) -> Dict:
         """
-        기본 설정 생성 (MongoDB trading_configs 컬렉션)
+        기본 설정 생성 (users 컬렉션의 trading_config 필드)
         
         Args:
             user_id: 사용자 ID. None이면 기본 사용자 ID 사용
@@ -103,20 +101,34 @@ class AutoTradingService:
             if user_id is None:
                 user_id = get_current_user_id()
             
-            db = get_db()
+            db = get_mongodb_database()
             if db is None:
                 logger.error("MongoDB 연결 실패")
                 return self.default_config
             
             config = {
                 **self.default_config,
-                "user_id": user_id,  # 사용자 ID 추가
-                "created_at": datetime.now(),
                 "updated_at": datetime.now()
             }
-            result = db.trading_configs.insert_one(config)
-            config["_id"] = str(result.inserted_id)
-            logger.info(f"사용자별 기본 설정 생성: user_id={user_id}")
+            
+            # users 컬렉션에 trading_config 필드 업데이트
+            update_result = db.users.update_one(
+                {"user_id": user_id},
+                {
+                    "$set": {
+                        "trading_config": config,
+                        "updated_at": datetime.now()
+                    }
+                },
+                upsert=False  # 사용자가 없으면 생성하지 않음
+            )
+            
+            if update_result.modified_count > 0:
+                logger.info(f"사용자별 기본 설정 생성: user_id={user_id}")
+            else:
+                logger.warning(f"사용자 '{user_id}'를 찾을 수 없어 기본 설정을 생성하지 못했습니다. 기본값을 반환합니다.")
+            
+            config["user_id"] = user_id  # 반환용으로 user_id 추가
             return config
         except Exception as e:
             logger.error(f"기본 설정 생성 중 오류: {str(e)}")
@@ -124,7 +136,7 @@ class AutoTradingService:
     
     def update_auto_trading_config(self, config: Dict, user_id: Optional[str] = None) -> Dict:
         """
-        자동매매 설정 업데이트 (MongoDB trading_configs 컬렉션)
+        자동매매 설정 업데이트 (users 컬렉션의 trading_config 필드)
         
         Args:
             config: 업데이트할 설정 딕셔너리
@@ -138,32 +150,38 @@ class AutoTradingService:
             if user_id is None:
                 user_id = get_current_user_id()
             
-            db = get_db()
+            db = get_mongodb_database()
             if db is None:
                 logger.error("MongoDB 연결 실패")
                 return {"success": False, "error": "MongoDB 연결 실패"}
             
+            # 현재 설정 조회 (없으면 기본값 사용)
             current_config = self.get_auto_trading_config(user_id)
             
+            # user_id와 _id 필드 제거 (embedded config에는 포함하지 않음)
+            current_config.pop("user_id", None)
+            current_config.pop("_id", None)
+            current_config.pop("created_at", None)  # created_at도 제거 (trading_config에는 없음)
+            
             # 설정 업데이트
-            updated_config = {**current_config, **config, "updated_at": datetime.now(), "user_id": user_id}
+            updated_config = {**current_config, **config, "updated_at": datetime.now()}
             
-            # _id 필드 제거 (업데이트 시 _id는 변경 불가)
-            config_id = updated_config.pop("_id", None)
+            # users 컬렉션의 trading_config 필드 업데이트
+            update_result = db.users.update_one(
+                {"user_id": user_id},
+                {
+                    "$set": {
+                        "trading_config": updated_config,
+                        "updated_at": datetime.now()
+                    }
+                }
+            )
             
-            if config_id:
-                # 기존 설정 업데이트 (user_id도 함께 확인하여 안전성 강화)
-                from bson import ObjectId
-                db.trading_configs.update_one(
-                    {"_id": ObjectId(config_id), "user_id": user_id},
-                    {"$set": updated_config}
-                )
-                updated_config["_id"] = config_id
-            else:
-                # 새로운 설정 생성
-                updated_config["created_at"] = datetime.now()
-                result = db.trading_configs.insert_one(updated_config)
-                updated_config["_id"] = str(result.inserted_id)
+            if update_result.matched_count == 0:
+                return {"success": False, "error": f"사용자 '{user_id}'를 찾을 수 없습니다."}
+            
+            # 반환용으로 user_id 추가
+            updated_config["user_id"] = user_id
             
             logger.info(f"사용자별 설정 업데이트 완료: user_id={user_id}")
             return {"success": True, "config": updated_config}
@@ -713,7 +731,7 @@ class AutoTradingService:
     def _save_order_log(self, order_info: Dict, order_type: str):
         """주문 기록 저장 (MongoDB trading_logs 컬렉션)"""
         try:
-            db = get_db()
+            db = get_mongodb_database()
             if db is None:
                 logger.error("MongoDB 연결 실패 - 주문 기록 저장 불가")
                 return
@@ -740,7 +758,7 @@ class AutoTradingService:
     def _get_recent_orders(self, days: int = 7) -> List[Dict]:
         """최근 주문 내역 조회 (MongoDB trading_logs 컬렉션)"""
         try:
-            db = get_db()
+            db = get_mongodb_database()
             if db is None:
                 logger.error("MongoDB 연결 실패")
                 return []

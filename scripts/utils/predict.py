@@ -1034,10 +1034,14 @@ def save_predictions_to_db(result_df):
             try:
                 from datetime import datetime
                 
-                # 주식명 -> 티커 매핑 생성 (MongoDB stocks 컬렉션에서)
+                # 주식명 -> 티커 매핑 생성 (MongoDB stocks 컬렉션에서) - 프로젝션 사용으로 최적화
                 stock_to_ticker_map = {}
                 try:
-                    stocks = db.stocks.find({"is_active": True})
+                    # 프로젝션을 사용하여 필요한 필드만 가져오기 (성능 최적화)
+                    stocks = db.stocks.find(
+                        {"is_active": True},
+                        {"stock_name": 1, "ticker": 1, "_id": 0}  # 필요한 필드만 가져오기
+                    )
                     for stock in stocks:
                         stock_name = stock.get("stock_name")
                         ticker = stock.get("ticker")
@@ -1092,7 +1096,7 @@ def save_predictions_to_db(result_df):
                 
                 # 1. daily_stock_data.predictions 필드에 저장 (날짜별 통합) - Bulk Write 사용
                 print(f"MongoDB daily_stock_data에 {len(date_predictions)}개 날짜의 예측 데이터 저장 중...")
-                from datetime import datetime
+                now_utc = datetime.utcnow()  # 한 번만 호출하여 재사용 (성능 최적화)
                 
                 daily_stock_updates = []
                 for date_str, ticker_predictions in date_predictions.items():
@@ -1113,7 +1117,7 @@ def save_predictions_to_db(result_df):
                                 {
                                     "$set": {
                                         "predictions": predictions_data,
-                                        "updated_at": datetime.utcnow()
+                                        "updated_at": now_utc
                                     }
                                 },
                                 upsert=False  # 기존 문서가 있어야 함
@@ -1144,7 +1148,7 @@ def save_predictions_to_db(result_df):
                                     {
                                         "$set": {
                                             "predictions": predictions_data,
-                                            "updated_at": datetime.utcnow()
+                                            "updated_at": now_utc
                                         }
                                     },
                                     upsert=False
@@ -1173,10 +1177,10 @@ def save_predictions_to_db(result_df):
                                                 "predicted_price": pred_data.get('predicted_price'),
                                                 "actual_price": pred_data.get('actual_price'),
                                                 "forecast_horizon": 14,
-                                                "updated_at": datetime.utcnow()
+                                                "updated_at": now_utc
                                             },
                                             "$setOnInsert": {
-                                                "created_at": datetime.utcnow()
+                                                "created_at": now_utc
                                             }
                                         },
                                         upsert=True
@@ -1187,9 +1191,10 @@ def save_predictions_to_db(result_df):
                     except Exception as e:
                         print(f"⚠️ {date_str} 날짜 처리 실패: {str(e)}")
                 
-                # Bulk write 실행 (배치로 나누어 처리)
+                # Bulk write 실행 (배치 크기 증가로 성능 최적화)
                 if stock_predictions_updates:
-                    batch_size = 1000
+                    # 배치 크기를 5000으로 증가하여 네트워크 왕복 횟수 감소 (성능 최적화)
+                    batch_size = 5000
                     total_processed = 0
                     
                     for i in range(0, len(stock_predictions_updates), batch_size):
@@ -1219,10 +1224,10 @@ def save_predictions_to_db(result_df):
                                                         "predicted_price": pred_data.get('predicted_price'),
                                                         "actual_price": pred_data.get('actual_price'),
                                                         "forecast_horizon": 14,
-                                                        "updated_at": datetime.utcnow()
+                                                        "updated_at": now_utc
                                                     },
                                                     "$setOnInsert": {
-                                                        "created_at": datetime.utcnow()
+                                                        "created_at": now_utc
                                                     }
                                                 },
                                                 upsert=True
@@ -1441,10 +1446,14 @@ def save_analysis_to_db(result_df):
             try:
                 from datetime import datetime
                 
-                # 주식명 -> 티커 매핑 생성 (MongoDB stocks 컬렉션에서)
+                # 주식명 -> 티커 매핑 생성 (MongoDB stocks 컬렉션에서) - 프로젝션 사용으로 최적화
                 stock_to_ticker_map = {}
                 try:
-                    stocks = db.stocks.find({"is_active": True})
+                    # 프로젝션을 사용하여 필요한 필드만 가져오기 (성능 최적화)
+                    stocks = db.stocks.find(
+                        {"is_active": True},
+                        {"stock_name": 1, "ticker": 1, "_id": 0}  # 필요한 필드만 가져오기
+                    )
                     for stock in stocks:
                         stock_name = stock.get("stock_name")
                         ticker = stock.get("ticker")
@@ -1466,13 +1475,17 @@ def save_analysis_to_db(result_df):
                 # 오늘 날짜로 저장 (분석 기준일)
                 today_str = datetime.now().strftime('%Y-%m-%d')
                 today_obj = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+                now_utc = datetime.utcnow()
                 
-                # 1. stock_analysis 컬렉션에 저장 (종목별 시계열) - Bulk Write 사용
-                print(f"MongoDB stock_analysis 컬렉션에 종목별 분석 데이터 저장 중...")
+                # 레코드를 한 번만 순회하면서 두 컬렉션에 필요한 데이터 모두 준비 (성능 최적화)
+                print(f"MongoDB stock_analysis 컬렉션 및 daily_stock_data.analysis 필드에 분석 데이터 저장 중...")
                 stock_analysis_updates = []
+                analysis_data = {}
                 
                 skipped_no_ticker = 0
                 skipped_stocks = []  # 티커를 찾을 수 없는 종목 목록
+                
+                # 한 번의 순회로 두 컬렉션에 필요한 데이터 모두 준비
                 for record in records:
                     stock_name = record.get('Stock')
                     if not stock_name:
@@ -1483,11 +1496,12 @@ def save_analysis_to_db(result_df):
                         # 티커 매핑이 없으면 저장하지 않고 건너뜀
                         skipped_no_ticker += 1
                         skipped_stocks.append(stock_name)
-                        print(f"⚠️ 티커를 찾을 수 없어 저장 건너뜀: {stock_name} (MongoDB stocks 컬렉션에 해당 종목이 없거나 티커 매핑이 없습니다)")
+                        if skipped_no_ticker <= 10:  # 처음 10개만 출력
+                            print(f"⚠️ 티커를 찾을 수 없어 저장 건너뜀: {stock_name}")
                         continue
 
                     try:
-                        # 분석 데이터 구조화
+                        # 분석 데이터 구조화 (한 번만 수행)
                         metrics = {
                             'mae': record.get('MAE'),
                             'mse': record.get('MSE'),
@@ -1503,6 +1517,7 @@ def save_analysis_to_db(result_df):
                             'rise_probability': record.get('Rise Probability (%)')
                         }
                         
+                        # 1. stock_analysis 컬렉션용 업데이트 추가
                         stock_analysis_updates.append(
                             UpdateOne(
                                 {
@@ -1517,19 +1532,27 @@ def save_analysis_to_db(result_df):
                                         "predictions": predictions,
                                         "recommendation": record.get('Recommendation'),
                                         "analysis": record.get('Analysis'),
-                                        "updated_at": datetime.utcnow()
+                                        "updated_at": now_utc
                                     },
                                     "$setOnInsert": {
-                                        "created_at": datetime.utcnow()
+                                        "created_at": now_utc
                                     }
                                 },
                                 upsert=True
                             )
                         )
+                        
+                        # 2. daily_stock_data.analysis 필드용 데이터 추가
+                        analysis_data[ticker] = {
+                            'metrics': metrics,
+                            'predictions': predictions,
+                            'recommendation': record.get('Recommendation'),
+                            'analysis': record.get('Analysis')
+                        }
                     except Exception as e:
                         print(f"⚠️ {stock_name} ({ticker}) 분석 데이터 준비 실패: {str(e)}")
                 
-                # Bulk write 실행 (배치로 나누어 처리)
+                # Bulk write 실행 (배치 크기 증가로 성능 최적화)
                 print(f"stock_analysis_updates 개수: {len(stock_analysis_updates)}")
                 if skipped_no_ticker > 0:
                     print(f"⚠️ 티커를 찾을 수 없어 저장하지 않은 종목: {skipped_no_ticker}개")
@@ -1537,7 +1560,8 @@ def save_analysis_to_db(result_df):
                         print(f"   건너뛴 종목 목록: {', '.join(skipped_stocks[:10])}" + (f" 외 {len(skipped_stocks) - 10}개" if len(skipped_stocks) > 10 else ""))
                 
                 if stock_analysis_updates:
-                    batch_size = 1000
+                    # 배치 크기를 5000으로 증가하여 네트워크 왕복 횟수 감소 (성능 최적화)
+                    batch_size = 5000
                     total_processed = 0
                     
                     for i in range(0, len(stock_analysis_updates), batch_size):
@@ -1565,41 +1589,6 @@ def save_analysis_to_db(result_df):
                 else:
                     print(f"⚠️ stock_analysis_updates가 비어있습니다. 저장할 데이터가 없습니다.")
                 
-                # 2. daily_stock_data.analysis 필드에 저장 (날짜별 통합) - Bulk Write 사용
-                print(f"MongoDB daily_stock_data.analysis 필드에 날짜별 통합 분석 데이터 저장 중...")
-                analysis_data = {}
-                
-                for record in records:
-                    stock_name = record.get('Stock')
-                    if not stock_name:
-                        continue
-                    
-                    ticker = stock_to_ticker_map.get(stock_name)
-                    if not ticker:
-                        # 티커 매핑이 없으면 저장하지 않고 건너뜀
-                        continue
-                    
-                    try:
-                        analysis_data[ticker] = {
-                            'metrics': {
-                                'mae': record.get('MAE'),
-                                'mse': record.get('MSE'),
-                                'rmse': record.get('RMSE'),
-                                'mape': record.get('MAPE (%)'),
-                                'accuracy': record.get('Accuracy (%)')
-                            },
-                            'predictions': {
-                                'last_actual_price': record.get('Last Actual Price'),
-                                'predicted_future_price': record.get('Predicted Future Price'),
-                                'predicted_rise': record.get('Predicted Rise'),
-                                'rise_probability': record.get('Rise Probability (%)')
-                            },
-                            'recommendation': record.get('Recommendation'),
-                            'analysis': record.get('Analysis')
-                        }
-                    except Exception as e:
-                        print(f"⚠️ {stock_name} ({ticker}) 분석 데이터 준비 실패: {str(e)}")
-                
                 # daily_stock_data 업데이트
                 if analysis_data:
                     try:
@@ -1608,7 +1597,7 @@ def save_analysis_to_db(result_df):
                             {
                                 "$set": {
                                     "analysis": analysis_data,
-                                    "updated_at": datetime.utcnow()
+                                    "updated_at": now_utc
                                 }
                             },
                             upsert=False  # 기존 문서가 있어야 함

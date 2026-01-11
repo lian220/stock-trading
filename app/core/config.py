@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     )
     KIS_USE_MOCK: bool = Field(
         default=False,
-        description="모의투자 사용 여부 (.env에서 KIS_USE_MOCK=true/false로 설정 가능)"
+        description="모의투자 사용 여부 (기본값: False, 실제 계좌 사용) (.env에서 KIS_USE_MOCK=true/false로 설정 가능, true=모의투자, false=실제 계좌)"
     )
 
     ALPHA_VANTAGE_API_KEY: str = Field(
