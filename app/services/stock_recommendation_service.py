@@ -466,7 +466,7 @@ class StockRecommendationService:
 
         return {"message": f"{len(recommendations)}개의 추천 데이터가 생성되었습니다", "data": recommendations}
 
-    def get_stock_recommendations(self):
+    def get_stock_recommendations(self, user_id: Optional[str] = None):
         """
         Accuracy가 80% 이상이고 상승 확률이 3% 이상인 추천 주식 목록을 반환합니다.
         상승 확률 기준으로 내림차순 정렬됩니다.
@@ -478,6 +478,9 @@ class StockRecommendationService:
         - 같은 종목이 여러 날짜에 분석되어도, 가장 최근 분석 결과만 사용하여 중복을 방지합니다.
 
         MongoDB stock_analysis 컬렉션에서 조회합니다.
+        
+        Args:
+            user_id: 사용자 ID. None이면 전역 분석만 조회
         """
         try:
             db = get_db()
@@ -487,11 +490,20 @@ class StockRecommendationService:
 
             # MongoDB stock_analysis 컬렉션에서 조회 (필터 조건 적용, 날짜 내림차순)
             # 날짜 내림차순 정렬로 최신 데이터를 먼저 가져옴
-            cursor = db.stock_analysis.find({
+            query = {
                 "metrics.accuracy": {"$gte": 80},
-                "predictions.rise_probability": {"$gte": 3},
-                "user_id": None  # 전역 분석만
-            }).sort("date", -1).sort("predictions.rise_probability", -1)
+                "predictions.rise_probability": {"$gte": 3}
+            }
+            # user_id가 None이면 전역 분석만, 아니면 해당 사용자 분석 또는 전역 분석
+            if user_id is None:
+                query["user_id"] = None  # 전역 분석만
+            else:
+                query["$or"] = [
+                    {"user_id": user_id},  # 사용자별 분석
+                    {"user_id": None}  # 전역 분석도 포함
+                ]
+            
+            cursor = db.stock_analysis.find(query).sort("date", -1).sort("predictions.rise_probability", -1)
             data = list(cursor)
 
             if not data:

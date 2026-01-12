@@ -2,6 +2,7 @@ import requests
 import json
 import time
 from datetime import datetime, timedelta
+from typing import Optional
 import pytz
 from app.core.config import settings
 from app.core.enums import OrderStatus
@@ -65,12 +66,15 @@ def _handle_rate_limit_error(result, attempt, max_retries):
             return False  # 재시도 불가
     return None  # Rate limiting 에러가 아님
 
-def get_access_token(user_id: str = "lian"):
+def get_access_token(user_id: Optional[str] = None):
     """한국투자증권 API 접근 토큰 발급 또는 캐시된 토큰 반환
     
     Args:
-        user_id: 사용자 ID (기본값: "lian")
+        user_id: 사용자 ID. None이면 기본 사용자 ID 사용
     """
+    from app.utils.user_context import get_current_user_id
+    if user_id is None:
+        user_id = get_current_user_id()
     global _token_cache, _last_refresh_time
     
     # 현재 설정에 따른 토큰 캐시 키
@@ -137,15 +141,18 @@ def get_access_token(user_id: str = "lian"):
                 return cache["access_token"]
             raise Exception(f"[{user_id}] {token_type} 토큰 발급 실패: {str(e)}")
 
-def refresh_token_with_retry(record_id=None, max_retries=3, account_type=None, user_id: str = "lian"):
+def refresh_token_with_retry(record_id=None, max_retries=3, account_type=None, user_id: Optional[str] = None):
     """토큰 갱신을 재시도하며 처리 (MongoDB access_tokens 컬렉션)
     
     Args:
         record_id: 업데이트할 토큰 레코드의 ID (없으면 새로 생성)
         max_retries: 최대 재시도 횟수
         account_type: 계정 유형 ("mock" 또는 "real")
-        user_id: 사용자 ID (기본값: "lian")
+        user_id: 사용자 ID. None이면 기본 사용자 ID 사용
     """
+    from app.utils.user_context import get_current_user_id
+    if user_id is None:
+        user_id = get_current_user_id()
     # account_type이 없으면 현재 설정에서 결정
     if account_type is None:
         account_type = "mock" if settings.KIS_USE_MOCK else "real"
@@ -1547,12 +1554,12 @@ def calculate_portfolio_profit():
         }
 
 
-def calculate_total_return(user_id: str = "lian"):
+def calculate_total_return(user_id: Optional[str] = None):
     """
     전체 수익률 계산 (총 자산 기준)
     
     Args:
-        user_id: 사용자 ID (기본값: "lian")
+        user_id: 사용자 ID. None이면 기본 사용자 ID 사용
     
     Returns:
         dict: {
@@ -1564,6 +1571,10 @@ def calculate_total_return(user_id: str = "lian"):
             "error": str (optional)
         }
     """
+    from app.utils.user_context import get_current_user_id
+    if user_id is None:
+        user_id = get_current_user_id()
+    
     try:
         db = get_db()
         if db is None:

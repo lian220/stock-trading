@@ -61,20 +61,31 @@
 
 ### 우선순위 0: 개인화 및 멀티 유저 지원 (기반 작업)
 
+#### 멀티 유저 자동매수 지원
+- [x] **멀티 유저 자동매수 지원** (2026-01-09 완료)
+  - [x] `AutoTradingService.get_active_users()` 메서드 구현 - trading_config.enabled=true인 모든 사용자 조회
+  - [x] `get_buy_candidates()`에서 하드코딩된 user_id 제거하고 파라미터로 받은 user_id 사용
+  - [x] `scheduler.py`의 `_execute_auto_buy()`를 수정하여 모든 활성 사용자에 대해 매수 실행
+  - [x] 사용자별 설정, 레버리지 설정, 매수 후보 필터링 적용
+  - [x] 사용자별 매수 실행 및 결과 집계
+  - [x] `_save_trading_log()`에 user_id 파라미터 추가
+
 #### 사용자 컨텍스트 관리
-- [ ] **사용자 컨텍스트 유틸리티 구현**
-  - [ ] `app/utils/user_context.py` 생성
-  - [ ] 현재 사용자 ID 가져오기 함수 구현 (환경변수 또는 설정에서)
-  - [ ] 사용자 컨텍스트 관리 클래스 구현
-  - [ ] 기본 사용자 ID 설정 (환경변수 `DEFAULT_USER_ID` 또는 설정 파일)
-- [ ] **하드코딩된 user_id 제거**
-  - [ ] `TrailingStopService`의 user_id 하드코딩 제거
-  - [ ] `StockRecommendationService`의 user_id 하드코딩 제거
-  - [ ] `scheduler.py`의 user_id 하드코딩 제거
-  - [ ] `balance_service.py`의 기본 user_id 파라미터 처리 개선
-- [ ] **스케줄러 사용자 설정**
-  - [ ] 스케줄러 실행 시 사용할 사용자 ID 설정 방법 (환경변수 또는 설정)
-  - [ ] 스케줄러가 여러 사용자를 지원하도록 구조 변경 (선택사항)
+- [x] **사용자 컨텍스트 유틸리티 구현** (이미 구현됨)
+  - [x] `app/utils/user_context.py` 생성 (이미 존재)
+  - [x] 현재 사용자 ID 가져오기 함수 구현 (`get_current_user_id()`, 환경변수 또는 설정에서)
+  - [x] 사용자 컨텍스트 관리 클래스 구현 (`UserContext` 클래스)
+  - [x] 기본 사용자 ID 설정 (환경변수 `DEFAULT_USER_ID` 또는 기본값 'lian')
+- [x] **하드코딩된 user_id 제거** (2026-01-09 완료)
+  - [x] `TrailingStopService`의 user_id 하드코딩 제거 (이미 `get_current_user_id()` 사용 중)
+  - [x] `StockRecommendationService`의 user_id 하드코딩 제거 (`get_stock_recommendations()`에 `user_id` 파라미터 추가)
+  - [x] `scheduler.py`의 user_id 하드코딩 제거 (자동매수 부분 완료, 2026-01-09)
+  - [x] `balance_service.py`의 기본 user_id 파라미터 처리 개선 (`get_access_token`, `refresh_token_with_retry`, `calculate_total_return` 수정)
+  - [x] `app/api/routes/balance.py`의 기본 user_id 파라미터 처리 개선
+  - [x] `app/models/mongodb_models.py`의 `TrailingStop` 모델 기본값 제거
+- [x] **스케줄러 사용자 설정** (자동매수 완료)
+  - [x] 스케줄러 실행 시 활성 사용자 자동 감지 (`trading_config.enabled = true`)
+  - [x] 스케줄러가 여러 사용자를 지원하도록 구조 변경 (자동매수 완료, 2026-01-09)
 - [ ] **API 사용자 인증/인가**
   - [ ] API 요청에서 user_id 추출 로직 (쿼리 파라미터, 헤더, 또는 JWT)
   - [ ] 사용자 인증 미들웨어 구현 (선택사항, 향후 확장)
@@ -396,4 +407,4 @@
 
 ---
 
-**마지막 업데이트**: 2026-01-09 (작업 세분화 및 상세화 완료)
+**마지막 업데이트**: 2026-01-09 (멀티 유저 자동매수 지원 완료 및 하드코딩된 user_id 제거 완료)

@@ -1499,6 +1499,21 @@ class StockScheduler:
         
         logger.info(f"[{function_name}] 미국 장 시간 확인: {now_in_korea.strftime('%Y-%m-%d %H:%M:%S')} (뉴욕: {now_in_ny.strftime('%Y-%m-%d %H:%M:%S')})")
         
+        # 활성 사용자 목록 조회
+        active_users = self.auto_trading_service.get_active_users()
+        if not active_users:
+            logger.info(f"[{function_name}] 자동매수가 활성화된 사용자가 없습니다.")
+            if send_slack_notification:
+                slack_notifier.send_no_buy_notification(
+                    reason="활성 사용자 없음",
+                    details="자동매수가 활성화된 사용자가 없습니다."
+                )
+            logger.info(f"[{function_name}] 함수 실행 완료")
+            return
+        
+        logger.info(f"[{function_name}] 자동매수 활성 사용자 수: {len(active_users)}명")
+        logger.info(f"[{function_name}] 활성 사용자 목록: {', '.join(active_users)}")
+        
         # 보유 종목 및 잔고 조회
         try:
             # 1. 모든 거래소의 보유 종목 조회
@@ -1614,397 +1629,410 @@ class StockScheduler:
         raw_candidates = recommendations.get("results", [])
         logger.info(f"[{function_name}] 추천 종목 수 (중복 제거 전): {len(raw_candidates)}개")
         
-        # MongoDB에서 사용자 정보 조회 (레버리지 설정 확인용) - 필터링을 위해 먼저 조회
-        user_leverage_map = {}  # ticker -> use_leverage (leverage_ticker는 stocks 컬렉션에서 조회)
-        db = None
-        try:
-            from app.infrastructure.database.mongodb_client import get_mongodb_database
-            db = get_mongodb_database()
+        # 각 활성 사용자에 대해 매수 실행
+        total_successful_purchases = 0
+        total_failed_orders = 0
+        
+        for user_id in active_users:
+            logger.info("=" * 80)
+            logger.info(f"[{function_name}] 사용자 '{user_id}' 매수 처리 시작")
+            logger.info("=" * 80)
             
-            if db is not None:
-                # 사용자 정보 조회 (user_id는 설정에서 가져오거나 기본값 사용)
-                user_id = getattr(settings, 'USER_ID', 'lian')  # 기본값 'lian'
-                user = db.users.find_one({"user_id": user_id})
-                
-                if user and user.get("stocks"):
-                    for stock in user.get("stocks", []):
-                        ticker = stock.get("ticker")
-                        use_leverage = stock.get("use_leverage", False)
-                        
-                        if ticker:
-                            user_leverage_map[ticker] = {
-                                "use_leverage": use_leverage
-                                # leverage_ticker는 stocks 컬렉션에서 조회
-                            }
-                    
-                    logger.info(f"[{function_name}] 사용자 '{user_id}'의 레버리지 설정 로드 완료: {len(user_leverage_map)}개 종목")
-                else:
-                    logger.warning(f"[{function_name}] 사용자 '{user_id}' 정보를 찾을 수 없거나 종목 정보가 없습니다.")
-            else:
-                logger.warning(f"[{function_name}] MongoDB 연결 실패 - 레버리지 설정을 사용할 수 없습니다.")
-        except Exception as e:
-            logger.error(f"[{function_name}] 사용자 레버리지 설정 조회 중 오류: {str(e)}", exc_info=True)
-        
-        # 중복 제거 및 use_leverage 필터링
-        buy_candidates = []
-        seen_tickers = set()
-        
-        for candidate in raw_candidates:
-            ticker = candidate.get("ticker")
-            stock_name = candidate.get("stock_name", "N/A")
-            
-            if not ticker:
-                logger.warning(f"[{function_name}] 티커가 없는 추천 종목 발견 및 제외: {stock_name}")
-                continue
-            
-            # 중복 제거
-            if ticker in seen_tickers:
-                logger.warning(f"[{function_name}] 중복된 티커 발견 및 제외: {stock_name} ({ticker})")
-                continue
-            seen_tickers.add(ticker)
-            
-            # use_leverage 필터링: use_leverage가 true인 종목만 매수
-            if ticker not in user_leverage_map:
-                # 사용자 설정에 없는 종목은 매수하지 않음
-                logger.info(f"[{function_name}] {stock_name}({ticker}) - 사용자 설정에 없어 매수 제외")
-                continue
-            
-            if not user_leverage_map[ticker]["use_leverage"]:
-                # use_leverage가 false인 종목은 매수하지 않음
-                logger.info(f"[{function_name}] {stock_name}({ticker}) - use_leverage가 false여서 매수 제외")
-                continue
-            
-            buy_candidates.append(candidate)
-        
-        logger.info(f"[{function_name}] 매수 후보 종목 수 (중복 제거 및 use_leverage 필터링 후): {len(buy_candidates)}개")
-        
-        if not buy_candidates:
-            logger.info(f"[{function_name}] 매수 조건을 만족하는 종목이 없습니다.")
-            if send_slack_notification:
-                slack_notifier.send_no_buy_notification(
-                    reason="매수 조건 불만족",
-                    details="매수 조건을 만족하는 종목이 없습니다."
-                )
-            logger.info(f"[{function_name}] 함수 실행 완료")
-            return
-        
-        
-        logger.info(f"[{function_name}] 매수 대상 종목 {len(buy_candidates)}개를 찾았습니다. (종합 점수 높은 순)")
-        
-        # 자동매매 설정 조회 (보유 중인 종목 매수 허용 여부 확인)
-        from app.utils.user_context import get_current_user_id
-        user_id = get_current_user_id()
-        trading_config = self.auto_trading_service.get_auto_trading_config(user_id=user_id)
-        allow_buy_existing_stocks = trading_config.get("allow_buy_existing_stocks", True)  # 기본값: True
-        max_portfolio_weight = trading_config.get("max_portfolio_weight_per_stock", 20.0)  # 기본값: 20%
-        logger.info(f"[{function_name}] 보유 중인 종목 매수 허용: {allow_buy_existing_stocks}")
-        logger.info(f"[{function_name}] 단일 종목 최대 투자 비중: {max_portfolio_weight}%")
-        
-        # 성공한 매수 건수 추적
-        successful_purchases = 0
-        skipped_no_cash = 0
-        skipped_already_holding = 0
-        skipped_price_fetch_failed = 0
-        skipped_invalid_price = 0
-        skipped_portfolio_weight = 0  # 포트폴리오 비중 초과로 스킵된 건수
-        failed_orders = 0
-        
-        # 체결 확인 태스크 추적 (요약 로그 출력 전 모든 체결 확인 완료 대기용)
-        execution_tasks = []
-        
-        # 각 종목에 대해 API 호출하여 현재 체결가 조회 및 매수 주문
-        # buy_candidates는 이미 composite_score 순으로 정렬되어 있음
-        for candidate in buy_candidates:
             try:
-                ticker = candidate["ticker"]
-                stock_name = candidate["stock_name"]
-                
-                # 사용자의 레버리지 설정 확인 (leverage_ticker는 stocks 컬렉션에서 조회)
-                actual_ticker = ticker  # 기본값은 원래 티커
-                if ticker in user_leverage_map and user_leverage_map[ticker]["use_leverage"]:
-                    # stocks 컬렉션에서 레버리지 티커 조회
-                    stock_doc = db.stocks.find_one({"ticker": ticker})
-                    if stock_doc and stock_doc.get("leverage_ticker"):
-                        actual_ticker = stock_doc["leverage_ticker"]
-                        logger.info(f"[{function_name}] {stock_name}({ticker}) - 레버리지 활성화, {actual_ticker}로 매수")
-                    else:
-                        logger.warning(f"[{function_name}] {stock_name}({ticker}) - 레버리지 설정 활성화되었으나 leverage_ticker가 없음, 일반 티커로 매수")
-                else:
-                    logger.info(f"[{function_name}] {stock_name}({ticker}) - 일반 티커로 매수")                
-                # 거래소 코드 결정 (미국 주식 기준)
-                if actual_ticker.endswith(".X") or actual_ticker.endswith(".N"):
-                    # 거래소 구분이 티커에 포함된 경우
-                    exchange_code = "NYSE" if actual_ticker.endswith(".N") else "NASD"
-                    pure_ticker = actual_ticker.split(".")[0]
-                else:
-                    # 기본값 NASDAQ으로 설정
-                    exchange_code = "NASD"
-                    pure_ticker = actual_ticker
-                
-                # 이미 보유 중인 종목인지 확인 (옵션에 따라)
-                if not allow_buy_existing_stocks and pure_ticker in holding_tickers:
-                    logger.info(f"[{function_name}] ⏭️ {stock_name}({ticker}) - 이미 보유 중인 종목이므로 매수하지 않습니다. (allow_buy_existing_stocks=false)")
-                    skipped_already_holding += 1
-                    continue
-                elif allow_buy_existing_stocks and pure_ticker in holding_tickers:
-                    logger.info(f"[{function_name}] ℹ️ {stock_name}({ticker}) - 이미 보유 중이지만 매수 허용 옵션이 활성화되어 있어 매수합니다.")
-                
-                # 거래소 코드 변환 (API 요청에 맞게 변환)
-                api_exchange_code = "NAS"
-                if exchange_code == "NYSE":
-                    api_exchange_code = "NYS"
-                
-                # 현재가 조회
-                price_params = {
-                    "AUTH": "",
-                    "EXCD": api_exchange_code,  # 변환된 거래소 코드 사용
-                    "SYMB": pure_ticker
-                }
-                
-                price_result = get_current_price(price_params)
-                
-                if price_result.get("rt_cd") != "0":
-                    error_msg = price_result.get('msg1', '알 수 없는 오류')
-                    logger.error(f"[{function_name}] ⏭️ {stock_name}({ticker}) 현재가 조회 실패: {error_msg}")
-                    skipped_price_fetch_failed += 1
-                    continue
-                
-                # 현재가 추출
-                last_price = price_result.get("output", {}).get("last", 0) or 0
+                # 사용자별 레버리지 설정 조회
+                user_leverage_map = {}  # ticker -> use_leverage (leverage_ticker는 stocks 컬렉션에서 조회)
+                db = None
                 try:
-                    current_price = float(last_price)
-                except (ValueError, TypeError) as e:
-                    logger.error(f"[{function_name}] ⏭️ {stock_name}({ticker}) 현재가 변환 실패: {last_price}, 오류: {str(e)}")
-                    skipped_invalid_price += 1
-                    continue
-                
-                if current_price <= 0:
-                    logger.error(f"[{function_name}] ⏭️ {stock_name}({ticker}) 현재가가 유효하지 않습니다: {current_price}")
-                    skipped_invalid_price += 1
-                    continue
-                
-                # 포트폴리오 비중 체크
-                current_holding_value = holding_values.get(pure_ticker, 0.0)
-                current_weight = (current_holding_value / portfolio_total_value * 100) if portfolio_total_value > 0 else 0.0
-                
-                # 매수 예정 금액 (1주 기준)
-                buy_amount = current_price
-                new_total_value = portfolio_total_value + buy_amount
-                new_holding_value = current_holding_value + buy_amount
-                new_weight = (new_holding_value / new_total_value * 100) if new_total_value > 0 else 0.0
-                
-                # 최대 비중 초과 체크
-                if new_weight > max_portfolio_weight:
-                    # 현재 보유 비중이 이미 최대 비중을 초과하는 경우
-                    if current_weight >= max_portfolio_weight:
-                        logger.warning(f"[{function_name}] ⏭️ {stock_name}({ticker}) - 현재 보유 비중({current_weight:.2f}%)이 이미 최대 비중({max_portfolio_weight}%)을 초과하여 매수하지 않습니다.")
-                        skipped_portfolio_weight += 1
-                        continue
+                    from app.infrastructure.database.mongodb_client import get_mongodb_database
+                    db = get_mongodb_database()
+                    
+                    if db is not None:
+                        user = db.users.find_one({"user_id": user_id})
+                        
+                        if user and user.get("stocks"):
+                            for stock in user.get("stocks", []):
+                                ticker = stock.get("ticker")
+                                use_leverage = stock.get("use_leverage", False)
+                                
+                                if ticker:
+                                    user_leverage_map[ticker] = {
+                                        "use_leverage": use_leverage
+                                        # leverage_ticker는 stocks 컬렉션에서 조회
+                                    }
+                            
+                            logger.info(f"[{function_name}] 사용자 '{user_id}'의 레버리지 설정 로드 완료: {len(user_leverage_map)}개 종목")
+                        else:
+                            logger.warning(f"[{function_name}] 사용자 '{user_id}' 정보를 찾을 수 없거나 종목 정보가 없습니다.")
+                            continue
                     else:
-                        # 최대 비중을 초과하지 않도록 매수 금액 조정
-                        max_allowed_value = (new_total_value * max_portfolio_weight / 100) - current_holding_value
-                        if max_allowed_value <= 0:
-                            logger.warning(f"[{function_name}] ⏭️ {stock_name}({ticker}) - 최대 비중 제한으로 인해 추가 매수 불가. 현재 비중: {current_weight:.2f}%, 최대 비중: {max_portfolio_weight}%")
-                            skipped_portfolio_weight += 1
+                        logger.warning(f"[{function_name}] MongoDB 연결 실패 - 레버리지 설정을 사용할 수 없습니다.")
+                        continue
+                except Exception as e:
+                    logger.error(f"[{function_name}] 사용자 '{user_id}' 레버리지 설정 조회 중 오류: {str(e)}", exc_info=True)
+                    continue
+                
+                # 중복 제거 및 use_leverage 필터링
+                buy_candidates = []
+                seen_tickers = set()
+                
+                for candidate in raw_candidates:
+                    ticker = candidate.get("ticker")
+                    stock_name = candidate.get("stock_name", "N/A")
+                    
+                    if not ticker:
+                        continue
+                    
+                    # 중복 제거
+                    if ticker in seen_tickers:
+                        continue
+                    seen_tickers.add(ticker)
+                    
+                    # use_leverage 필터링: use_leverage가 true인 종목만 매수
+                    if ticker not in user_leverage_map:
+                        continue
+                    
+                    if not user_leverage_map[ticker]["use_leverage"]:
+                        continue
+                    
+                    buy_candidates.append(candidate)
+                
+                logger.info(f"[{function_name}] 사용자 '{user_id}' 매수 후보 종목 수: {len(buy_candidates)}개")
+                
+                if not buy_candidates:
+                    logger.info(f"[{function_name}] 사용자 '{user_id}' 매수 조건을 만족하는 종목이 없습니다.")
+                    continue
+                
+                # 자동매매 설정 조회 (보유 중인 종목 매수 허용 여부 확인)
+                trading_config = self.auto_trading_service.get_auto_trading_config(user_id=user_id)
+                allow_buy_existing_stocks = trading_config.get("allow_buy_existing_stocks", True)  # 기본값: True
+                max_portfolio_weight = trading_config.get("max_portfolio_weight_per_stock", 20.0)  # 기본값: 20%
+                logger.info(f"[{function_name}] 사용자 '{user_id}' - 보유 중인 종목 매수 허용: {allow_buy_existing_stocks}")
+                logger.info(f"[{function_name}] 사용자 '{user_id}' - 단일 종목 최대 투자 비중: {max_portfolio_weight}%")
+        
+                # 성공한 매수 건수 추적 (사용자별)
+                successful_purchases = 0
+                skipped_no_cash = 0
+                skipped_already_holding = 0
+                skipped_price_fetch_failed = 0
+                skipped_invalid_price = 0
+                skipped_portfolio_weight = 0  # 포트폴리오 비중 초과로 스킵된 건수
+                failed_orders = 0
+                
+                # 체결 확인 태스크 추적 (요약 로그 출력 전 모든 체결 확인 완료 대기용)
+                execution_tasks = []
+                
+                # 각 종목에 대해 API 호출하여 현재 체결가 조회 및 매수 주문
+                # buy_candidates는 이미 composite_score 순으로 정렬되어 있음
+                for candidate in buy_candidates:
+                    try:
+                        ticker = candidate["ticker"]
+                        stock_name = candidate["stock_name"]
+                        
+                        # 사용자의 레버리지 설정 확인 (leverage_ticker는 stocks 컬렉션에서 조회)
+                        actual_ticker = ticker  # 기본값은 원래 티커
+                        if ticker in user_leverage_map and user_leverage_map[ticker]["use_leverage"]:
+                            # stocks 컬렉션에서 레버리지 티커 조회
+                            stock_doc = db.stocks.find_one({"ticker": ticker})
+                            if stock_doc and stock_doc.get("leverage_ticker"):
+                                actual_ticker = stock_doc["leverage_ticker"]
+                                logger.info(f"[{function_name}] {stock_name}({ticker}) - 레버리지 활성화, {actual_ticker}로 매수")
+                            else:
+                                logger.warning(f"[{function_name}] {stock_name}({ticker}) - 레버리지 설정 활성화되었으나 leverage_ticker가 없음, 일반 티커로 매수")
+                        else:
+                            logger.info(f"[{function_name}] {stock_name}({ticker}) - 일반 티커로 매수")                
+                        # 거래소 코드 결정 (미국 주식 기준)
+                        if actual_ticker.endswith(".X") or actual_ticker.endswith(".N"):
+                            # 거래소 구분이 티커에 포함된 경우
+                            exchange_code = "NYSE" if actual_ticker.endswith(".N") else "NASD"
+                            pure_ticker = actual_ticker.split(".")[0]
+                        else:
+                            # 기본값 NASDAQ으로 설정
+                            exchange_code = "NASD"
+                            pure_ticker = actual_ticker
+                        
+                        # 이미 보유 중인 종목인지 확인 (옵션에 따라)
+                        if not allow_buy_existing_stocks and pure_ticker in holding_tickers:
+                            logger.info(f"[{function_name}] ⏭️ {stock_name}({ticker}) - 이미 보유 중인 종목이므로 매수하지 않습니다. (allow_buy_existing_stocks=false)")
+                            skipped_already_holding += 1
+                            continue
+                        elif allow_buy_existing_stocks and pure_ticker in holding_tickers:
+                            logger.info(f"[{function_name}] ℹ️ {stock_name}({ticker}) - 이미 보유 중이지만 매수 허용 옵션이 활성화되어 있어 매수합니다.")
+                        
+                        # 거래소 코드 변환 (API 요청에 맞게 변환)
+                        api_exchange_code = "NAS"
+                        if exchange_code == "NYSE":
+                            api_exchange_code = "NYS"
+                        
+                        # 현재가 조회
+                        price_params = {
+                            "AUTH": "",
+                            "EXCD": api_exchange_code,  # 변환된 거래소 코드 사용
+                            "SYMB": pure_ticker
+                        }
+                        
+                        price_result = get_current_price(price_params)
+                        
+                        if price_result.get("rt_cd") != "0":
+                            error_msg = price_result.get('msg1', '알 수 없는 오류')
+                            logger.error(f"[{function_name}] ⏭️ {stock_name}({ticker}) 현재가 조회 실패: {error_msg}")
+                            skipped_price_fetch_failed += 1
                             continue
                         
-                        # 조정된 매수 금액으로 수량 재계산
-                        adjusted_quantity = max(1, int(max_allowed_value / current_price))
-                        buy_amount = adjusted_quantity * current_price
-                        new_holding_value = current_holding_value + buy_amount
+                        # 현재가 추출
+                        last_price = price_result.get("output", {}).get("last", 0) or 0
+                        try:
+                            current_price = float(last_price)
+                        except (ValueError, TypeError) as e:
+                            logger.error(f"[{function_name}] ⏭️ {stock_name}({ticker}) 현재가 변환 실패: {last_price}, 오류: {str(e)}")
+                            skipped_invalid_price += 1
+                            continue
+                        
+                        if current_price <= 0:
+                            logger.error(f"[{function_name}] ⏭️ {stock_name}({ticker}) 현재가가 유효하지 않습니다: {current_price}")
+                            skipped_invalid_price += 1
+                            continue
+                        
+                        # 포트폴리오 비중 체크
+                        current_holding_value = holding_values.get(pure_ticker, 0.0)
+                        current_weight = (current_holding_value / portfolio_total_value * 100) if portfolio_total_value > 0 else 0.0
+                        
+                        # 매수 예정 금액 (1주 기준)
+                        buy_amount = current_price
                         new_total_value = portfolio_total_value + buy_amount
+                        new_holding_value = current_holding_value + buy_amount
                         new_weight = (new_holding_value / new_total_value * 100) if new_total_value > 0 else 0.0
                         
-                        logger.info(f"[{function_name}] ⚖️ {stock_name}({ticker}) - 포트폴리오 비중 제한 적용: 최대 비중({max_portfolio_weight}%)을 초과하지 않도록 매수 금액 조정")
-                        logger.info(f"[{function_name}]    현재 비중: {current_weight:.2f}% → 예상 비중: {new_weight:.2f}% (매수 금액: ${buy_amount:.2f})")
-                
-                # 매수 가능 여부 확인 (조정된 금액 기준)
-                if available_cash < buy_amount:
-                    logger.warning(f"[{function_name}] ⏭️ {stock_name}({ticker}) - 잔고 부족으로 매수 건너뜀. 필요금액: ${buy_amount:.2f}, 잔고: ${available_cash:.2f}")
-                    skipped_no_cash += 1
-                    continue
-                
-                # 매수 수량 계산
-                quantity = max(1, int(buy_amount / current_price))
-                
-                # 가격을 소수점 2자리로 반올림 (API 요구사항)
-                rounded_price = round(current_price, 2)
-                
-                # 매수 주문 실행
-                order_data = {
-                    "CANO": settings.KIS_CANO,
-                    "ACNT_PRDT_CD": settings.KIS_ACNT_PRDT_CD,
-                    "OVRS_EXCG_CD": exchange_code,  # API 문서에 따라 원래대로 exchange_code 사용
-                    "PDNO": pure_ticker,
-                    "ORD_DVSN": "00",  # 지정가
-                    "ORD_QTY": str(quantity),
-                    "OVRS_ORD_UNPR": str(rounded_price),
-                    "is_buy": True,
-                    "stock_name": stock_name  # 종목명 추가
-                }
-                
-                logger.info(f"[{function_name}] 📤 {stock_name}({actual_ticker}) 매수 주문 실행: 수량 {quantity}주, 가격 ${current_price:.2f} (지정가)")
-                order_result = order_overseas_stock(order_data)
-                
-                # 주문 결과 상세 정보 추출
-                order_output = order_result.get("output", {})
-                order_no = order_output.get("ODNO", "N/A")  # 주문번호
-                order_gno_brno = order_output.get("KRX_FWDG_ORD_ORGNO", "")  # 주문점번호
-                order_tmd = order_output.get("ORD_TMD", "")  # 주문시각
-                order_msg = order_result.get('msg1', '주문이 접수되었습니다.')
-
-                # 주문일자 (오늘 날짜, YYYYMMDD 형식)
-                order_dt = datetime.now().strftime("%Y%m%d")
-
-                if order_result.get("rt_cd") == "0":
-                    logger.info(f"[{function_name}] ✅ {stock_name}({ticker}) 매수 주문 접수 성공: {order_msg}")
-                    logger.info(f"[{function_name}]    주문번호: {order_no}, 가격: ${current_price:.2f}, 수량: {quantity}주")
-
-                    # 주문 접수 성공 시 즉시 저장 (status: "accepted")
-                    save_success = self._save_trading_log(
-                        order_type="buy",
-                        ticker=ticker,  # 원본 티커 (표시용)
-                        stock_name=stock_name,
-                        price=current_price,
-                        quantity=quantity,
-                        status=OrderStatus.ACCEPTED.value,  # 주문 접수 상태
-                        composite_score=candidate.get("composite_score"),
-                        order_result=order_result,
-                        exchange_code=exchange_code,
-                        order_no=order_no if order_no and order_no != "N/A" else None,
-                        order_ticker=pure_ticker,  # 실제 주문에 사용된 티커 (체결 조회용)
-                        order_dt=order_dt,  # 주문일자 (체결 조회용)
-                        order_gno_brno=order_gno_brno if order_gno_brno else None,  # 주문점번호 (체결 조회용)
-                        order_tmd=order_tmd if order_tmd else None  # 주문시각
-                    )
-                    
-                    if save_success:
-                        logger.info(f"[{function_name}] 📝 {stock_name}({ticker}) 주문 접수 기록 저장 완료")
+                        # 최대 비중 초과 체크
+                        if new_weight > max_portfolio_weight:
+                            # 현재 보유 비중이 이미 최대 비중을 초과하는 경우
+                            if current_weight >= max_portfolio_weight:
+                                logger.warning(f"[{function_name}] ⏭️ {stock_name}({ticker}) - 현재 보유 비중({current_weight:.2f}%)이 이미 최대 비중({max_portfolio_weight}%)을 초과하여 매수하지 않습니다.")
+                                skipped_portfolio_weight += 1
+                                continue
+                            else:
+                                # 최대 비중을 초과하지 않도록 매수 금액 조정
+                                max_allowed_value = (new_total_value * max_portfolio_weight / 100) - current_holding_value
+                                if max_allowed_value <= 0:
+                                    logger.warning(f"[{function_name}] ⏭️ {stock_name}({ticker}) - 최대 비중 제한으로 인해 추가 매수 불가. 현재 비중: {current_weight:.2f}%, 최대 비중: {max_portfolio_weight}%")
+                                    skipped_portfolio_weight += 1
+                                    continue
+                                
+                                # 조정된 매수 금액으로 수량 재계산
+                                adjusted_quantity = max(1, int(max_allowed_value / current_price))
+                                buy_amount = adjusted_quantity * current_price
+                                new_holding_value = current_holding_value + buy_amount
+                                new_total_value = portfolio_total_value + buy_amount
+                                new_weight = (new_holding_value / new_total_value * 100) if new_total_value > 0 else 0.0
+                                
+                                logger.info(f"[{function_name}] ⚖️ {stock_name}({ticker}) - 포트폴리오 비중 제한 적용: 최대 비중({max_portfolio_weight}%)을 초과하지 않도록 매수 금액 조정")
+                                logger.info(f"[{function_name}]    현재 비중: {current_weight:.2f}% → 예상 비중: {new_weight:.2f}% (매수 금액: ${buy_amount:.2f})")
                         
-                        # 주문번호가 유효한 경우 체결 확인 (백그라운드)
-                        if order_no and order_no != "N/A":
-                            logger.info(f"[{function_name}]    ⏳ 체결 여부 확인 중... (5초 후 확인)")
-                            
-                            # 비동기로 체결 확인 (다음 종목 매수를 막지 않음)
-                            # 주문 접수 전 보유 수량 전달 (체결 확인용)
-                            before_quantity = holding_quantities.get(pure_ticker, 0)
-                            task = asyncio.create_task(self._check_and_update_execution(
-                                order_no=order_no,
-                                ticker=ticker,
+                        # 매수 가능 여부 확인 (조정된 금액 기준)
+                        if available_cash < buy_amount:
+                            logger.warning(f"[{function_name}] ⏭️ {stock_name}({ticker}) - 잔고 부족으로 매수 건너뜀. 필요금액: ${buy_amount:.2f}, 잔고: ${available_cash:,.2f}")
+                            skipped_no_cash += 1
+                            continue
+                        
+                        # 매수 수량 계산
+                        quantity = max(1, int(buy_amount / current_price))
+                        
+                        # 가격을 소수점 2자리로 반올림 (API 요구사항)
+                        rounded_price = round(current_price, 2)
+                        
+                        # 매수 주문 실행
+                        order_data = {
+                            "CANO": settings.KIS_CANO,
+                            "ACNT_PRDT_CD": settings.KIS_ACNT_PRDT_CD,
+                            "OVRS_EXCG_CD": exchange_code,  # API 문서에 따라 원래대로 exchange_code 사용
+                            "PDNO": pure_ticker,
+                            "ORD_DVSN": "00",  # 지정가
+                            "ORD_QTY": str(quantity),
+                            "OVRS_ORD_UNPR": str(rounded_price),
+                            "is_buy": True,
+                            "stock_name": stock_name  # 종목명 추가
+                        }
+                        
+                        logger.info(f"[{function_name}] 📤 {stock_name}({actual_ticker}) 매수 주문 실행: 수량 {quantity}주, 가격 ${current_price:.2f} (지정가)")
+                        order_result = order_overseas_stock(order_data)
+                        
+                        # 주문 결과 상세 정보 추출
+                        order_output = order_result.get("output", {})
+                        order_no = order_output.get("ODNO", "N/A")  # 주문번호
+                        order_gno_brno = order_output.get("KRX_FWDG_ORD_ORGNO", "")  # 주문점번호
+                        order_tmd = order_output.get("ORD_TMD", "")  # 주문시각
+                        order_msg = order_result.get('msg1', '주문이 접수되었습니다.')
+
+                        # 주문일자 (오늘 날짜, YYYYMMDD 형식)
+                        order_dt = datetime.now().strftime("%Y%m%d")
+
+                        if order_result.get("rt_cd") == "0":
+                            logger.info(f"[{function_name}] ✅ {stock_name}({ticker}) 매수 주문 접수 성공: {order_msg}")
+                            logger.info(f"[{function_name}]    주문번호: {order_no}, 가격: ${current_price:.2f}, 수량: {quantity}주")
+
+                            # 주문 접수 성공 시 즉시 저장 (status: "accepted")
+                            save_success = self._save_trading_log(
+                                order_type="buy",
+                                ticker=ticker,  # 원본 티커 (표시용)
                                 stock_name=stock_name,
-                                function_name=function_name,
-                                before_quantity=before_quantity,
-                                order_quantity=quantity
-                            ))
-                            execution_tasks.append(task)
+                                price=current_price,
+                                quantity=quantity,
+                                status=OrderStatus.ACCEPTED.value,  # 주문 접수 상태
+                                user_id=user_id,  # 사용자 ID 추가
+                                composite_score=candidate.get("composite_score"),
+                                order_result=order_result,
+                                exchange_code=exchange_code,
+                                order_no=order_no if order_no and order_no != "N/A" else None,
+                                order_ticker=pure_ticker,  # 실제 주문에 사용된 티커 (체결 조회용)
+                                order_dt=order_dt,  # 주문일자 (체결 조회용)
+                                order_gno_brno=order_gno_brno if order_gno_brno else None,  # 주문점번호 (체결 조회용)
+                                order_tmd=order_tmd if order_tmd else None  # 주문시각
+                            )
+                            
+                            if save_success:
+                                logger.info(f"[{function_name}] 📝 {stock_name}({ticker}) 주문 접수 기록 저장 완료")
+                                
+                                # 주문번호가 유효한 경우 체결 확인 (백그라운드)
+                                if order_no and order_no != "N/A":
+                                    logger.info(f"[{function_name}]    ⏳ 체결 여부 확인 중... (5초 후 확인)")
+                                    
+                                    # 비동기로 체결 확인 (다음 종목 매수를 막지 않음)
+                                    # 주문 접수 전 보유 수량 전달 (체결 확인용)
+                                    before_quantity = holding_quantities.get(pure_ticker, 0)
+                                    task = asyncio.create_task(self._check_and_update_execution(
+                                        order_no=order_no,
+                                        ticker=ticker,
+                                        stock_name=stock_name,
+                                        function_name=function_name,
+                                        before_quantity=before_quantity,
+                                        order_quantity=quantity
+                                    ))
+                                    execution_tasks.append(task)
+                                else:
+                                    logger.warning(f"[{function_name}] ⚠️ 주문번호를 확인할 수 없어 체결 확인을 건너뜁니다.")
+                            else:
+                                logger.error(f"[{function_name}] ❌ {stock_name}({ticker}) 주문 접수 기록 저장 실패")
+                            
+                            # 주문 접수 성공으로 카운트 (체결은 별도로 확인)
+                            successful_purchases += 1
+                            
+                            # 포트폴리오 총 가치 업데이트 (다음 종목 비중 계산을 위해)
+                            actual_buy_amount = quantity * current_price
+                            portfolio_total_value += actual_buy_amount
+                            holding_values[pure_ticker] = holding_values.get(pure_ticker, 0.0) + actual_buy_amount
                         else:
-                            logger.warning(f"[{function_name}] ⚠️ 주문번호를 확인할 수 없어 체결 확인을 건너뜁니다.")
-                    else:
-                        logger.error(f"[{function_name}] ❌ {stock_name}({ticker}) 주문 접수 기록 저장 실패")
+                            error_msg = order_result.get('msg1', '알 수 없는 오류')
+                            error_code = order_result.get('msg_cd', 'N/A')
+                            logger.error(f"[{function_name}] ❌ {stock_name}({ticker}) 매수 주문 실패: {error_msg} (오류코드: {error_code})")
+                            
+                            # 주문 실패 시 Slack 알림 전송
+                            slack_notifier.send_buy_notification(
+                                stock_name=stock_name,
+                                ticker=ticker,
+                                quantity=quantity,
+                                price=current_price,
+                                exchange_code=exchange_code,
+                                success=False,
+                                error_message=f"{error_msg} (오류코드: {error_code})"
+                            )
+                            logger.info(f"[{function_name}] 📨 {stock_name}({ticker}) 주문 실패 Slack 알림 전송 완료")
+                            
+                            failed_orders += 1
+                        
+                        # 요청 간 지연 (API 요청 제한 방지 및 다음 종목 조회 전 텀 확보)
+                        await asyncio.sleep(3)
                     
-                    # 주문 접수 성공으로 카운트 (체결은 별도로 확인)
-                    successful_purchases += 1
-                    
-                    # 포트폴리오 총 가치 업데이트 (다음 종목 비중 계산을 위해)
-                    actual_buy_amount = quantity * current_price
-                    portfolio_total_value += actual_buy_amount
-                    holding_values[pure_ticker] = holding_values.get(pure_ticker, 0.0) + actual_buy_amount
-                else:
-                    error_msg = order_result.get('msg1', '알 수 없는 오류')
-                    error_code = order_result.get('msg_cd', 'N/A')
-                    logger.error(f"[{function_name}] ❌ {stock_name}({ticker}) 매수 주문 실패: {error_msg} (오류코드: {error_code})")
-                    
-                    # 주문 실패 시 Slack 알림 전송
-                    slack_notifier.send_buy_notification(
-                        stock_name=stock_name,
-                        ticker=ticker,
-                        quantity=quantity,
-                        price=current_price,
-                        exchange_code=exchange_code,
-                        success=False,
-                        error_message=f"{error_msg} (오류코드: {error_code})"
-                    )
-                    logger.info(f"[{function_name}] 📨 {stock_name}({ticker}) 주문 실패 Slack 알림 전송 완료")
-                    
-                    failed_orders += 1
+                    except Exception as e:
+                        logger.error(f"[{function_name}] ❌ {candidate['stock_name']}({candidate['ticker']}) 매수 처리 중 오류: {str(e)}", exc_info=True)
+                        failed_orders += 1
                 
-                # 요청 간 지연 (API 요청 제한 방지 및 다음 종목 조회 전 텀 확보)
-                await asyncio.sleep(3)
+                # 체결 확인 태스크들이 모두 완료될 때까지 대기
+                if execution_tasks:
+                    logger.info(f"[{function_name}] ⏳ 사용자 '{user_id}' 체결 확인 완료를 기다리는 중... (최대 60초, {len(execution_tasks)}개 주문)")
+                    try:
+                        # 모든 체결 확인 태스크가 완료될 때까지 대기
+                        await asyncio.wait_for(
+                            asyncio.gather(*execution_tasks, return_exceptions=True),
+                            timeout=SchedulerConfig.EXECUTION_CHECK_TIMEOUT_SECONDS
+                        )
+                        logger.info(f"[{function_name}] ✅ 사용자 '{user_id}' 모든 체결 확인 완료")
+                    except asyncio.TimeoutError:
+                        logger.warning(f"[{function_name}] ⚠️ 사용자 '{user_id}' 체결 확인 대기 시간 초과 ({SchedulerConfig.EXECUTION_CHECK_TIMEOUT_SECONDS}초), 일부 체결 확인이 완료되지 않았을 수 있습니다.")
+                
+                # 체결 완료된 종목 수 확인
+                executed_count = 0
+                if execution_tasks:
+                    try:
+                        db = get_db()
+                        if db is not None:
+                            # 최근 5분 이내에 체결 완료된 매수 주문 수 확인
+                            five_minutes_ago = datetime.now() - timedelta(minutes=5)
+                            executed_count = db.trading_logs.count_documents({
+                                "order_type": "buy",
+                                "status": "executed",
+                                "created_at": {"$gte": five_minutes_ago}
+                            })
+                    except Exception as e:
+                        logger.warning(f"[{function_name}] 사용자 '{user_id}' 체결 완료 종목 수 확인 중 오류: {str(e)}")
+                
+                # 사용자별 매수 작업 요약 정보 로깅 (체결 확인 완료 후)
+                total_candidates = len(buy_candidates)
+                logger.info("=" * 80)
+                logger.info(f"[{function_name}] 📊 사용자 '{user_id}' 매수 작업 요약")
+                logger.info(f"  총 추천 종목: {total_candidates}개")
+                logger.info(f"  ✅ 주문 접수 성공: {successful_purchases}개")
+                if executed_count > 0:
+                    logger.info(f"  ✅ 체결 완료: {executed_count}개")
+                logger.info(f"  ❌ 주문 실패: {failed_orders}개")
+                logger.info(f"  ⏭️  건너뛴 종목: {total_candidates - successful_purchases - failed_orders}개")
+                logger.info(f"    - 이미 보유 중: {skipped_already_holding}개")
+                logger.info(f"    - 현재가 조회 실패: {skipped_price_fetch_failed}개")
+                logger.info(f"    - 유효하지 않은 가격: {skipped_invalid_price}개")
+                logger.info(f"    - 잔고 부족: {skipped_no_cash}개")
+                logger.info(f"    - 포트폴리오 비중 초과: {skipped_portfolio_weight}개")
+                logger.info(f"  💰 남은 잔고: ${available_cash:,.2f}")
+                logger.info("=" * 80)
+                
+                # 전체 통계 업데이트
+                total_successful_purchases += successful_purchases
+                total_failed_orders += failed_orders
+                
+                # Slack 알림 전송 (사용자별 요약 정보)
+                if send_slack_notification:
+                    summary_msg = f"📊 *사용자 '{user_id}' 매수 작업 완료*\n"
+                    summary_msg += f"• 총 추천 종목: {total_candidates}개\n"
+                    summary_msg += f"• 주문 접수 성공: {successful_purchases}개\n"
+                    if executed_count > 0:
+                        summary_msg += f"• 체결 완료: {executed_count}개\n"
+                    if failed_orders > 0:
+                        summary_msg += f"• 주문 실패: {failed_orders}개\n"
+                    if skipped_already_holding > 0 or skipped_price_fetch_failed > 0 or skipped_invalid_price > 0 or skipped_no_cash > 0 or skipped_portfolio_weight > 0:
+                        summary_msg += f"• 건너뛴 종목: {total_candidates - successful_purchases - failed_orders}개\n"
+                        if skipped_already_holding > 0:
+                            summary_msg += f"  - 이미 보유 중: {skipped_already_holding}개\n"
+                        if skipped_price_fetch_failed > 0:
+                            summary_msg += f"  - 현재가 조회 실패: {skipped_price_fetch_failed}개\n"
+                        if skipped_invalid_price > 0:
+                            summary_msg += f"  - 유효하지 않은 가격: {skipped_invalid_price}개\n"
+                        if skipped_no_cash > 0:
+                            summary_msg += f"  - 잔고 부족: {skipped_no_cash}개\n"
+                        if skipped_portfolio_weight > 0:
+                            summary_msg += f"  - 포트폴리오 비중 초과: {skipped_portfolio_weight}개\n"
+                    summary_msg += f"• 남은 잔고: ${available_cash:,.2f}"
+                    send_scheduler_slack_notification(summary_msg)
                 
             except Exception as e:
-                logger.error(f"[{function_name}] ❌ {candidate['stock_name']}({candidate['ticker']}) 매수 처리 중 오류: {str(e)}", exc_info=True)
-                failed_orders += 1
+                logger.error(f"[{function_name}] ❌ 사용자 '{user_id}' 매수 처리 중 오류: {str(e)}", exc_info=True)
+                continue
         
-        # 체결 확인 태스크들이 모두 완료될 때까지 대기
-        if execution_tasks:
-            logger.info(f"[{function_name}] ⏳ 체결 확인 완료를 기다리는 중... (최대 60초, {len(execution_tasks)}개 주문)")
-            try:
-                # 모든 체결 확인 태스크가 완료될 때까지 대기
-                await asyncio.wait_for(
-                    asyncio.gather(*execution_tasks, return_exceptions=True),
-                    timeout=SchedulerConfig.EXECUTION_CHECK_TIMEOUT_SECONDS
-                )
-                logger.info(f"[{function_name}] ✅ 모든 체결 확인 완료")
-            except asyncio.TimeoutError:
-                logger.warning(f"[{function_name}] ⚠️ 체결 확인 대기 시간 초과 ({SchedulerConfig.EXECUTION_CHECK_TIMEOUT_SECONDS}초), 일부 체결 확인이 완료되지 않았을 수 있습니다.")
-        
-        # 체결 완료된 종목 수 확인
-        executed_count = 0
-        if execution_tasks:
-            try:
-                db = get_db()
-                if db is not None:
-                    # 최근 5분 이내에 체결 완료된 매수 주문 수 확인
-                    five_minutes_ago = datetime.now() - timedelta(minutes=5)
-                    executed_count = db.trading_logs.count_documents({
-                        "order_type": "buy",
-                        "status": "executed",
-                        "created_at": {"$gte": five_minutes_ago}
-                    })
-            except Exception as e:
-                logger.warning(f"[{function_name}] 체결 완료 종목 수 확인 중 오류: {str(e)}")
-        
-        # 매수 작업 요약 정보 로깅 (체결 확인 완료 후)
-        total_candidates = len(buy_candidates)
+        # 전체 매수 작업 요약 정보 로깅
         logger.info("=" * 80)
-        logger.info(f"[{function_name}] 📊 매수 작업 요약")
-        logger.info(f"  총 추천 종목: {total_candidates}개")
-        logger.info(f"  ✅ 주문 접수 성공: {successful_purchases}개")
-        if executed_count > 0:
-            logger.info(f"  ✅ 체결 완료: {executed_count}개")
-        logger.info(f"  ❌ 주문 실패: {failed_orders}개")
-        logger.info(f"  ⏭️  건너뛴 종목: {total_candidates - successful_purchases - failed_orders}개")
-        logger.info(f"    - 이미 보유 중: {skipped_already_holding}개")
-        logger.info(f"    - 현재가 조회 실패: {skipped_price_fetch_failed}개")
-        logger.info(f"    - 유효하지 않은 가격: {skipped_invalid_price}개")
-        logger.info(f"    - 잔고 부족: {skipped_no_cash}개")
-        logger.info(f"    - 포트폴리오 비중 초과: {skipped_portfolio_weight}개")
-        logger.info(f"  💰 남은 잔고: ${available_cash:,.2f}")
+        logger.info(f"[{function_name}] 📊 전체 매수 작업 요약 (모든 사용자)")
+        logger.info(f"  활성 사용자 수: {len(active_users)}명")
+        logger.info(f"  총 주문 접수 성공: {total_successful_purchases}개")
+        logger.info(f"  총 주문 실패: {total_failed_orders}개")
         logger.info("=" * 80)
         
-        # Slack 알림 전송 (요약 정보)
-        if send_slack_notification:
-            summary_msg = f"📊 *매수 작업 완료*\n"
-            summary_msg += f"• 총 추천 종목: {total_candidates}개\n"
-            summary_msg += f"• 주문 접수 성공: {successful_purchases}개\n"
-            if executed_count > 0:
-                summary_msg += f"• 체결 완료: {executed_count}개\n"
-            if failed_orders > 0:
-                summary_msg += f"• 주문 실패: {failed_orders}개\n"
-            if skipped_already_holding > 0 or skipped_price_fetch_failed > 0 or skipped_invalid_price > 0 or skipped_no_cash > 0 or skipped_portfolio_weight > 0:
-                summary_msg += f"• 건너뛴 종목: {total_candidates - successful_purchases - failed_orders}개\n"
-                if skipped_already_holding > 0:
-                    summary_msg += f"  - 이미 보유 중: {skipped_already_holding}개\n"
-                if skipped_price_fetch_failed > 0:
-                    summary_msg += f"  - 현재가 조회 실패: {skipped_price_fetch_failed}개\n"
-                if skipped_invalid_price > 0:
-                    summary_msg += f"  - 유효하지 않은 가격: {skipped_invalid_price}개\n"
-                if skipped_no_cash > 0:
-                    summary_msg += f"  - 잔고 부족: {skipped_no_cash}개\n"
-                if skipped_portfolio_weight > 0:
-                    summary_msg += f"  - 포트폴리오 비중 초과: {skipped_portfolio_weight}개\n"
-            summary_msg += f"• 남은 잔고: ${available_cash:,.2f}"
-            send_scheduler_slack_notification(summary_msg)
+        logger.info(f"[{function_name}] 함수 실행 완료")
     
     async def _check_and_update_execution(
         self,
@@ -3048,6 +3076,7 @@ class StockScheduler:
         price: float,
         quantity: int,
         status: str,
+        user_id: str = None,  # 사용자 ID
         composite_score: float = None,
         price_change_percent: float = None,
         sell_reasons: list = None,
@@ -3066,8 +3095,13 @@ class StockScheduler:
                 logger.error(f"❌ MongoDB 연결 실패 - 매매 기록 저장 불가: {order_type} {ticker} {quantity}주 @ ${price}")
                 return False
 
+            # user_id가 없으면 기본값 사용
+            if user_id is None:
+                from app.utils.user_context import get_current_user_id
+                user_id = get_current_user_id()
+
             log_data = {
-                "user_id": "system",  # 스케줄러는 시스템 계정으로 저장
+                "user_id": user_id,
                 "order_type": order_type,  # "buy" | "sell"
                 "ticker": ticker,
                 "stock_name": stock_name,

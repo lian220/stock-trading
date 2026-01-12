@@ -364,7 +364,7 @@ class TradingConfig(BaseModel):
 class TrailingStop(BaseModel):
     """트레일링 스톱 정보"""
     id: Optional[PyObjectId] = Field(default_factory=PyObjectId, alias="_id")
-    user_id: str = "lian"  # 기본값
+    user_id: str  # 사용자 ID (필수 필드)
     ticker: str
     stock_name: Optional[str] = None
     purchase_price: float

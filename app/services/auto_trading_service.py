@@ -190,6 +190,37 @@ class AutoTradingService:
             logger.error(f"자동매매 설정 업데이트 중 오류: {str(e)}")
             return {"success": False, "error": str(e)}
     
+    def get_active_users(self) -> List[str]:
+        """
+        자동매수가 활성화된 모든 사용자 ID 목록 조회
+        
+        Returns:
+            활성 사용자 ID 리스트
+        """
+        try:
+            db = get_mongodb_database()
+            if db is None:
+                logger.error("MongoDB 연결 실패")
+                return []
+            
+            # trading_config.enabled = true인 사용자 조회
+            active_users = db.users.find(
+                {"trading_config.enabled": True},
+                {"user_id": 1}
+            )
+            
+            user_ids = [user.get("user_id") for user in active_users if user.get("user_id")]
+            
+            logger.info(f"자동매수 활성 사용자 수: {len(user_ids)}명")
+            if user_ids:
+                logger.debug(f"활성 사용자 목록: {', '.join(user_ids)}")
+            
+            return user_ids
+        
+        except Exception as e:
+            logger.error(f"활성 사용자 조회 중 오류: {str(e)}")
+            return []
+    
     def get_buy_candidates(self, config: Optional[Dict] = None, user_id: Optional[str] = None) -> List[Dict]:
         """매수 추천 종목 조회"""
         if config is None:
@@ -210,10 +241,12 @@ class AutoTradingService:
                 db = None
                 try:
                     from app.infrastructure.database.mongodb_client import get_mongodb_database
+                    from app.utils.user_context import get_current_user_id
                     db = get_mongodb_database()
                     if db is not None:
-                        # TODO: 실제 사용자 ID를 문맥에서 가져와야 함. 현재는 기본값 'lian' 사용
-                        user_id = 'lian'
+                        # user_id 파라미터가 없으면 기본 사용자 ID 사용
+                        if user_id is None:
+                            user_id = get_current_user_id()
                         user = db.users.find_one({"user_id": user_id})
                         if user and user.get("stocks"):
                             # embedded stocks에서 UserStockEmbedded 모델 구조에 맞게 ticker, use_leverage만 사용
