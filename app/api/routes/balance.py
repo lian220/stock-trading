@@ -591,8 +591,11 @@ def get_portfolio_profit():
 
 @router.get("/profit/total", summary="전체 수익률 조회 (총 자산 기준)")
 def get_total_return(
-    user_id: str = Query("lian", description="사용자 ID (기본값: lian)")
+    user_id: Optional[str] = Query(None, description="사용자 ID (기본값: 현재 사용자)")
 ):
+    from app.utils.user_context import get_current_user_id
+    if user_id is None:
+        user_id = get_current_user_id()
     """
     전체 수익률을 조회합니다.
     총 자산과 총 입금금액을 비교하여 전체 수익률을 계산합니다.
@@ -708,8 +711,11 @@ class ManualDepositRequest(BaseModel):
 @router.post("/deposit", summary="수동 입금 기록")
 def record_manual_deposit(
     request: ManualDepositRequest,
-    user_id: str = Query("lian", description="사용자 ID (기본값: lian)")
+    user_id: Optional[str] = Query(None, description="사용자 ID (기본값: 현재 사용자)")
 ):
+    from app.utils.user_context import get_current_user_id
+    if user_id is None:
+        user_id = get_current_user_id()
     """
     수동으로 입금을 기록합니다 (보정용).
     
