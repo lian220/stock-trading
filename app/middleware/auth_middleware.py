@@ -22,7 +22,12 @@ from typing import Optional
 from fastapi import Request, HTTPException, status
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
-from app.utils.user_context import set_global_user_context, get_current_user_id, get_default_user_id
+from app.utils.user_context import (
+    set_global_user_context,
+    get_current_user_id,
+    get_default_user_id,
+    clear_global_user_context
+)
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -64,11 +69,15 @@ class AuthMiddleware(BaseHTTPMiddleware):
         """
         # 인증이 비활성화되어 있으면 기본 사용자 ID 사용
         if not self.enable_auth:
-            # 기본 사용자 ID로 전역 컨텍스트 설정
+            # 기본 사용자 ID로 컨텍스트 설정
             user_id = get_default_user_id()
             set_global_user_context(user_id)
-            response = await call_next(request)
-            return response
+            try:
+                response = await call_next(request)
+                return response
+            finally:
+                # 요청 처리 완료 후 컨텍스트 정리
+                clear_global_user_context()
         
         # 향후 확장: JWT 토큰 인증 등
         # 현재는 쿼리 파라미터나 헤더에서 user_id 추출
@@ -97,8 +106,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
             user_id = get_default_user_id()
             logger.debug(f"기본 user_id 사용: {user_id}")
         
-        # 전역 사용자 컨텍스트 설정
+        # 요청별 컨텍스트에 사용자 ID 설정
         set_global_user_context(user_id)
+        logger.debug(f"요청 컨텍스트에 user_id 설정: {user_id}")
         
         # 요청 처리
         try:
@@ -107,6 +117,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
         except Exception as e:
             logger.error(f"요청 처리 중 오류 발생: {str(e)}")
             raise
+        finally:
+            # 요청 처리 완료 후 컨텍스트 정리 (성공/실패 관계없이)
+            clear_global_user_context()
+            logger.debug("요청 컨텍스트 정리 완료")
     
     def _verify_jwt_token(self, token: str) -> Optional[str]:
         """
