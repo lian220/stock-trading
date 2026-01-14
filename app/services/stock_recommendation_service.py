@@ -8,6 +8,7 @@ import numpy as np
 from app.core.config import settings
 from app.services.balance_service import get_overseas_balance
 from app.utils.slack_notifier import slack_notifier
+from app.utils.user_context import get_current_user_id
 from app.services.stock_service import (
     get_ticker_from_stock_name,
     get_stock_name_from_ticker,
@@ -351,7 +352,7 @@ class StockRecommendationService:
                                 "date": analysis_date,  # YYYY-MM-DD 형식 (문자열)
                                 "ticker": ticker,
                                 "stock_id": None,  # 필요시 추가
-                                "user_id": None,  # 전역 추천
+                                "user_id": get_current_user_id(),  # 현재 사용자 ID 사용
                                 "technical_indicators": {
                                     "sma20": rec.get('SMA20'),
                                     "sma50": rec.get('SMA50'),
@@ -490,7 +491,7 @@ class StockRecommendationService:
             cursor = db.stock_analysis.find({
                 "metrics.accuracy": {"$gte": 80},
                 "predictions.rise_probability": {"$gte": 3},
-                "user_id": None  # 전역 분석만
+                "user_id": get_current_user_id()  # 현재 사용자 ID로 필터링
             }).sort("date", -1).sort("predictions.rise_probability", -1)
             data = list(cursor)
 
@@ -2004,7 +2005,7 @@ class StockRecommendationService:
                     "$gte": start_dt,
                     "$lte": end_dt
                 },
-                "user_id": None  # 전역 추천만
+                "user_id": get_current_user_id()  # 현재 사용자 ID로 필터링
             }
             
             if only_recommended:
@@ -2180,7 +2181,7 @@ class StockRecommendationService:
             rec_date = datetime.strptime(date_str, '%Y-%m-%d')
             stock_recs = list(db.stock_recommendations.find({
                 "date": rec_date,
-                "user_id": None
+                "user_id": get_current_user_id()  # 현재 사용자 ID로 필터링
             }))
             
             # 비교

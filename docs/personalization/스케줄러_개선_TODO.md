@@ -62,23 +62,23 @@
 ### 우선순위 0: 개인화 및 멀티 유저 지원 (기반 작업)
 
 #### 사용자 컨텍스트 관리
-- [ ] **사용자 컨텍스트 유틸리티 구현**
-  - [ ] `app/utils/user_context.py` 생성
-  - [ ] 현재 사용자 ID 가져오기 함수 구현 (환경변수 또는 설정에서)
-  - [ ] 사용자 컨텍스트 관리 클래스 구현
-  - [ ] 기본 사용자 ID 설정 (환경변수 `DEFAULT_USER_ID` 또는 설정 파일)
+- [x] **사용자 컨텍스트 유틸리티 구현**
+  - [x] `app/utils/user_context.py` 생성
+  - [x] 현재 사용자 ID 가져오기 함수 구현 (환경변수 또는 설정에서)
+  - [x] 사용자 컨텍스트 관리 클래스 구현
+  - [x] 기본 사용자 ID 설정 (환경변수 `DEFAULT_USER_ID` 또는 설정 파일)
 - [ ] **하드코딩된 user_id 제거**
-  - [ ] `TrailingStopService`의 user_id 하드코딩 제거
-  - [ ] `StockRecommendationService`의 user_id 하드코딩 제거
-  - [ ] `scheduler.py`의 user_id 하드코딩 제거
-  - [ ] `balance_service.py`의 기본 user_id 파라미터 처리 개선
-- [ ] **스케줄러 사용자 설정**
-  - [ ] 스케줄러 실행 시 사용할 사용자 ID 설정 방법 (환경변수 또는 설정)
+  - [x] `TrailingStopService`의 user_id 하드코딩 제거 (get_current_user_id() 사용)
+  - [ ] `StockRecommendationService`의 user_id 하드코딩 제거 (여전히 user_id=None 고정)
+  - [x] `scheduler.py`의 user_id 하드코딩 제거 (get_current_user_id() 사용)
+  - [x] `balance_service.py`의 기본 user_id 파라미터 처리 개선 (일부 완료, 일부는 여전히 "lian" 하드코딩)
+- [x] **스케줄러 사용자 설정**
+  - [x] 스케줄러 실행 시 사용할 사용자 ID 설정 방법 (환경변수 또는 설정) - DEFAULT_USER_ID 환경변수 사용
   - [ ] 스케줄러가 여러 사용자를 지원하도록 구조 변경 (선택사항)
-- [ ] **API 사용자 인증/인가**
-  - [ ] API 요청에서 user_id 추출 로직 (쿼리 파라미터, 헤더, 또는 JWT)
-  - [ ] 사용자 인증 미들웨어 구현 (선택사항, 향후 확장)
-  - [ ] 사용자별 데이터 접근 권한 검증
+- [x] **API 사용자 인증/인가**
+  - [x] API 요청에서 user_id 추출 로직 (쿼리 파라미터, 헤더, 또는 JWT) - balance.py에 user_id Query 파라미터 추가됨
+  - [x] 사용자 인증 미들웨어 구현 (선택사항, 향후 확장) - `app/middleware/auth_middleware.py` 구현 완료 (2026-01-09)
+  - [x] 사용자별 데이터 접근 권한 검증 - `app/utils/auth.py` 구현 완료, `users.py` 라우터에 예시 적용 (2026-01-09)
 
 ### 우선순위 1: 단기 개선 (안정성 & 수익성)
 

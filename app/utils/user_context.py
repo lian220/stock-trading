@@ -5,7 +5,7 @@
 """
 
 import logging
-from typing import Optional
+from typing import Optional, List
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -96,3 +96,41 @@ def clear_global_user_context():
     global _global_user_context
     _global_user_context = None
     logger.debug("전역 사용자 컨텍스트 초기화")
+
+
+def get_active_users() -> List[str]:
+    """
+    자동매매가 활성화된 사용자 목록 조회
+    
+    MongoDB의 trading_configs 컬렉션 또는 users.trading_config 필드에서
+    auto_trading_enabled=True인 사용자를 조회합니다.
+    
+    Returns:
+        활성 사용자 ID 리스트
+    """
+    from app.db.mongodb import get_db
+    
+    db = get_db()
+    if db is None:
+        logger.warning("MongoDB 연결 실패 - 기본 사용자만 반환")
+        return [get_default_user_id()]
+    
+    try:
+        # users 컬렉션에서 trading_config.auto_trading_enabled=True인 사용자 조회
+        active_users = db.users.find({
+            "trading_config.auto_trading_enabled": True
+        })
+        
+        user_ids = [user.get("user_id") for user in active_users if user.get("user_id")]
+        
+        # 활성 사용자가 없으면 기본 사용자만 반환
+        if not user_ids:
+            logger.info("활성 사용자가 없어 기본 사용자만 반환합니다.")
+            return [get_default_user_id()]
+        
+        logger.info(f"활성 사용자 {len(user_ids)}명 조회: {user_ids}")
+        return user_ids
+    except Exception as e:
+        logger.error(f"활성 사용자 조회 중 오류 발생: {str(e)}")
+        # 오류 발생 시 기본 사용자만 반환
+        return [get_default_user_id()]

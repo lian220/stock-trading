@@ -114,10 +114,14 @@ class Settings(BaseSettings):
         description="GitHub 토큰"
     )
     
-    # 사용자 설정
+    # 사용자 인증 및 권한 설정
     DEFAULT_USER_ID: Optional[str] = Field(
         default=None,
         description="기본 사용자 ID"
+    )
+    ENABLE_AUTH_MIDDLEWARE: bool = Field(
+        default=False,
+        description="인증 미들웨어 활성화 여부 (향후 확장용, 기본값: False)"
     )
     
     # Vertex AI 작업 설정
@@ -243,6 +247,16 @@ class Settings(BaseSettings):
     @field_validator('RUN_ECONOMIC_DATA_ON_STARTUP', mode='before')
     @classmethod
     def parse_run_economic_data_on_startup(cls, v):
+        """빈 문자열을 False로 변환"""
+        if v == '' or v is None:
+            return False
+        if isinstance(v, str):
+            return v.lower() in ('true', '1', 'yes', 'on')
+        return bool(v)
+    
+    @field_validator('ENABLE_AUTH_MIDDLEWARE', mode='before')
+    @classmethod
+    def parse_enable_auth_middleware(cls, v):
         """빈 문자열을 False로 변환"""
         if v == '' or v is None:
             return False
