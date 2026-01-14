@@ -9,6 +9,7 @@
 from fastapi import APIRouter, HTTPException, Query
 from typing import Optional
 from app.services.auto_trading_service import AutoTradingService
+from app.utils.user_context import get_current_user_id
 from app.schemas.auto_trading import (
     AutoTradingConfigUpdate,
     AutoTradingExecuteRequest,
@@ -37,7 +38,6 @@ def get_auto_trading_config():
     - **allow_buy_existing_stocks**: 보유 중인 종목도 매수 허용 여부 (기본값: true)
     """
     try:
-        from app.utils.user_context import get_current_user_id
         user_id = get_current_user_id()
         config = auto_trading_service.get_auto_trading_config(user_id=user_id)
         return {
@@ -78,7 +78,6 @@ def update_auto_trading_config(config: AutoTradingConfigUpdate):
     ```
     """
     try:
-        from app.utils.user_context import get_current_user_id
         user_id = get_current_user_id()
         
         # None이 아닌 필드만 딕셔너리로 변환
