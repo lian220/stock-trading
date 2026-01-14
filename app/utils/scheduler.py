@@ -1614,7 +1614,7 @@ class StockScheduler:
         raw_candidates = recommendations.get("results", [])
         logger.info(f"[{function_name}] 추천 종목 수 (중복 제거 전): {len(raw_candidates)}개")
         
-        # MongoDB에서 사용자 정보 조회 (레버리지 설정 확인용) - 필터링을 위해 먼저 조회
+        # MongoDB에서 전체 사용자 정보 조회 (레버리지 설정 확인용) - 필터링을 위해 먼저 조회
         user_leverage_map = {}  # ticker -> use_leverage (leverage_ticker는 stocks 컬렉션에서 조회)
         db = None
         try:
@@ -1622,24 +1622,33 @@ class StockScheduler:
             db = get_mongodb_database()
             
             if db is not None:
-                # 사용자 정보 조회 (user_id는 설정에서 가져오거나 기본값 사용)
-                user_id = getattr(settings, 'USER_ID', 'lian')  # 기본값 'lian'
-                user = db.users.find_one({"user_id": user_id})
+                # 전체 사용자 조회
+                users = db.users.find({})
+                total_users = 0
+                total_stocks = 0
                 
-                if user and user.get("stocks"):
-                    for stock in user.get("stocks", []):
-                        ticker = stock.get("ticker")
-                        use_leverage = stock.get("use_leverage", False)
-                        
-                        if ticker:
-                            user_leverage_map[ticker] = {
-                                "use_leverage": use_leverage
-                                # leverage_ticker는 stocks 컬렉션에서 조회
-                            }
-                    
-                    logger.info(f"[{function_name}] 사용자 '{user_id}'의 레버리지 설정 로드 완료: {len(user_leverage_map)}개 종목")
-                else:
-                    logger.warning(f"[{function_name}] 사용자 '{user_id}' 정보를 찾을 수 없거나 종목 정보가 없습니다.")
+                for user in users:
+                    user_id = user.get("user_id")
+                    if user_id and user.get("stocks"):
+                        total_users += 1
+                        for stock in user.get("stocks", []):
+                            ticker = stock.get("ticker")
+                            use_leverage = stock.get("use_leverage", False)
+                            
+                            if ticker:
+                                # 여러 유저가 같은 티커를 가질 수 있으므로, 하나라도 use_leverage가 True이면 True로 설정
+                                if ticker not in user_leverage_map:
+                                    user_leverage_map[ticker] = {
+                                        "use_leverage": use_leverage
+                                        # leverage_ticker는 stocks 컬렉션에서 조회
+                                    }
+                                else:
+                                    # OR 조건: 하나라도 True이면 True
+                                    if use_leverage:
+                                        user_leverage_map[ticker]["use_leverage"] = True
+                                total_stocks += 1
+                
+                logger.info(f"[{function_name}] 전체 {total_users}명의 사용자 레버리지 설정 로드 완료: {len(user_leverage_map)}개 종목")
             else:
                 logger.warning(f"[{function_name}] MongoDB 연결 실패 - 레버리지 설정을 사용할 수 없습니다.")
         except Exception as e:
@@ -1720,15 +1729,17 @@ class StockScheduler:
                 stock_name = candidate["stock_name"]
                 
                 # 사용자의 레버리지 설정 확인 (leverage_ticker는 stocks 컬렉션에서 조회)
+                # 레버리지 매수는 use_leverage가 True이고 leverage_ticker가 있을 때만 수행
                 actual_ticker = ticker  # 기본값은 원래 티커
                 if ticker in user_leverage_map and user_leverage_map[ticker]["use_leverage"]:
                     # stocks 컬렉션에서 레버리지 티커 조회
-                    stock_doc = db.stocks.find_one({"ticker": ticker})
+                    stock_doc = db.stocks.find_one({"ticker": ticker}) if db is not None else None
                     if stock_doc and stock_doc.get("leverage_ticker"):
                         actual_ticker = stock_doc["leverage_ticker"]
                         logger.info(f"[{function_name}] {stock_name}({ticker}) - 레버리지 활성화, {actual_ticker}로 매수")
                     else:
-                        logger.warning(f"[{function_name}] {stock_name}({ticker}) - 레버리지 설정 활성화되었으나 leverage_ticker가 없음, 일반 티커로 매수")
+                        # use_leverage가 True인데 leverage_ticker가 없으면 일반 티커로 매수
+                        logger.info(f"[{function_name}] {stock_name}({ticker}) - 레버리지 설정 활성화되었으나 leverage_ticker가 없어 일반 티커로 매수")
                 else:
                     logger.info(f"[{function_name}] {stock_name}({ticker}) - 일반 티커로 매수")                
                 # 거래소 코드 결정 (미국 주식 기준)
