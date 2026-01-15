@@ -28,6 +28,7 @@ from app.utils.scheduler import (
     start_scheduler, stop_scheduler, 
     start_sell_scheduler, stop_sell_scheduler
 )
+from app.middleware.auth_middleware import AuthMiddleware
 from contextlib import asynccontextmanager
 import logging
 
@@ -68,6 +69,14 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+)
+
+# 인증 미들웨어 설정 (선택사항, 향후 확장)
+# 현재는 기본 구조만 구현되어 있으며, enable_auth=False로 비활성화되어 있습니다.
+# 향후 JWT 토큰 인증 등을 추가하려면 enable_auth=True로 설정하고 구현을 확장하세요.
+app.add_middleware(
+    AuthMiddleware,
+    enable_auth=settings.ENABLE_AUTH_MIDDLEWARE
 )
 
 # API 라우터 등록 (중앙 관리 방식)

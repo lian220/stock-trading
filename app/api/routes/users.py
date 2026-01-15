@@ -1,10 +1,11 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from typing import List, Optional
 from datetime import datetime
 from pymongo.errors import DuplicateKeyError
 from app.db.mongodb import get_db
 from app.models.mongodb_models import UserPreferences
 from app.schemas.user import UserCreate, UserUpdate, UserStockAdd, UserStockUpdate
+from app.utils.auth import verify_user_access, get_user_id_dependency, require_user_exists
 import logging
 
 logger = logging.getLogger(__name__)
@@ -104,11 +105,22 @@ async def get_users(
 
 
 @router.get("/{user_id}", summary="특정 사용자 정보 조회", response_model=dict)
-async def get_user(user_id: str):
+async def get_user(
+    user_id: str
+):
     """
     MongoDB에서 특정 user_id의 사용자 정보를 조회합니다.
+    
+    **권한 검증**: 현재 사용자는 자신의 데이터만 조회할 수 있습니다.
+    - path parameter로 전달된 user_id에 대한 접근 권한을 검증합니다.
     """
     try:
+        # 사용자 접근 권한 검증 (다른 사용자의 데이터에 접근하려고 하면 403 Forbidden)
+        verify_user_access(user_id)
+        
+        # 사용자 존재 여부 확인
+        require_user_exists(user_id)
+        
         db = get_db()
         if db is None:
             raise HTTPException(status_code=500, detail="MongoDB 연결에 실패했습니다.")

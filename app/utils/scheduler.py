@@ -883,20 +883,47 @@ class StockScheduler:
             return False
     
     async def _execute_auto_sell(self):
-        """자동 매도 실행 로직"""
+        """
+        자동 매도 실행 로직 (모든 활성 사용자 대상)
+        
+        활성 사용자 목록을 조회하고, 각 사용자별로 매도 작업을 실행합니다.
+        """
         function_name = "_execute_auto_sell"
+        # 활성 사용자 목록 조회
+        from app.utils.user_context import get_active_users
+        active_users = get_active_users()
+        
+        # 각 사용자별로 매도 작업 실행
+        for user_id in active_users:
+            try:
+                await self._execute_auto_sell_for_user(user_id)
+            except Exception as e:
+                logger.error(f"[{function_name}] 사용자 {user_id} 매도 작업 실패: {str(e)}", exc_info=True)
+                # 한 사용자 실패해도 다른 사용자 작업 계속 진행
+                continue
+    
+    async def _execute_auto_sell_for_user(self, user_id: str):
+        """특정 사용자에 대한 자동 매도 실행 로직"""
+        function_name = "_execute_auto_sell_for_user"
+        # 사용자별 컨텍스트 설정
+        from app.utils.user_context import set_global_user_context
+        set_global_user_context(user_id)
+        
+        # 사용자별 설정 조회
+        trading_config = self.auto_trading_service.get_auto_trading_config(user_id=user_id)
+        
+        # 자동매매가 비활성화된 사용자는 건너뜀
+        if not trading_config.get("auto_trading_enabled", False):
+            logger.info(f"[{function_name}] 사용자 {user_id}의 자동매매가 비활성화되어 있습니다.")
+            return
         
         # 트레일링 스톱 활성화된 종목의 최고가 갱신 (매도 조건 체크 전에 실행)
         try:
             from app.services.trailing_stop_service import TrailingStopService
-            from app.utils.user_context import get_current_user_id
-            user_id = get_current_user_id()
-            
             trailing_stop_service = TrailingStopService(user_id=user_id)
             
-            # 설정 확인
-            config = self.auto_trading_service.get_auto_trading_config(user_id=user_id)
-            if config.get("trailing_stop_enabled", False):
+            # 설정 확인 (trading_config는 이미 위에서 조회했으므로 재사용)
+            if trading_config.get("trailing_stop_enabled", False):
                 # 보유 종목 조회
                 balance_result = get_overseas_balance()
                 if balance_result.get("rt_cd") == "0":
@@ -1452,9 +1479,48 @@ class StockScheduler:
         logger.info("=" * 80)
     
     async def _execute_auto_buy(self, send_slack_notification: bool = True):
-        """자동 매수 실행 로직"""
+        """
+        자동 매수 실행 로직 (모든 활성 사용자 대상)
+        
+        활성 사용자 목록을 조회하고, 각 사용자별로 매수 작업을 실행합니다.
+        """
         function_name = "_execute_auto_buy"
         logger.info(f"[{function_name}] 함수 실행 시작")
+        
+        # 활성 사용자 목록 조회
+        from app.utils.user_context import get_active_users
+        active_users = get_active_users()
+        logger.info(f"[{function_name}] 활성 사용자 {len(active_users)}명: {active_users}")
+        
+        # 각 사용자별로 매수 작업 실행
+        for user_id in active_users:
+            try:
+                logger.info(f"[{function_name}] 사용자 {user_id} 매수 작업 시작")
+                await self._execute_auto_buy_for_user(user_id, send_slack_notification)
+                logger.info(f"[{function_name}] 사용자 {user_id} 매수 작업 완료")
+            except Exception as e:
+                logger.error(f"[{function_name}] 사용자 {user_id} 매수 작업 실패: {str(e)}", exc_info=True)
+                # 한 사용자 실패해도 다른 사용자 작업 계속 진행
+                continue
+        
+        logger.info(f"[{function_name}] 모든 활성 사용자 매수 작업 완료")
+    
+    async def _execute_auto_buy_for_user(self, user_id: str, send_slack_notification: bool = True):
+        """특정 사용자에 대한 자동 매수 실행 로직"""
+        function_name = "_execute_auto_buy_for_user"
+        logger.info(f"[{function_name}] 사용자 {user_id} 매수 작업 시작")
+        
+        # 사용자별 컨텍스트 설정
+        from app.utils.user_context import set_global_user_context
+        set_global_user_context(user_id)
+        
+        # 사용자별 설정 조회
+        trading_config = self.auto_trading_service.get_auto_trading_config(user_id=user_id)
+        
+        # 자동매매가 비활성화된 사용자는 건너뜀
+        if not trading_config.get("auto_trading_enabled", False):
+            logger.info(f"[{function_name}] 사용자 {user_id}의 자동매매가 비활성화되어 있습니다.")
+            return
         
         # 현재 시간이 미국 장 시간인지 확인 (서머타임 고려)
         now_in_korea = datetime.now(pytz.timezone('Asia/Seoul'))
@@ -1614,7 +1680,7 @@ class StockScheduler:
         raw_candidates = recommendations.get("results", [])
         logger.info(f"[{function_name}] 추천 종목 수 (중복 제거 전): {len(raw_candidates)}개")
         
-        # MongoDB에서 전체 사용자 정보 조회 (레버리지 설정 확인용) - 필터링을 위해 먼저 조회
+        # MongoDB에서 현재 사용자의 레버리지 설정 조회
         user_leverage_map = {}  # ticker -> use_leverage (leverage_ticker는 stocks 컬렉션에서 조회)
         db = None
         try:
@@ -1622,33 +1688,25 @@ class StockScheduler:
             db = get_mongodb_database()
             
             if db is not None:
-                # 전체 사용자 조회
-                users = db.users.find({})
-                total_users = 0
-                total_stocks = 0
+                # 현재 사용자만 조회
+                from app.utils.user_context import get_current_user_id
+                current_user_id = get_current_user_id()
+                user = db.users.find_one({"user_id": current_user_id})
                 
-                for user in users:
-                    user_id = user.get("user_id")
-                    if user_id and user.get("stocks"):
-                        total_users += 1
-                        for stock in user.get("stocks", []):
-                            ticker = stock.get("ticker")
-                            use_leverage = stock.get("use_leverage", False)
-                            
-                            if ticker:
-                                # 여러 유저가 같은 티커를 가질 수 있으므로, 하나라도 use_leverage가 True이면 True로 설정
-                                if ticker not in user_leverage_map:
-                                    user_leverage_map[ticker] = {
-                                        "use_leverage": use_leverage
-                                        # leverage_ticker는 stocks 컬렉션에서 조회
-                                    }
-                                else:
-                                    # OR 조건: 하나라도 True이면 True
-                                    if use_leverage:
-                                        user_leverage_map[ticker]["use_leverage"] = True
-                                total_stocks += 1
-                
-                logger.info(f"[{function_name}] 전체 {total_users}명의 사용자 레버리지 설정 로드 완료: {len(user_leverage_map)}개 종목")
+                if user and user.get("stocks"):
+                    for stock in user.get("stocks", []):
+                        ticker = stock.get("ticker")
+                        use_leverage = stock.get("use_leverage", False)
+                        
+                        if ticker:
+                            user_leverage_map[ticker] = {
+                                "use_leverage": use_leverage
+                                # leverage_ticker는 stocks 컬렉션에서 조회
+                            }
+                    
+                    logger.info(f"[{function_name}] 사용자 {current_user_id}의 레버리지 설정 로드 완료: {len(user_leverage_map)}개 종목")
+                else:
+                    logger.warning(f"[{function_name}] 사용자 {current_user_id}의 stocks 정보가 없습니다.")
             else:
                 logger.warning(f"[{function_name}] MongoDB 연결 실패 - 레버리지 설정을 사용할 수 없습니다.")
         except Exception as e:
@@ -1701,8 +1759,7 @@ class StockScheduler:
         logger.info(f"[{function_name}] 매수 대상 종목 {len(buy_candidates)}개를 찾았습니다. (종합 점수 높은 순)")
         
         # 자동매매 설정 조회 (보유 중인 종목 매수 허용 여부 확인)
-        from app.utils.user_context import get_current_user_id
-        user_id = get_current_user_id()
+        # user_id는 이미 함수 파라미터로 받았으므로 재조회 불필요
         trading_config = self.auto_trading_service.get_auto_trading_config(user_id=user_id)
         allow_buy_existing_stocks = trading_config.get("allow_buy_existing_stocks", True)  # 기본값: True
         max_portfolio_weight = trading_config.get("max_portfolio_weight_per_stock", 20.0)  # 기본값: 20%
@@ -3077,8 +3134,12 @@ class StockScheduler:
                 logger.error(f"❌ MongoDB 연결 실패 - 매매 기록 저장 불가: {order_type} {ticker} {quantity}주 @ ${price}")
                 return False
 
+            # 현재 사용자 ID 가져오기
+            from app.utils.user_context import get_current_user_id
+            current_user_id = get_current_user_id()
+            
             log_data = {
-                "user_id": "system",  # 스케줄러는 시스템 계정으로 저장
+                "user_id": current_user_id,  # 현재 사용자 ID 사용
                 "order_type": order_type,  # "buy" | "sell"
                 "ticker": ticker,
                 "stock_name": stock_name,
