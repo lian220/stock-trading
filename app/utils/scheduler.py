@@ -889,31 +889,22 @@ class StockScheduler:
         활성 사용자 목록을 조회하고, 각 사용자별로 매도 작업을 실행합니다.
         """
         function_name = "_execute_auto_sell"
-        logger.info(f"[{function_name}] 함수 실행 시작")
-        
         # 활성 사용자 목록 조회
         from app.utils.user_context import get_active_users
         active_users = get_active_users()
-        logger.info(f"[{function_name}] 활성 사용자 {len(active_users)}명: {active_users}")
         
         # 각 사용자별로 매도 작업 실행
         for user_id in active_users:
             try:
-                logger.info(f"[{function_name}] 사용자 {user_id} 매도 작업 시작")
                 await self._execute_auto_sell_for_user(user_id)
-                logger.info(f"[{function_name}] 사용자 {user_id} 매도 작업 완료")
             except Exception as e:
                 logger.error(f"[{function_name}] 사용자 {user_id} 매도 작업 실패: {str(e)}", exc_info=True)
                 # 한 사용자 실패해도 다른 사용자 작업 계속 진행
                 continue
-        
-        logger.info(f"[{function_name}] 모든 활성 사용자 매도 작업 완료")
     
     async def _execute_auto_sell_for_user(self, user_id: str):
         """특정 사용자에 대한 자동 매도 실행 로직"""
         function_name = "_execute_auto_sell_for_user"
-        logger.info(f"[{function_name}] 사용자 {user_id} 매도 작업 시작")
-        
         # 사용자별 컨텍스트 설정
         from app.utils.user_context import set_global_user_context
         set_global_user_context(user_id)
