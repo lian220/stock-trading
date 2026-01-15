@@ -1119,8 +1119,11 @@ class StockRecommendationService:
             db = get_db()
 
             if db is not None:
-                # MongoDB stock_recommendations에서 조회 (date 내림차순)
-                cursor = db.stock_recommendations.find({}).sort("date", -1)
+                # MongoDB stock_recommendations에서 조회 (updated_at 우선, date 보조)
+                cursor = db.stock_recommendations.find({}).sort([
+                    ("updated_at", -1),
+                    ("date", -1)
+                ])
                 mongo_tech_data = list(cursor)
 
                 if mongo_tech_data:
@@ -1129,6 +1132,7 @@ class StockRecommendationService:
                         tech_indicators = doc.get("technical_indicators", {})
                         tech_data.append({
                             "날짜": doc.get("date"),
+                            "updated_at": doc.get("updated_at"),
                             "종목": get_stock_name_from_ticker(doc.get("ticker")) or doc.get("ticker"),
                             "ticker": doc.get("ticker"),
                             "SMA20": tech_indicators.get("sma20"),
@@ -1182,11 +1186,15 @@ class StockRecommendationService:
             
             # 종목별로 최신 날짜만 남기기 (중복 제거)
             if not filtered_tech_df.empty:
-                # 날짜를 datetime으로 변환 (아직 변환되지 않은 경우)
-                if not pd.api.types.is_datetime64_any_dtype(filtered_tech_df["날짜"]):
-                    filtered_tech_df["날짜"] = pd.to_datetime(filtered_tech_df["날짜"])
-                # 날짜 내림차순 정렬 후 종목별로 첫 번째(최신)만 남기기
-                filtered_tech_df = filtered_tech_df.sort_values("날짜", ascending=False)
+                # 최신 기준: updated_at 우선, 없으면 날짜로 폴백
+                filtered_tech_df["최신기준"] = pd.to_datetime(
+                    filtered_tech_df["updated_at"],
+                    errors="coerce"
+                )
+                date_as_dt = pd.to_datetime(filtered_tech_df["날짜"], errors="coerce")
+                filtered_tech_df["최신기준"] = filtered_tech_df["최신기준"].fillna(date_as_dt)
+                # 최신 기준 내림차순 정렬 후 종목별로 첫 번째(최신)만 남기기
+                filtered_tech_df = filtered_tech_df.sort_values("최신기준", ascending=False)
                 filtered_tech_df = filtered_tech_df.drop_duplicates(subset=["종목"], keep="first")
                 logger.info(f"종목별 최신 데이터만 필터링: {len(filtered_tech_df)}개 종목")
             
@@ -1615,8 +1623,11 @@ class StockRecommendationService:
             db = get_db()
 
             if db is not None:
-                # MongoDB stock_recommendations에서 조회
-                cursor = db.stock_recommendations.find({}).sort("date", -1)
+                # MongoDB stock_recommendations에서 조회 (updated_at 우선, date 보조)
+                cursor = db.stock_recommendations.find({}).sort([
+                    ("updated_at", -1),
+                    ("date", -1)
+                ])
                 mongo_tech_data = list(cursor)
 
                 if mongo_tech_data:
@@ -1624,6 +1635,7 @@ class StockRecommendationService:
                         tech_indicators = doc.get("technical_indicators", {})
                         tech_list.append({
                             "날짜": doc.get("date"),
+                            "updated_at": doc.get("updated_at"),
                             "종목": get_stock_name_from_ticker(doc.get("ticker")) or doc.get("ticker"),
                             "ticker": doc.get("ticker"),
                             "골든_크로스": tech_indicators.get("golden_cross", False),
@@ -1643,8 +1655,14 @@ class StockRecommendationService:
                 tech_data["MACD_매수_신호"] = tech_data["MACD_매수_신호"].astype(bool)
                 tech_data["RSI"] = pd.to_numeric(tech_data["RSI"])
 
-                # 최신 데이터만 필터링 (종목별 가장 최근 날짜의 데이터)
-                tech_data = tech_data.sort_values("날짜", ascending=False)
+                # 최신 데이터만 필터링 (updated_at 우선, 없으면 날짜로 폴백)
+                tech_data["최신기준"] = pd.to_datetime(
+                    tech_data["updated_at"],
+                    errors="coerce"
+                )
+                date_as_dt = pd.to_datetime(tech_data["날짜"], errors="coerce")
+                tech_data["최신기준"] = tech_data["최신기준"].fillna(date_as_dt)
+                tech_data = tech_data.sort_values("최신기준", ascending=False)
                 tech_data = tech_data.drop_duplicates(subset=["종목"], keep="first")
 
             # 4. 감성 분석 데이터 가져오기 (MongoDB 우선)
