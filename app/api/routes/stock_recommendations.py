@@ -1,10 +1,11 @@
 from fastapi import APIRouter, HTTPException, Query
 from app.services.stock_recommendation_service import StockRecommendationService
-from app.utils.scheduler import run_auto_buy_now, start_scheduler, stop_scheduler, stock_scheduler, run_auto_sell_now, start_sell_scheduler, stop_sell_scheduler, get_scheduler_status
+from app.utils.scheduler import run_auto_buy_now, start_scheduler, stop_scheduler, stock_scheduler, run_auto_sell_now, start_sell_scheduler, stop_sell_scheduler, get_scheduler_status, run_combined_analysis_now
 from typing import Optional
 from datetime import datetime
 import pytz
 import logging
+import time
 
 router = APIRouter()
 # 서비스 인스턴스는 매번 새로 생성하여 최신 주식 목록을 반영
@@ -20,62 +21,239 @@ def get_today_date() -> str:
     korea_tz = pytz.timezone('Asia/Seoul')
     return datetime.now(korea_tz).strftime('%Y-%m-%d')
 
-@router.get("/recommended-stocks", response_model=dict)
-async def get_recommended_stocks_route():
+# ============================================================
+# 분석 결과 조회 API (새로운 구조)
+# ============================================================
+
+@router.get("/recommendations/ai", response_model=dict)
+async def get_ai_recommendations():
     """
+    AI 예측 기반 추천 주식 목록을 반환합니다.
+    
     Accuracy가 80% 이상이고 상승 확률이 3% 이상인 추천 주식 목록을 반환합니다.
     상승 확률 기준으로 내림차순 정렬됩니다.
+    
+    **데이터 소스:** AI 예측 모델 결과 (stock_analysis_results)
+    
+    **응답 구조:**
+    ```json
+    {
+      "success": true,
+      "message": "추천 주식 조회 성공",
+      "data": {
+        "results": [...],
+        "message": "..."
+      },
+      "metadata": {
+        "timestamp": "2025-12-12T23:45:00Z",
+        "count": 10
+      }
+    }
+    ```
     """
+    start_time = time.time()
     try:
         service = get_service()
-        return service.get_stock_recommendations()
+        result = service.get_stock_recommendations()
+        execution_time = time.time() - start_time
+        
+        korea_tz = pytz.timezone('Asia/Seoul')
+        timestamp = datetime.now(korea_tz).isoformat()
+        
+        return {
+            "success": True,
+            "message": result.get("message", "AI 추천 주식 조회 성공"),
+            "data": result,
+            "metadata": {
+                "execution_time": f"{execution_time:.3f}s",
+                "timestamp": timestamp,
+                "count": len(result.get("results", []))
+            }
+        }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"추천 주식 조회 중 오류 발생: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"AI 추천 주식 조회 중 오류 발생: {str(e)}")
 
-@router.get("/recommended-stocks/with-sentiment", response_model=dict)
-async def get_recommended_stocks_with_sentiment():
+@router.get("/recommendations/with-sentiment", response_model=dict)
+async def get_recommendations_with_sentiment_new():
     """
+    AI 예측과 감정 분석을 결합한 추천 주식 목록을 반환합니다.
+    
     get_stock_recommendations의 결과를 ticker_sentiment_analysis에서 
     average_sentiment_score >= 0.15인 데이터와 결합하여 반환합니다.
+    
+    **데이터 소스:**
+    - AI 예측: stock_analysis_results
+    - 감정 분석: ticker_sentiment_analysis
+    
+    **응답 구조:**
+    ```json
+    {
+      "success": true,
+      "message": "감정 분석 포함 추천 주식 조회 성공",
+      "data": {
+        "results": [...],
+        "message": "..."
+      },
+      "metadata": {
+        "timestamp": "2025-12-12T23:45:00Z",
+        "count": 10
+      }
+    }
+    ```
     """
+    start_time = time.time()
     try:
         service = get_service()
         result = service.get_recommendations_with_sentiment()
-        if not result["results"]:
-            return {"message": "조건을 만족하는 추천 주식이 없습니다", "results": []}
-        return result
+        execution_time = time.time() - start_time
+        
+        korea_tz = pytz.timezone('Asia/Seoul')
+        timestamp = datetime.now(korea_tz).isoformat()
+        
+        if not result.get("results"):
+            return {
+                "success": True,
+                "message": "조건을 만족하는 추천 주식이 없습니다",
+                "data": {"results": [], "message": "조건을 만족하는 추천 주식이 없습니다"},
+                "metadata": {
+                    "execution_time": f"{execution_time:.3f}s",
+                    "timestamp": timestamp,
+                    "count": 0
+                }
+            }
+        
+        return {
+            "success": True,
+            "message": result.get("message", "감정 분석 포함 추천 주식 조회 성공"),
+            "data": result,
+            "metadata": {
+                "execution_time": f"{execution_time:.3f}s",
+                "timestamp": timestamp,
+                "count": len(result.get("results", []))
+            }
+        }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"추천 주식 및 감정 분석 조회 중 오류 발생: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"감정 분석 포함 추천 주식 조회 중 오류 발생: {str(e)}")
 
-@router.post("/recommended-stocks/analyze-news-sentiment", response_model=dict)
-async def analyze_news_sentiment(
-    start_date: Optional[str] = Query(None, description="분석 시작 날짜 (YYYY-MM-DD 형식, 기본값: 오늘)"),
-    end_date: Optional[str] = Query(None, description="분석 종료 날짜 (YYYY-MM-DD 형식, 기본값: 오늘)")
-):
+@router.get("/recommendations/combined", response_model=dict)
+async def get_combined_recommendations():
     """
-    추천 주식 목록에서 추출한 티커에 대해 뉴스 감정 분석을 수행합니다.
-    실시간으로 처리하고 결과를 반환합니다.
+    통합 추천 주식 목록을 반환합니다. (기술적 지표 + AI 예측 + 감정 분석)
     
-    **날짜 범위 설정:**
-    - `start_date`와 `end_date`가 없으면: 오늘 날짜 데이터를 분석합니다.
-    - `start_date`와 `end_date`가 있으면: 해당 날짜 범위의 데이터를 분석합니다.
+    세 가지 분석 방법을 통합하여 최종 매수 추천 종목을 선정합니다:
+    - 기술적 지표: 골든_크로스=true, MACD_매수_신호=true, RSI<50 중 하나 이상 만족
+    - AI 예측: Accuracy >= 80%, 상승 확률 >= 3%
+    - 감정 분석: average_sentiment_score >= 0.15
+    
+    **데이터 소스:**
+    - 기술적 지표: stock_recommendations
+    - AI 예측: stock_analysis_results
+    - 감정 분석: ticker_sentiment_analysis
+    
+    **응답 구조:**
+    ```json
+    {
+      "success": true,
+      "message": "통합 추천 주식 조회 성공",
+      "data": {
+        "results": [...],
+        "message": "..."
+      },
+      "metadata": {
+        "timestamp": "2025-12-12T23:45:00Z",
+        "count": 10
+      }
+    }
+    ```
     """
+    start_time = time.time()
     try:
         service = get_service()
-        today = get_today_date()
-        start_date = start_date or today
-        end_date = end_date or today
+        # API 호출 시에는 Slack 알림을 보내지 않음
+        result = service.get_combined_recommendations_with_technical_and_sentiment(send_slack_notification=False)
+        execution_time = time.time() - start_time
         
-        results = service.fetch_and_store_sentiment_for_recommendations(
-            start_date=start_date,
-            end_date=end_date
-        )
-        return results
+        korea_tz = pytz.timezone('Asia/Seoul')
+        timestamp = datetime.now(korea_tz).isoformat()
+        
+        return {
+            "success": True,
+            "message": result.get("message", "통합 추천 주식 조회 성공"),
+            "data": result,
+            "metadata": {
+                "execution_time": f"{execution_time:.3f}s",
+                "timestamp": timestamp,
+                "count": len(result.get("results", []))
+            }
+        }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"뉴스 감정 분석 중 오류 발생: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"통합 추천 주식 조회 중 오류 발생: {str(e)}")
 
-@router.post("/recommended-stocks/generate-technical-recommendations", response_model=dict)
-async def generate_technical_recommendations():
+@router.get("/recommendations/sell-candidates", response_model=dict)
+async def get_sell_candidates_new():
+    """
+    매도 대상 종목을 조회합니다.
+    
+    다음 조건에 해당하는 보유 종목이 매도 대상으로 식별됩니다:
+    
+    1. 구매가 대비 현재가가 +5% 이상(익절) 또는 -5% 이하(손절)인 종목
+    2. 감성 점수 < -0.15이고 기술적 지표 중 2개 이상 매도 신호인 종목
+    3. 기술적 지표 중 3개 이상 매도 신호인 종목
+    
+    **기술적 매도 신호:**
+    - 데드 크로스 (골든_크로스 = False)
+    - 과매수 구간 (RSI > 70)
+    - MACD 매도 신호 (MACD_매수_신호 = False)
+    
+    응답에는 각 매도 대상 종목에 대한 상세 정보와 매도 근거가 포함됩니다.
+    
+    **응답 구조:**
+    ```json
+    {
+      "success": true,
+      "message": "매도 대상 종목 조회 성공",
+      "data": {
+        "results": [...],
+        "message": "..."
+      },
+      "metadata": {
+        "timestamp": "2025-12-12T23:45:00Z",
+        "count": 5
+      }
+    }
+    ```
+    """
+    start_time = time.time()
+    try:
+        service = get_service()
+        result = service.get_stocks_to_sell()
+        execution_time = time.time() - start_time
+        
+        korea_tz = pytz.timezone('Asia/Seoul')
+        timestamp = datetime.now(korea_tz).isoformat()
+        
+        return {
+            "success": True,
+            "message": result.get("message", "매도 대상 종목 조회 성공"),
+            "data": result,
+            "metadata": {
+                "execution_time": f"{execution_time:.3f}s",
+                "timestamp": timestamp,
+                "count": len(result.get("results", []))
+            }
+        }
+    except Exception as e:
+        logger.error(f"매도 대상 종목 조회 중 오류 발생: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"매도 대상 종목 조회 중 오류 발생: {str(e)}")
+
+# ============================================================
+# 분석 실행 API (새로운 구조)
+# ============================================================
+
+@router.post("/analysis/technical", response_model=dict)
+async def generate_technical_analysis():
     """
     기술적 지표를 기반으로 추천 데이터를 생성하고 MongoDB에 저장합니다.
     
@@ -86,7 +264,22 @@ async def generate_technical_recommendations():
     **주의사항:**
     - 기술적 지표 계산을 위해 최소 50일 이상의 데이터가 필요합니다.
     - 기본적으로 최근 6개월 데이터를 사용하므로 충분한 데이터가 확보됩니다.
+    
+    **응답 구조:**
+    ```json
+    {
+      "success": true,
+      "message": "기술적 추천 데이터가 성공적으로 생성되고 저장되었습니다",
+      "data": {...},
+      "metadata": {
+        "execution_time": "2.5s",
+        "timestamp": "2025-12-12T23:45:00Z",
+        "count": 50
+      }
+    }
+    ```
     """
+    start_time = time.time()
     try:
         service = get_service()
         
@@ -95,30 +288,92 @@ async def generate_technical_recommendations():
             start_date=None,
             end_date=None
         )
-        return {"message": "기술적 추천 데이터가 성공적으로 생성되고 저장되었습니다", "data": recommendations}
+        execution_time = time.time() - start_time
+        
+        korea_tz = pytz.timezone('Asia/Seoul')
+        timestamp = datetime.now(korea_tz).isoformat()
+        
+        count = len(recommendations.get("data", []))
+        
+        return {
+            "success": True,
+            "message": "기술적 추천 데이터가 성공적으로 생성되고 저장되었습니다",
+            "data": recommendations,
+            "metadata": {
+                "execution_time": f"{execution_time:.3f}s",
+                "timestamp": timestamp,
+                "count": count
+            }
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"기술적 추천 데이터 생성 중 오류 발생: {str(e)}")
 
-@router.get("/recommended-stocks/with-technical-and-sentiment", response_model=dict)
-async def get_recommended_stocks_with_technical_and_sentiment():
+@router.post("/analysis/sentiment", response_model=dict)
+async def analyze_sentiment(
+    start_date: Optional[str] = Query(None, description="분석 시작 날짜 (YYYY-MM-DD 형식, 기본값: 오늘)"),
+    end_date: Optional[str] = Query(None, description="분석 종료 날짜 (YYYY-MM-DD 형식, 기본값: 오늘)")
+):
     """
-    추천 주식 목록을 기술적 지표(stock_recommendations 테이블)와 감정 분석(ticker_sentiment_analysis 테이블)을
-    결합하여 반환합니다.
-    - stock_recommendations에서 골든_크로스=true, MACD_매수_신호=true, RSI<50 중 하나 이상 만족하는 종목 필터링
-    - ticker_sentiment_analysis에서 average_sentiment_score >= 0.15인 데이터와 결합
-    - get_stock_recommendations의 결과와 통합하여 반환
+    추천 주식 목록에서 추출한 티커에 대해 뉴스 감정 분석을 수행합니다.
+    실시간으로 처리하고 결과를 반환합니다.
+    
+    **날짜 범위 설정:**
+    - `start_date`와 `end_date`가 없으면: 오늘 날짜 데이터를 분석합니다.
+    - `start_date`와 `end_date`가 있으면: 해당 날짜 범위의 데이터를 분석합니다.
+    
+    **응답 구조:**
+    ```json
+    {
+      "success": true,
+      "message": "뉴스 감정 분석이 완료되었습니다",
+      "data": {
+        "results": [...],
+        "message": "..."
+      },
+      "metadata": {
+        "execution_time": "5.2s",
+        "timestamp": "2025-12-12T23:45:00Z",
+        "count": 20
+      }
+    }
+    ```
     """
+    start_time = time.time()
     try:
         service = get_service()
-        # API 호출 시에는 Slack 알림을 보내지 않음
-        result = service.get_combined_recommendations_with_technical_and_sentiment(send_slack_notification=False)
-        return result
+        today = get_today_date()
+        start_date = start_date or today
+        end_date = end_date or today
+        
+        results = service.fetch_and_store_sentiment_for_recommendations(
+            start_date=start_date,
+            end_date=end_date
+        )
+        execution_time = time.time() - start_time
+        
+        korea_tz = pytz.timezone('Asia/Seoul')
+        timestamp = datetime.now(korea_tz).isoformat()
+        
+        count = len(results.get("results", []))
+        
+        return {
+            "success": True,
+            "message": results.get("message", "뉴스 감정 분석이 완료되었습니다"),
+            "data": results,
+            "metadata": {
+                "execution_time": f"{execution_time:.3f}s",
+                "timestamp": timestamp,
+                "count": count
+            }
+        }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"기술적 지표 및 감정 분석 조회 중 오류 발생: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"뉴스 감정 분석 중 오류 발생: {str(e)}")
 
-@router.post("/recommended-stocks/generate-complete-analysis", response_model=dict)
-async def generate_complete_analysis():
+@router.post("/analysis/complete", response_model=dict)
+async def generate_complete_analysis_new():
     """
+    전체 분석 파이프라인을 실행합니다. (기술적 지표 생성 + 감정 분석 + 통합 분석)
+    
     기술적 지표 생성과 뉴스 감정 분석을 하나의 API로 통합하여 수행합니다.
     먼저 기술적 지표를 생성하고 저장한 다음, 뉴스 감정 분석을 수행합니다.
     두 기능의 결과를 통합하여 반환합니다.
@@ -126,11 +381,13 @@ async def generate_complete_analysis():
     **동작 방식:**
     - 기술적 지표: 최근 6개월(180일) 데이터를 자동으로 조회하여 분석합니다.
     - 감정 분석: 오늘 날짜 기준으로 분석합니다.
+    - 통합 분석: 생성된 데이터를 기반으로 최종 추천을 생성합니다.
     
     **주의사항:**
     - 기술적 지표 계산을 위해 최소 50일 이상의 데이터가 필요합니다.
     - 기본적으로 최근 6개월 데이터를 사용하므로 충분한 데이터가 확보됩니다.
     """
+    start_time = time.time()
     try:
         service = get_service()
         today = get_today_date()
@@ -190,9 +447,209 @@ async def generate_complete_analysis():
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"통합 분석 중 오류 발생: {str(e)}")
 
-@router.get("/sell-candidates", response_model=dict)
+# ============================================================
+# 레거시 API (호환성 유지, deprecated)
+# ============================================================
+
+@router.get("/recommended-stocks", response_model=dict, deprecated=True)
+async def get_recommended_stocks_route():
+    """
+    [Deprecated] 이 API는 호환성을 위해 유지됩니다. 새로운 API `/stocks/recommendations/ai`를 사용하세요.
+    
+    Accuracy가 80% 이상이고 상승 확률이 3% 이상인 추천 주식 목록을 반환합니다.
+    상승 확률 기준으로 내림차순 정렬됩니다.
+    """
+    try:
+        service = get_service()
+        return service.get_stock_recommendations()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"추천 주식 조회 중 오류 발생: {str(e)}")
+
+@router.get("/recommended-stocks/with-sentiment", response_model=dict, deprecated=True)
+async def get_recommended_stocks_with_sentiment():
+    """
+    [Deprecated] 이 API는 호환성을 위해 유지됩니다. 새로운 API `/stocks/recommendations/with-sentiment`를 사용하세요.
+    
+    get_stock_recommendations의 결과를 ticker_sentiment_analysis에서 
+    average_sentiment_score >= 0.15인 데이터와 결합하여 반환합니다.
+    """
+    try:
+        service = get_service()
+        result = service.get_recommendations_with_sentiment()
+        if not result["results"]:
+            return {"message": "조건을 만족하는 추천 주식이 없습니다", "results": []}
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"추천 주식 및 감정 분석 조회 중 오류 발생: {str(e)}")
+
+@router.post("/recommended-stocks/analyze-news-sentiment", response_model=dict, deprecated=True)
+async def analyze_news_sentiment(
+    start_date: Optional[str] = Query(None, description="분석 시작 날짜 (YYYY-MM-DD 형식, 기본값: 오늘)"),
+    end_date: Optional[str] = Query(None, description="분석 종료 날짜 (YYYY-MM-DD 형식, 기본값: 오늘)")
+):
+    """
+    [Deprecated] 이 API는 호환성을 위해 유지됩니다. 새로운 API `/stocks/analysis/sentiment`를 사용하세요.
+    
+    추천 주식 목록에서 추출한 티커에 대해 뉴스 감정 분석을 수행합니다.
+    실시간으로 처리하고 결과를 반환합니다.
+    
+    **날짜 범위 설정:**
+    - `start_date`와 `end_date`가 없으면: 오늘 날짜 데이터를 분석합니다.
+    - `start_date`와 `end_date`가 있으면: 해당 날짜 범위의 데이터를 분석합니다.
+    """
+    try:
+        service = get_service()
+        today = get_today_date()
+        start_date = start_date or today
+        end_date = end_date or today
+        
+        results = service.fetch_and_store_sentiment_for_recommendations(
+            start_date=start_date,
+            end_date=end_date
+        )
+        return results
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"뉴스 감정 분석 중 오류 발생: {str(e)}")
+
+@router.post("/recommended-stocks/generate-technical-recommendations", response_model=dict, deprecated=True)
+async def generate_technical_recommendations():
+    """
+    [Deprecated] 이 API는 호환성을 위해 유지됩니다. 새로운 API `/stocks/analysis/technical`를 사용하세요.
+    
+    기술적 지표를 기반으로 추천 데이터를 생성하고 MongoDB에 저장합니다.
+    
+    **동작 방식:**
+    - 최근 6개월(180일) 데이터를 자동으로 조회하여 분석합니다.
+    - 기술적 지표(SMA20, SMA50, RSI, MACD) 계산을 위해 충분한 데이터를 확보합니다.
+    
+    **주의사항:**
+    - 기술적 지표 계산을 위해 최소 50일 이상의 데이터가 필요합니다.
+    - 기본적으로 최근 6개월 데이터를 사용하므로 충분한 데이터가 확보됩니다.
+    """
+    try:
+        service = get_service()
+        
+        # 날짜 파라미터 없이 호출 (서비스에서 기본값 사용)
+        recommendations = service.generate_technical_recommendations(
+            start_date=None,
+            end_date=None
+        )
+        return {"message": "기술적 추천 데이터가 성공적으로 생성되고 저장되었습니다", "data": recommendations}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"기술적 추천 데이터 생성 중 오류 발생: {str(e)}")
+
+@router.get("/recommended-stocks/with-technical-and-sentiment", response_model=dict, deprecated=True)
+async def get_recommended_stocks_with_technical_and_sentiment():
+    """
+    [Deprecated] 이 API는 호환성을 위해 유지됩니다. 새로운 API `/stocks/recommendations/combined`를 사용하세요.
+    
+    추천 주식 목록을 기술적 지표(stock_recommendations 테이블)와 감정 분석(ticker_sentiment_analysis 테이블)을
+    결합하여 반환합니다.
+    - stock_recommendations에서 골든_크로스=true, MACD_매수_신호=true, RSI<50 중 하나 이상 만족하는 종목 필터링
+    - ticker_sentiment_analysis에서 average_sentiment_score >= 0.15인 데이터와 결합
+    - get_stock_recommendations의 결과와 통합하여 반환
+    """
+    try:
+        service = get_service()
+        # API 호출 시에는 Slack 알림을 보내지 않음
+        result = service.get_combined_recommendations_with_technical_and_sentiment(send_slack_notification=False)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"기술적 지표 및 감정 분석 조회 중 오류 발생: {str(e)}")
+
+@router.post("/recommended-stocks/generate-complete-analysis", response_model=dict, deprecated=True)
+async def generate_complete_analysis():
+    """
+    [Deprecated] 이 API는 호환성을 위해 유지됩니다. 새로운 API `/stocks/analysis/complete`를 사용하세요.
+    
+    기술적 지표 생성과 뉴스 감정 분석을 하나의 API로 통합하여 수행합니다.
+    먼저 기술적 지표를 생성하고 저장한 다음, 뉴스 감정 분석을 수행합니다.
+    두 기능의 결과를 통합하여 반환합니다.
+    
+    **동작 방식:**
+    - 기술적 지표: 최근 6개월(180일) 데이터를 자동으로 조회하여 분석합니다.
+    - 감정 분석: 오늘 날짜 기준으로 분석합니다.
+    
+    **주의사항:**
+    - 기술적 지표 계산을 위해 최소 50일 이상의 데이터가 필요합니다.
+    - 기본적으로 최근 6개월 데이터를 사용하므로 충분한 데이터가 확보됩니다.
+    """
+    try:
+        service = get_service()
+        today = get_today_date()
+        
+        # 1. 기술적 지표 생성 및 저장 (날짜 파라미터 없이 호출)
+        logger.info(f"통합 분석 시작: 1단계 - 기술적 지표 생성 시작... (최근 6개월 데이터 사용)")
+        tech_results = service.generate_technical_recommendations(
+            start_date=None,
+            end_date=None
+        )
+        tech_count = len(tech_results.get("data", []))
+        logger.info(f"통합 분석: 1단계 완료 - 기술적 지표 생성 완료 ({tech_count}개 종목)")
+        
+        # 2. 뉴스 감정 분석 수행 (오늘 날짜 기준)
+        logger.info(f"통합 분석: 2단계 - 뉴스 감정 분석 시작... (오늘 날짜: {today})")
+        sentiment_results = service.fetch_and_store_sentiment_for_recommendations(
+            start_date=today,
+            end_date=today
+        )
+        sentiment_count = len(sentiment_results.get("results", []))
+        logger.info(f"통합 분석: 2단계 완료 - 뉴스 감정 분석 완료 ({sentiment_count}개 티커)")
+        
+        # 3. 통합 분석 조회
+        logger.info("통합 분석: 3단계 - 통합 분석 결과 조회 시작...")
+        # 통합 분석 완료 시 슬랙 알림 전송
+        combined_results = service.get_combined_recommendations_with_technical_and_sentiment(send_slack_notification=True)
+        combined_count = len(combined_results.get("results", []))
+        logger.info(f"통합 분석: 3단계 완료 - 통합 분석 결과 조회 완료 ({combined_count}개 추천 종목)")
+        
+        # 4. 결과 통합 및 반환
+        logger.info("=" * 60)
+        logger.info("통합 분석 완료:")
+        logger.info(f"  - 기술적 지표 분석: {tech_count}개 종목 (최근 6개월 데이터 사용)")
+        logger.info(f"  - 감정 분석: {sentiment_count}개 티커 (오늘 날짜: {today})")
+        logger.info(f"  - 최종 추천 종목: {combined_count}개")
+        logger.info("=" * 60)
+        
+        execution_time = time.time() - start_time
+        korea_tz = pytz.timezone('Asia/Seoul')
+        timestamp = datetime.now(korea_tz).isoformat()
+        
+        return {
+            "success": True,
+            "message": "통합 분석이 완료되었습니다",
+            "data": {
+                "date_range": {
+                    "start_date": today,  # 감정 분석은 오늘 날짜 기준
+                    "end_date": today     # 감정 분석은 오늘 날짜 기준
+                },
+                "technical_analysis": {
+                    "message": tech_results.get("message", ""),
+                    "count": tech_count,
+                },
+                "sentiment_analysis": {
+                    "message": sentiment_results.get("message", ""),
+                    "count": sentiment_count,
+                },
+                "combined_results": combined_results
+            },
+            "metadata": {
+                "execution_time": f"{execution_time:.3f}s",
+                "timestamp": timestamp,
+                "count": combined_count
+            }
+        }
+    except Exception as e:
+        logger.error(f"통합 분석 중 오류 발생: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"통합 분석 중 오류 발생: {str(e)}")
+
+@router.get("/sell-candidates", response_model=dict, deprecated=True)
 async def get_sell_candidates():
     """
+    [Deprecated] 이 API는 호환성을 위해 유지됩니다. 새로운 API `/stocks/recommendations/sell-candidates`를 사용하세요.
+    
     매도 대상 종목을 조회하는 API
     
     다음 조건에 해당하는 보유 종목이 매도 대상으로 식별됩니다:
@@ -369,6 +826,66 @@ async def stop_auto_sell_scheduler():
         import traceback
         print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"매도 스케줄러 중지 중 오류 발생: {str(e)}")
+
+# ============================================================
+# 분석 실행 API
+# ============================================================
+
+@router.post("/analysis/combined/trigger", response_model=dict)
+async def trigger_combined_analysis(
+    send_slack_notification: bool = Query(False, description="Slack 알림 전송 여부")
+):
+    """
+    통합 분석을 즉시 실행합니다. (테스트 및 수동 실행용)
+    
+    세 가지 분석 결과를 통합하여 최종 추천을 생성합니다:
+    - AI 예측 결과 (stock_analysis_results)
+    - 기술적 지표 분석 결과 (stock_recommendations)
+    - 감정 분석 결과 (ticker_sentiment_analysis)
+    
+    **동작 방식:**
+    - 스케줄러의 `_run_combined_analysis()` 메서드를 직접 호출합니다.
+    - 기존에 생성된 분석 데이터를 기반으로 통합 추천을 생성합니다.
+    - 분석 데이터가 없으면 빈 결과를 반환할 수 있습니다.
+    
+    **주의사항:**
+    - 이 API는 분석 데이터를 생성하지 않고, 기존 데이터를 통합합니다.
+    - 분석 데이터를 먼저 생성하려면 `/stocks/recommended-stocks/generate-complete-analysis` API를 사용하세요.
+    
+    **Parameters:**
+    - `send_slack_notification`: Slack 알림 전송 여부 (기본값: False)
+    
+    **Returns:**
+    ```json
+    {
+      "success": true,
+      "message": "통합 분석이 완료되었습니다",
+      "executed": true,
+      "result_count": 10
+    }
+    ```
+    """
+    try:
+        result = run_combined_analysis_now(send_slack_notification=send_slack_notification)
+        
+        # 통합 분석 결과 조회하여 개수 확인
+        service = get_service()
+        combined_result = service.get_combined_recommendations_with_technical_and_sentiment(
+            send_slack_notification=False
+        )
+        result_count = len(combined_result.get('results', []))
+        
+        return {
+            "success": result,
+            "message": "통합 분석이 완료되었습니다" if result else "통합 분석 실행 중 오류가 발생했습니다",
+            "executed": result,
+            "result_count": result_count
+        }
+    except Exception as e:
+        logger.error(f"통합 분석 트리거 중 오류 발생: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"통합 분석 트리거 중 오류 발생: {str(e)}")
 
 # ============================================================
 # MongoDB 하이브리드 조회 API

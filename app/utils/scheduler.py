@@ -3247,6 +3247,10 @@ def run_auto_sell_now():
     """즉시 매도 실행 함수 (테스트용)"""
     stock_scheduler._run_auto_sell()
 
+def run_combined_analysis_now(send_slack_notification: bool = False):
+    """즉시 통합 분석 실행 함수 (API 호출용)"""
+    return stock_scheduler._run_combined_analysis(send_slack_notification=send_slack_notification)
+
 def run_vertex_ai_prediction_now(send_slack_notification: bool = False):
     """즉시 Vertex AI 주가 예측 작업 실행 함수 (API 호출용)"""
     return stock_scheduler._run_vertex_ai_prediction(send_slack_notification=send_slack_notification)
