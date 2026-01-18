@@ -488,15 +488,77 @@ class StockRecommendationService:
 
             # MongoDB stock_analysis 컬렉션에서 조회 (필터 조건 적용, 날짜 내림차순)
             # 날짜 내림차순 정렬로 최신 데이터를 먼저 가져옴
+            # user_id 필터: None(전역 분석) 또는 현재 사용자 ID 모두 포함
+            current_user_id = get_current_user_id()
             cursor = db.stock_analysis.find({
-                "metrics.accuracy": {"$gte": 80},
-                "predictions.rise_probability": {"$gte": 3},
-                "user_id": get_current_user_id()  # 현재 사용자 ID로 필터링
+                "metrics.accuracy": {
+                    "$gte": 80,
+                    "$ne": None,  # None 값 제외
+                    "$exists": True  # 필드 존재 확인
+                },
+                "predictions.rise_probability": {
+                    "$gte": 3,
+                    "$ne": None,  # None 값 제외
+                    "$exists": True  # 필드 존재 확인
+                },
+                "$or": [
+                    {"user_id": None},  # 전역 분석 데이터
+                    {"user_id": current_user_id},  # 현재 사용자 데이터
+                    {"user_id": {"$exists": False}}  # user_id 필드가 없는 레거시 데이터
+                ]
             }).sort("date", -1).sort("predictions.rise_probability", -1)
             data = list(cursor)
 
             if not data:
-                logger.info("MongoDB stock_analysis에서 조건을 만족하는 데이터가 없음")
+                logger.warning("⚠️ MongoDB stock_analysis에서 조건을 만족하는 데이터가 없음")
+                logger.info(f"💡 조회 조건: accuracy>=80 AND not null, rise_probability>=3 AND not null, user_id={current_user_id} 또는 None")
+                
+                # 디버깅을 위해 조건별 데이터 개수 확인
+                total_count = db.stock_analysis.count_documents({})
+                logger.info(f"💡 전체 데이터: {total_count}개")
+                
+                # metrics 필드가 있는지 확인
+                has_metrics = db.stock_analysis.count_documents({"metrics": {"$exists": True}})
+                has_predictions = db.stock_analysis.count_documents({"predictions": {"$exists": True}})
+                logger.info(f"💡 metrics 필드 있는 문서: {has_metrics}개, predictions 필드 있는 문서: {has_predictions}개")
+                
+                # accuracy 필드별 확인
+                accuracy_not_null = db.stock_analysis.count_documents({
+                    "metrics.accuracy": {"$ne": None, "$exists": True}
+                })
+                accuracy_gte_80 = db.stock_analysis.count_documents({
+                    "metrics.accuracy": {"$gte": 80, "$ne": None, "$exists": True}
+                })
+                logger.info(f"💡 accuracy 필드 (null 아닌): {accuracy_not_null}개, accuracy>=80: {accuracy_gte_80}개")
+                
+                # rise_probability 필드별 확인
+                rise_prob_not_null = db.stock_analysis.count_documents({
+                    "predictions.rise_probability": {"$ne": None, "$exists": True}
+                })
+                rise_prob_gte_3 = db.stock_analysis.count_documents({
+                    "predictions.rise_probability": {"$gte": 3, "$ne": None, "$exists": True}
+                })
+                logger.info(f"💡 rise_probability 필드 (null 아닌): {rise_prob_not_null}개, rise_probability>=3: {rise_prob_gte_3}개")
+                
+                # user_id별 확인
+                null_user_count = db.stock_analysis.count_documents({"user_id": None})
+                current_user_count = db.stock_analysis.count_documents({"user_id": current_user_id})
+                no_user_field = db.stock_analysis.count_documents({"user_id": {"$exists": False}})
+                logger.info(f"💡 user_id=None: {null_user_count}개, user_id={current_user_id}: {current_user_count}개, user_id 필드 없음: {no_user_field}개")
+                
+                # 샘플 데이터 확인 (최근 3개)
+                sample_docs = list(db.stock_analysis.find({}).sort("date", -1).limit(3))
+                if sample_docs:
+                    logger.info("💡 최근 데이터 샘플:")
+                    for i, doc in enumerate(sample_docs, 1):
+                        ticker = doc.get('ticker', 'N/A')
+                        metrics = doc.get('metrics', {})
+                        predictions = doc.get('predictions', {})
+                        accuracy = metrics.get('accuracy')
+                        rise_prob = predictions.get('rise_probability')
+                        user_id = doc.get('user_id')
+                        logger.info(f"   {i}. {ticker}: accuracy={accuracy}, rise_prob={rise_prob}, user_id={user_id}")
+                
                 return {"message": "분석 결과를 찾을 수 없습니다", "recommendations": []}
 
             # 종목별로 가장 최근 날짜의 데이터만 선택 (중복 제거)
@@ -1218,12 +1280,23 @@ class StockRecommendationService:
                 recommendations.append(rec)
             
             logger.info(f"AI 예측 추천 종목 수 (중복 제거 후): {len(recommendations)}개")
+            logger.info(f"기술적 지표 데이터 종목 수: {len(filtered_tech_df) if not filtered_tech_df.empty else 0}개")
+            logger.info(f"필터링된 기술적 지표 종목 수: {len(filtered_tech_df) if not filtered_tech_df.empty else 0}개")
             
             # 초기값 설정 (슬랙 알림을 위해)
             results = []
             final_results = []
             
-            # 데이터가 있는 경우에만 처리
+            # 데이터 상태 진단
+            if filtered_tech_df.empty:
+                logger.warning("⚠️ 기술적 지표 데이터가 없어 통합 추천을 수행할 수 없습니다.")
+                logger.warning("💡 generate_technical_recommendations()를 먼저 실행해야 합니다.")
+            elif not recommendations:
+                logger.warning("⚠️ AI 예측 추천 종목이 없어 통합 추천을 수행할 수 없습니다.")
+                logger.warning(f"💡 기술적 지표만으로는 {len(filtered_tech_df)}개 종목이 필터링되었지만, AI 예측 결과가 필요합니다.")
+                logger.warning("💡 get_stock_recommendations()가 빈 결과를 반환했습니다. MongoDB stock_analysis 데이터를 확인하세요.")
+            
+            # 통합 로직 실행 조건: 기술적 지표와 AI 예측 둘 다 있어야 함
             if not filtered_tech_df.empty and recommendations:
 
                 # 3. 감정 분석 데이터 조회 (MongoDB 우선)
@@ -2017,13 +2090,19 @@ class StockRecommendationService:
             end_dt = datetime.strptime(end_date, '%Y-%m-%d')
             
             # 쿼리 구성
+            # user_id 필터: None(전역 분석) 또는 현재 사용자 ID 모두 포함
+            current_user_id = get_current_user_id()
             query = {
                 "ticker": ticker,
                 "date": {
                     "$gte": start_dt,
                     "$lte": end_dt
                 },
-                "user_id": get_current_user_id()  # 현재 사용자 ID로 필터링
+                "$or": [
+                    {"user_id": None},  # 전역 분석 데이터
+                    {"user_id": current_user_id},  # 현재 사용자 데이터
+                    {"user_id": {"$exists": False}}  # user_id 필드가 없는 레거시 데이터
+                ]
             }
             
             if only_recommended:
@@ -2196,10 +2275,16 @@ class StockRecommendationService:
             )
             
             # stock_recommendations에서 해당 날짜의 데이터 조회
+            # user_id 필터: None(전역 분석) 또는 현재 사용자 ID 모두 포함
+            current_user_id = get_current_user_id()
             rec_date = datetime.strptime(date_str, '%Y-%m-%d')
             stock_recs = list(db.stock_recommendations.find({
                 "date": rec_date,
-                "user_id": get_current_user_id()  # 현재 사용자 ID로 필터링
+                "$or": [
+                    {"user_id": None},  # 전역 분석 데이터
+                    {"user_id": current_user_id},  # 현재 사용자 데이터
+                    {"user_id": {"$exists": False}}  # user_id 필드가 없는 레거시 데이터
+                ]
             }))
             
             # 비교
