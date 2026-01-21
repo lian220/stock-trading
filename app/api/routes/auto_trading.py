@@ -27,6 +27,7 @@ def get_auto_trading_config():
     
     ### 응답
     - **enabled**: 자동매매 활성화 여부
+    - **auto_trading_enabled**: 자동매매 활성화 여부 (계정 단위)
     - **min_composite_score**: 최소 종합 점수
     - **max_stocks_to_buy**: 최대 매수 종목 수
     - **max_amount_per_stock**: 종목당 최대 매수 금액
@@ -55,6 +56,7 @@ def update_auto_trading_config(config: AutoTradingConfigUpdate):
     
     ### 입력값
     - **enabled**: 자동매매 활성화 여부 (True/False)
+    - **auto_trading_enabled**: 자동매매 활성화 여부 (True/False)
     - **min_composite_score**: 최소 종합 점수 (0-100)
     - **max_stocks_to_buy**: 최대 매수 종목 수 (1-20)
     - **max_amount_per_stock**: 종목당 최대 매수 금액 (USD)

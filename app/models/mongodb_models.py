@@ -308,6 +308,7 @@ class SentimentAnalysis(BaseModel):
 class TradingConfigEmbedded(BaseModel):
     """자동매매 설정 (User에 embedded되는 버전)"""
     enabled: bool = False
+    auto_trading_enabled: bool = False  # 자동매매 활성화 여부 (계정 단위)
     min_composite_score: float = 2.0  # 최소 종합 점수 (실제 점수 분포 2~3점에 맞춰 조정)
     max_stocks_to_buy: int = 5
     max_amount_per_stock: float = 10000.0
@@ -336,6 +337,7 @@ class TradingConfig(BaseModel):
     id: Optional[PyObjectId] = Field(default_factory=PyObjectId, alias="_id")
     user_id: str
     enabled: bool = False
+    auto_trading_enabled: bool = False  # 자동매매 활성화 여부 (계정 단위)
     min_composite_score: float = 70.0
     max_stocks_to_buy: int = 5
     max_amount_per_stock: float = 10000.0

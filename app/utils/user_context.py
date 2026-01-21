@@ -91,12 +91,15 @@ def clear_global_user_context():
         logger.debug("ContextVar 초기화 완료 (이전 user_id: None)")
 
 
-def get_active_users() -> List[str]:
+def get_active_users(mode: str = "all") -> List[str]:
     """
     자동매매가 활성화된 사용자 목록 조회
     
     MongoDB의 trading_configs 컬렉션 또는 users.trading_config 필드에서
-    auto_trading_enabled=True인 사용자를 조회합니다.
+    자동매수/자동매매 활성화된 사용자를 조회합니다.
+    
+    Args:
+        mode: "buy" | "sell" | "all" (기본값: "all")
     
     Returns:
         활성 사용자 ID 리스트
@@ -105,21 +108,45 @@ def get_active_users() -> List[str]:
     
     db = get_db()
     if db is None:
-        logger.warning("MongoDB 연결 실패 - 기본 사용자만 반환")
-        return [get_default_user_id()]
+        logger.warning("MongoDB 연결 실패 - 활성 사용자 조회 불가")
+        return []
     
     try:
-        # users 컬렉션에서 trading_config.auto_trading_enabled=True인 사용자 조회
-        active_users = db.users.find({
-            "trading_config.auto_trading_enabled": True
-        })
+        if mode not in {"buy", "sell", "all"}:
+            logger.warning(f"알 수 없는 mode={mode}, 기본값 'all'로 처리합니다.")
+            mode = "all"
+        
+        if mode == "buy":
+            query = {
+                "$or": [
+                    {"trading_config.auto_trading_enabled": True},
+                    {"trading_config.enabled": True}
+                ]
+            }
+        elif mode == "sell":
+            query = {
+                "$or": [
+                    {"trading_config.enabled": True},
+                    {"trading_config.auto_trading_enabled": True}
+                ]
+            }
+        else:
+            query = {
+                "$or": [
+                    {"trading_config.enabled": True},
+                    {"trading_config.auto_trading_enabled": True}
+                ]
+            }
+        
+        # users 컬렉션에서 활성 사용자 조회
+        active_users = db.users.find(query)
         
         user_ids = [user.get("user_id") for user in active_users if user.get("user_id")]
         
         # 활성 사용자가 없으면 기본 사용자만 반환
         if not user_ids:
-            logger.info("활성 사용자가 없어 기본 사용자만 반환합니다.")
-            return [get_default_user_id()]
+            logger.info("활성 사용자가 없습니다.")
+            return []
         else:
             logger.info(f"활성 사용자 {len(user_ids)}명 조회됨")
             return user_ids

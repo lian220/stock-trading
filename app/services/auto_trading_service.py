@@ -32,6 +32,7 @@ class AutoTradingService:
         self.stock_service = StockRecommendationService()
         self.default_config = {
             "enabled": False,
+            "auto_trading_enabled": False,  # 자동매매 활성화 여부 (계정 단위)
             "min_composite_score": 2.0,  # 최소 종합 점수 (기존 70점에서 실제 점수 분포 2~3점에 맞춰 하향 조정)
             "max_stocks_to_buy": 5,  # 최대 매수 종목 수
             "max_amount_per_stock": 10000.0,  # 종목당 최대 매수 금액 (USD)
@@ -196,6 +197,10 @@ class AutoTradingService:
             config = self.get_auto_trading_config(user_id=user_id)
         
         try:
+            from app.utils.user_context import get_current_user_id
+            if user_id is None:
+                user_id = get_current_user_id()
+
             # 2. 매수 추천 종목 조회 (통합 분석 결과 사용)
             recommendations = self.stock_service.get_combined_recommendations_with_technical_and_sentiment(
                 send_slack_notification=False
@@ -212,8 +217,6 @@ class AutoTradingService:
                     from app.infrastructure.database.mongodb_client import get_mongodb_database
                     db = get_mongodb_database()
                     if db is not None:
-                        # TODO: 실제 사용자 ID를 문맥에서 가져와야 함. 현재는 기본값 'lian' 사용
-                        user_id = 'lian'
                         user = db.users.find_one({"user_id": user_id})
                         if user and user.get("stocks"):
                             # embedded stocks에서 UserStockEmbedded 모델 구조에 맞게 ticker, use_leverage만 사용
@@ -221,7 +224,8 @@ class AutoTradingService:
                                 ticker = stock.get("ticker")  # UserStockEmbedded.ticker
                                 if ticker:
                                     user_leverage_map[ticker] = {
-                                        "use_leverage": stock.get("use_leverage", False)  # UserStockEmbedded.use_leverage
+                                        "use_leverage": stock.get("use_leverage", False),  # UserStockEmbedded.use_leverage
+                                        "is_active": stock.get("is_active", True)
                                         # leverage_ticker는 Stock 모델에 있으므로 stocks 컬렉션에서 조회해야 함
                                     }
                 except Exception as e:
@@ -249,6 +253,11 @@ class AutoTradingService:
                     if original_ticker not in user_leverage_map:
                         # 사용자 설정에 없는 종목은 매수하지 않음
                         logger.info(f"{original_ticker} ({stock.get('stock_name')}) - 사용자 설정에 없어 매수 제외")
+                        continue
+                    
+                    if not user_leverage_map[original_ticker].get("is_active", True):
+                        # is_active가 false인 종목은 매수하지 않음
+                        logger.info(f"{original_ticker} ({stock.get('stock_name')}) - 사용자 설정 is_active가 false여서 매수 제외")
                         continue
                     
                     if not user_leverage_map[original_ticker]["use_leverage"]:
@@ -351,7 +360,11 @@ class AutoTradingService:
             # 설정 확인
             config = self.get_auto_trading_config(user_id=user_id)
             
-            if not config.get("enabled", False):
+            auto_trading_enabled = config.get(
+                "auto_trading_enabled",
+                config.get("enabled", False)
+            )
+            if not auto_trading_enabled:
                 return {"success": False, "error": "자동매매가 비활성화되어 있습니다"}
             
             # 매수 후보 조회

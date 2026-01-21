@@ -891,7 +891,7 @@ class StockScheduler:
         function_name = "_execute_auto_sell"
         # 활성 사용자 목록 조회
         from app.utils.user_context import get_active_users
-        active_users = get_active_users()
+        active_users = get_active_users(mode="sell")
         
         # 각 사용자별로 매도 작업 실행
         for user_id in active_users:
@@ -911,11 +911,6 @@ class StockScheduler:
         
         # 사용자별 설정 조회
         trading_config = self.auto_trading_service.get_auto_trading_config(user_id=user_id)
-        
-        # 자동매매가 비활성화된 사용자는 건너뜀
-        if not trading_config.get("auto_trading_enabled", False):
-            logger.info(f"[{function_name}] 사용자 {user_id}의 자동매매가 비활성화되어 있습니다.")
-            return
         
         # 트레일링 스톱 활성화된 종목의 최고가 갱신 (매도 조건 체크 전에 실행)
         try:
@@ -1489,7 +1484,7 @@ class StockScheduler:
         
         # 활성 사용자 목록 조회
         from app.utils.user_context import get_active_users
-        active_users = get_active_users()
+        active_users = get_active_users(mode="buy")
         logger.info(f"[{function_name}] 활성 사용자 {len(active_users)}명: {active_users}")
         
         # 각 사용자별로 매수 작업 실행
@@ -1516,11 +1511,6 @@ class StockScheduler:
         
         # 사용자별 설정 조회
         trading_config = self.auto_trading_service.get_auto_trading_config(user_id=user_id)
-        
-        # 자동매매가 비활성화된 사용자는 건너뜀
-        if not trading_config.get("auto_trading_enabled", False):
-            logger.info(f"[{function_name}] 사용자 {user_id}의 자동매매가 비활성화되어 있습니다.")
-            return
         
         # 현재 시간이 미국 장 시간인지 확인 (서머타임 고려)
         now_in_korea = datetime.now(pytz.timezone('Asia/Seoul'))
