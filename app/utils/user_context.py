@@ -148,7 +148,6 @@ def get_active_users(mode: str = "all") -> List[str]:
             logger.info("활성 사용자가 없습니다.")
             return []
         else:
-            logger.info(f"활성 사용자 {len(user_ids)}명 조회됨")
             return user_ids
     except pymongo.errors.PyMongoError as e:
         logger.exception("활성 사용자 조회 중 MongoDB 오류 발생")
