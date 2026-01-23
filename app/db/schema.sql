@@ -331,7 +331,7 @@ INSERT INTO stock_ticker_mapping (stock_name, ticker, is_etf, leverage_ticker, u
     ('세일즈포스', 'CRM', FALSE, 'CRML', TRUE, TRUE),
     ('오라클', 'ORCL', FALSE, 'ORCL', TRUE, TRUE),
     ('앱플로빈', 'APP', FALSE, 'APVL', TRUE, TRUE),
-    ('팔로알토 네트웍스', 'PANW', FALSE, NULL, TRUE, TRUE),
+    ('팔로알토 네트웍스', 'PANW', FALSE, 'PALU', TRUE, TRUE),
     ('크라우드 스트라이크', 'CRWD', FALSE, 'CRWL', TRUE, TRUE),
     ('스노우플레이크', 'SNOW', FALSE, 'SNOL', TRUE, TRUE),
     ('로빈후드', 'HOOD', FALSE, 'HODL', TRUE, TRUE),

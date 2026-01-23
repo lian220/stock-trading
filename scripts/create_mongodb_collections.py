@@ -309,7 +309,7 @@ def seed_stocks_from_defaults(db):
         {"stock_name": "세일즈포스", "ticker": "CRM", "is_etf": False, "leverage_ticker": "CRML", "is_active": True},
         {"stock_name": "오라클", "ticker": "ORCL", "is_etf": False, "leverage_ticker": "ORCL", "is_active": True},
         {"stock_name": "앱플로빈", "ticker": "APP", "is_etf": False, "leverage_ticker": "APVL", "is_active": True},
-        {"stock_name": "팔로알토 네트웍스", "ticker": "PANW", "is_etf": False, "leverage_ticker": None, "is_active": True},
+        {"stock_name": "팔로알토 네트웍스", "ticker": "PANW", "is_etf": False, "leverage_ticker": "PALU", "is_active": True},
         {"stock_name": "크라우드 스트라이크", "ticker": "CRWD", "is_etf": False, "leverage_ticker": "CRWL", "is_active": True},
         {"stock_name": "스노우플레이크", "ticker": "SNOW", "is_etf": False, "leverage_ticker": "SNOL", "is_active": True},
         {"stock_name": "로빈후드", "ticker": "HOOD", "is_etf": False, "leverage_ticker": "HODL", "is_active": True},

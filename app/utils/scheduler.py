@@ -1670,8 +1670,8 @@ class StockScheduler:
         raw_candidates = recommendations.get("results", [])
         logger.info(f"[{function_name}] 추천 종목 수 (중복 제거 전): {len(raw_candidates)}개")
         
-        # MongoDB에서 현재 사용자의 레버리지 설정 조회
-        user_leverage_map = {}  # ticker -> use_leverage (leverage_ticker는 stocks 컬렉션에서 조회)
+        # MongoDB에서 현재 사용자의 종목 설정 조회
+        user_leverage_map = {}  # ticker -> use_leverage, is_active (leverage_ticker는 stocks 컬렉션에서 조회)
         db = None
         try:
             from app.infrastructure.database.mongodb_client import get_mongodb_database
@@ -1687,10 +1687,12 @@ class StockScheduler:
                     for stock in user.get("stocks", []):
                         ticker = stock.get("ticker")
                         use_leverage = stock.get("use_leverage", False)
+                        is_active = stock.get("is_active", True)
                         
                         if ticker:
                             user_leverage_map[ticker] = {
-                                "use_leverage": use_leverage
+                                "use_leverage": use_leverage,
+                                "is_active": is_active
                                 # leverage_ticker는 stocks 컬렉션에서 조회
                             }
                     
@@ -1702,7 +1704,7 @@ class StockScheduler:
         except Exception as e:
             logger.error(f"[{function_name}] 사용자 레버리지 설정 조회 중 오류: {str(e)}", exc_info=True)
         
-        # 중복 제거 및 use_leverage 필터링
+        # 중복 제거 및 is_active 필터링
         buy_candidates = []
         seen_tickers = set()
         
@@ -1720,20 +1722,19 @@ class StockScheduler:
                 continue
             seen_tickers.add(ticker)
             
-            # use_leverage 필터링: use_leverage가 true인 종목만 매수
             if ticker not in user_leverage_map:
                 # 사용자 설정에 없는 종목은 매수하지 않음
                 logger.info(f"[{function_name}] {stock_name}({ticker}) - 사용자 설정에 없어 매수 제외")
                 continue
             
-            if not user_leverage_map[ticker]["use_leverage"]:
-                # use_leverage가 false인 종목은 매수하지 않음
-                logger.info(f"[{function_name}] {stock_name}({ticker}) - use_leverage가 false여서 매수 제외")
+            if not user_leverage_map[ticker].get("is_active", True):
+                # is_active가 false인 종목은 매수하지 않음
+                logger.info(f"[{function_name}] {stock_name}({ticker}) - is_active가 false여서 매수 제외")
                 continue
             
             buy_candidates.append(candidate)
         
-        logger.info(f"[{function_name}] 매수 후보 종목 수 (중복 제거 및 use_leverage 필터링 후): {len(buy_candidates)}개")
+        logger.info(f"[{function_name}] 매수 후보 종목 수 (중복 제거 및 is_active 필터링 후): {len(buy_candidates)}개")
         
         if not buy_candidates:
             logger.info(f"[{function_name}] 매수 조건을 만족하는 종목이 없습니다.")

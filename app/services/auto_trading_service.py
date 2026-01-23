@@ -208,9 +208,9 @@ class AutoTradingService:
             
             candidates = []
             if recommendations and recommendations.get("results"):
-                # MongoDB에서 사용자별 레버리지 설정 조회
+                # MongoDB에서 사용자별 종목 설정 조회
                 # 모델 구조: User.stocks (List[UserStockEmbedded])
-                # UserStockEmbedded에는 ticker, use_leverage만 있고, leverage_ticker는 stocks 컬렉션에서 조회
+                # UserStockEmbedded에는 ticker, use_leverage, is_active가 있고, leverage_ticker는 stocks 컬렉션에서 조회
                 user_leverage_map = {}
                 db = None
                 try:
@@ -219,7 +219,7 @@ class AutoTradingService:
                     if db is not None:
                         user = db.users.find_one({"user_id": user_id})
                         if user and user.get("stocks"):
-                            # embedded stocks에서 UserStockEmbedded 모델 구조에 맞게 ticker, use_leverage만 사용
+                            # embedded stocks에서 UserStockEmbedded 모델 구조에 맞게 ticker, use_leverage, is_active 사용
                             for stock in user.get("stocks", []):
                                 ticker = stock.get("ticker")  # UserStockEmbedded.ticker
                                 if ticker:
@@ -249,7 +249,6 @@ class AutoTradingService:
                     if stock.get("composite_score", 0) < config.get("min_composite_score", 2.0):
                         continue
                     
-                    # use_leverage 필터링: use_leverage가 true인 종목만 매수
                     if original_ticker not in user_leverage_map:
                         # 사용자 설정에 없는 종목은 매수하지 않음
                         logger.info(f"{original_ticker} ({stock.get('stock_name')}) - 사용자 설정에 없어 매수 제외")
@@ -258,11 +257,6 @@ class AutoTradingService:
                     if not user_leverage_map[original_ticker].get("is_active", True):
                         # is_active가 false인 종목은 매수하지 않음
                         logger.info(f"{original_ticker} ({stock.get('stock_name')}) - 사용자 설정 is_active가 false여서 매수 제외")
-                        continue
-                    
-                    if not user_leverage_map[original_ticker]["use_leverage"]:
-                        # use_leverage가 false인 종목은 매수하지 않음
-                        logger.info(f"{original_ticker} ({stock.get('stock_name')}) - use_leverage가 false여서 매수 제외")
                         continue
                     
                     # 레버리지 설정 적용

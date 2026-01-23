@@ -101,7 +101,7 @@ def seed_stocks(db):
         {"id": 23, "stock_name": "세일즈포스", "ticker": "CRM", "is_etf": False, "leverage_ticker": "CRML", "is_active": True, "created_at": "2025-12-02 12:31:24.228989+00", "updated_at": "2025-12-02 12:31:24.228989+00"},
         {"id": 24, "stock_name": "오라클", "ticker": "ORCL", "is_etf": False, "leverage_ticker": "ORCL", "is_active": True, "created_at": "2025-12-02 12:31:24.228989+00", "updated_at": "2025-12-02 12:31:24.228989+00"},
         {"id": 25, "stock_name": "앱플로빈", "ticker": "APP", "is_etf": False, "leverage_ticker": "APVL", "is_active": True, "created_at": "2025-12-02 12:31:24.228989+00", "updated_at": "2025-12-02 12:31:24.228989+00"},
-        {"id": 26, "stock_name": "팔로알토 네트웍스", "ticker": "PANW", "is_etf": False, "leverage_ticker": None, "is_active": True, "created_at": "2025-12-02 12:31:24.228989+00", "updated_at": "2025-12-02 12:31:24.228989+00"},
+        {"id": 26, "stock_name": "팔로알토 네트웍스", "ticker": "PANW", "is_etf": False, "leverage_ticker": "PALU", "is_active": True, "created_at": "2025-12-02 12:31:24.228989+00", "updated_at": "2025-12-02 12:31:24.228989+00"},
         {"id": 27, "stock_name": "크라우드 스트라이크", "ticker": "CRWD", "is_etf": False, "leverage_ticker": "CRWL", "is_active": True, "created_at": "2025-12-02 12:31:24.228989+00", "updated_at": "2025-12-02 12:31:24.228989+00"},
         {"id": 28, "stock_name": "스노우플레이크", "ticker": "SNOW", "is_etf": False, "leverage_ticker": "SNOL", "is_active": True, "created_at": "2025-12-02 12:31:24.228989+00", "updated_at": "2025-12-02 12:31:24.228989+00"},
         {"id": 29, "stock_name": "로빈후드", "ticker": "HOOD", "is_etf": False, "leverage_ticker": "HODL", "is_active": True, "created_at": "2025-12-02 12:31:24.228989+00", "updated_at": "2025-12-02 12:31:24.228989+00"},
